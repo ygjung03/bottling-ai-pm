@@ -1,0 +1,12 @@
+# 퍼블릭 레포는 60일 무커밋 시 스케줄이 자동 비활성화된다.
+# 프라이빗이면 불필요하지만 안전장치로 둔다.
+name: keepalive
+on:
+  schedule:
+    - cron: "0 0 1 * *"   # 매월 1일
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "keepalive $(date)"
