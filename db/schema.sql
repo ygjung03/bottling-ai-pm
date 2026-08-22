@@ -48,18 +48,36 @@ CREATE INDEX IF NOT EXISTS idx_beers_valid ON beers (valid_to, valid_from DESC);
 -- ============================================================
 
 -- 상권 시계열 (30분 배치 누적) *** 과거 조회 불가 — 즉시 수집 시작 ***
+-- 통합 API(citydata) 1회 호출로 인구·상권·날씨를 모두 수신한다.
 CREATE TABLE IF NOT EXISTS market_context (
   id                BIGSERIAL PRIMARY KEY,
-  collected_at      TIMESTAMPTZ NOT NULL,       -- API 응답 시각 (예정 시각 아님!)
-  spot              TEXT        NOT NULL,       -- 뚝섬한강공원 | 뚝섬역
-  congestion_level  TEXT,
+  collected_at      TIMESTAMPTZ NOT NULL,   -- API의 PPLTN_TIME (예정 시각 아님)
+  spot              TEXT        NOT NULL,   -- 뚝섬한강공원 | 뚝섬역
+  area_cd           TEXT,                   -- POI093 | POI025
+
+  -- 인구
+  congestion_level  TEXT,                   -- 여유 | 보통 | 약간 붐빔 | 붐빔
+  congestion_msg    TEXT,                   -- 서울시가 제공하는 완성 문장
   population_min    INTEGER,
   population_max    INTEGER,
-  forecast_12h      JSONB,
-  food_pay_amount   BIGINT,
-  food_pay_count    INTEGER,
-  commercial_level  TEXT,
-  raw               JSONB,                      -- 원본 보존 (파싱은 나중에 보완 가능)
+  ppltn_rates       JSONB,                  -- 성별·연령대·거주/비거주 비중
+  forecast_12h      JSONB,                  -- 12시간 예측 배열
+
+  -- 상권 (뚝섬한강공원은 데이터 없음 → NULL)
+  cmrcl_level       TEXT,                   -- 한산한 | 보통 | 바쁜 | 분주한
+  pay_count         INTEGER,
+  pay_amt_min       BIGINT,
+  pay_amt_max       BIGINT,
+  food_pay          JSONB,                  -- 음식·음료 중분류별 결제 현황
+  cmrcl_rates       JSONB,                  -- 결제자 성별·연령 비중
+
+  -- 날씨
+  temp              NUMERIC(4,1),
+  humidity          INTEGER,
+  precpt_type       TEXT,                   -- 없음 | 비 | 눈 ...
+  pcp_msg           TEXT,
+
+  raw               JSONB,                  -- 원본 전체 보존
   UNIQUE (collected_at, spot)
 );
 CREATE INDEX IF NOT EXISTS idx_mc_spot_time ON market_context (spot, collected_at DESC);

@@ -32,8 +32,8 @@ BOTTLING_LNG = float(os.getenv("BOTTLING_LNG", "127.0664"))
 # --- 수집 대상 지점 ---
 # TODO(A): 「서울시 주요 120장소 목록」에서 확인 후 실제 코드값으로 교체
 SPOTS = {
-    "뚝섬한강공원": None,
-    "뚝섬역": None,
+    "뚝섬한강공원": "POI093",
+    "뚝섬역": "POI025",
 }
 
 RAW_DIR = ROOT / "data" / "raw"
