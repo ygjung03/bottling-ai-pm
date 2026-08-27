@@ -10,21 +10,27 @@ LLM 호출이 아닌 일반 코드다. 숫자 집계를 LLM에 맡기면 값이 
 모두 틀린 전제 위에서 돌아간다.
 
 [출력 원칙]
+  - 대상 시점과 같은 요일만 집계한다. 인구·상권 모두 동일하다.
+    요일을 섞으면 금요일 저녁과 화요일 저녁의 차이가 뭉개진다
   - 관측 사실을 그대로 제시한다. 표본이 적다는 이유로 항목을 생략하거나
     다른 값으로 대체하지 않는다. 건수를 밝히고 해석은 LLM 에 맡긴다
-  - 대표 등급은 최빈값이 과반일 때만 세운다. 과반에 못 미치면 분포를 펼친다
-    (건수가 아니라 흩어진 정도가 기준이다)
+  - 대표 등급을 세우지 않는다. 4단계 분포를 항상 그대로 적는다
+    (0건 등급도 생략하지 않는다. 누락과 구분되지 않아 오해를 부른다)
   - 내부 계산값(평균 2.6/4 등)을 노출하지 않는다.
-    LLM 이 해석할 맥락이 없어 판단에 쓰이지 못한다.
-    대신 어느 시간대가 어떠했는지를 등급 이름으로 제시한다
+    LLM 이 해석할 맥락이 없어 판단에 쓰이지 못한다
   - 판단 근거가 몇 건인지 함께 밝힌다
   - 없는 항목은 "데이터 없음"으로 명시. 누락하면 LLM이 지어낸다
   - 날씨 포함 (한강 상권에서 강수는 방문객을 좌우)
   - 상권 지표는 뚝섬역 기준임을 명시 (한강공원은 상권 데이터 없음)
 
 [제외한 것]
-  서울시 congestion_msg — 일반 시민용 안내라 자체 집계보다 정보량이 적고,
-  어느 시점 문구인지 밝히면 문장만 길어진다.
+  서울시 congestion_msg — 일반 시민용 안내라 자체 집계보다 정보량이 적다.
+
+  12시간 예측(forecast_12h) — 오늘 이후 12시간 예보다. 협업 기획은 며칠 뒤를
+  대상으로 하므로 대상 시점과 무관한 값이 붙는다. 당일 즉흥 이벤트 기능이
+  생기면 그때 다시 넣는다.
+
+  카테고리별 현재 등급 — 가장 최근 시간 기준이라 협업 시점과 무관하다.
 """
 from __future__ import annotations
 
@@ -41,7 +47,6 @@ WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
 
 # 혼잡도 4단계 → 순위 (평균 계산용)
 CONGEST_RANK = {"여유": 1, "보통": 2, "약간 붐빔": 3, "붐빔": 4}
-RANK_CONGEST = {v: k for k, v in CONGEST_RANK.items()}
 
 # 결제 현황 4단계
 PAY_RANK = {"한산한": 1, "보통": 2, "바쁜": 3, "분주한": 4}
@@ -62,51 +67,33 @@ def _band(hour: int) -> str:
 
 def _grade_summary(levels: list[int], inv: dict[int, str]) -> str:
     """
-    구간의 등급을 요약한다.
+    구간의 등급 분포를 그대로 표기한다.
 
     평균을 내지 않는다. '보통'과 '붐빔'의 평균을 '약간 붐빔'으로 표기하면
     실제로 한 번도 관측되지 않은 등급이 출력된다.
 
-    최빈값이 과반이면 대표 등급으로 요약하고, 과반에 못 미치면 분포를 펼친다.
-    근거가 약한 대표값을 세우느니 실제 분포를 보이는 편이 판단에 도움이 된다.
-    건수가 아니라 흩어진 정도를 기준으로 삼는다.
+    0건 등급도 생략하지 않는다. 언급이 없으면 관측이 0인지 항목 자체가
+    누락된 것인지 구분되지 않아 오해를 부른다. 4단계를 항상 모두 적는다.
     """
     n = len(levels)
     cnt: dict[int, int] = defaultdict(int)
     for lv in levels:
         cnt[lv] += 1
 
-    top = max(cnt, key=cnt.get)
-    if cnt[top] * 2 > n:                       # 과반
-        return (f"'{inv[top]}' ({n}건 전부)" if cnt[top] == n
-                else f"'{inv[top]}' ({n}건 중 {cnt[top]}건)")
-
-    parts = [f"'{inv[lv]}' {cnt[lv]}" for lv in sorted(cnt, reverse=True)]
+    parts = [f"'{inv[lv]}' {cnt.get(lv, 0)}"
+             for lv in sorted(inv, reverse=True)]
     return f"관측 {n}건 — " + " / ".join(parts)
 
 
-def _rep_grade(levels: list[int]) -> int | None:
-    """최빈값이 과반일 때의 대표 등급. 과반이 아니면 None."""
-    cnt: dict[int, int] = defaultdict(int)
-    for lv in levels:
-        cnt[lv] += 1
-    top = max(cnt, key=cnt.get)
-    return top if cnt[top] * 2 > len(levels) else None
-
-
-def _band_rank(levels: list[int]) -> float:
-    """구간 간 대소 비교용. 표시에는 쓰지 않는다."""
-    return sum(levels) / len(levels)
-
-
-def _band_extremes(pairs: list[tuple[int, int]], rank_map: dict[str, int],
-                   hi_word: str, lo_word: str) -> list[str]:
+def _band_lines(pairs: list[tuple[int, int]], rank_map: dict[str, int],
+                hi_word: str, lo_word: str) -> list[str]:
     """
-    (시각, 등급) 목록에서 가장 높은 구간과 낮은 구간을 제시한다.
+    관측된 전 구간의 등급 분포를 나열하고, 구간 간 순위를 참고로 덧붙인다.
+    최고·최저 구간만 보여주면 나머지 구간의 분포가 버려진다.
 
-    구간 간 순위는 평균으로 정하되, 표시되는 등급은 실제 관측값에서 가져온다.
-    "가장 혼잡"처럼 상대적 위치만 밝히면, 실제 수준이 '보통'인데도 붐비는 것으로
-    읽힐 수 있다. 등급 이름을 함께 표기한다.
+    순위 판정은 코드가 계산해 (참고) 로 제시한다.
+    집계를 코드가 맡아 값의 정확성을 보장하되(D3), 분포를 함께 제시해
+    LLM 이 판정 근거를 직접 확인하고 판단할 수 있게 한다.
     """
     by_band: dict[str, list[int]] = defaultdict(list)
     for h, lv in pairs:
@@ -115,59 +102,26 @@ def _band_extremes(pairs: list[tuple[int, int]], rank_map: dict[str, int],
         return []
 
     inv = {v: k for k, v in rank_map.items()}
-    rank = {b: _band_rank(v) for b, v in by_band.items()}
+    order = [name for _, _, name in TIMEBANDS if name in by_band]
 
-    if len(by_band) == 1:
-        b = next(iter(by_band))
-        return [f"{b}시에만 관측 — {_grade_summary(by_band[b], inv)}"]
+    lines = [f"    {b}시 {_grade_summary(by_band[b], inv)}" for b in order]
 
+    if len(by_band) < 2:
+        return lines
+
+    rank = {b: sum(v) / len(v) for b, v in by_band.items()}
     hi = max(rank, key=rank.get)
     lo = min(rank, key=rank.get)
-
-    # 최고·최저 대비가 성립하지 않는 경우를 걸러낸다.
-    #   (1) 구간별 평균이 모두 같음
-    #   (2) 평균은 다르나 표시될 대표 등급이 같음
-    #       예) 17-21시 평균 1.33 / 14-17시 평균 1.0 → 둘 다 '여유'로 표기된다.
-    #           "'여유'인데 가장 혼잡"으로 읽혀 오해를 부른다.
-    # "시간대에 따른 차이가 없다"는 것 자체가 판단 재료이므로 해당 내용을 서술한다.
-    # (하루 종일 한산하다면 특정 시간을 노릴 이유가 없고,
-    #  사람을 끌어올 이벤트가 필요하다는 뜻이 된다)
-    g_hi, g_lo = _rep_grade(by_band[hi]), _rep_grade(by_band[lo])
-    same_grade = g_hi is not None and g_hi == g_lo
-    if rank[hi] == rank[lo] or same_grade:
-        allv = [lv for v in by_band.values() for lv in v]
-        n_band, n_obs = len(by_band), len(allv)
-        kinds = {inv[lv] for lv in allv}
-        if len(kinds) == 1:
-            return [f"시간대에 따른 차이 없이 전 구간 '{kinds.pop()}'"
-                    f" ({n_band}개 구간 {n_obs}건)"]
-        cnt: dict[int, int] = defaultdict(int)
-        for lv in allv:
-            cnt[lv] += 1
-        dist = " / ".join(f"'{inv[lv]}' {cnt[lv]}" for lv in sorted(cnt, reverse=True))
-        return [f"시간대에 따른 뚜렷한 차이 없음"
-                f" ({n_band}개 구간 {n_obs}건 — {dist})"]
-
-    return [
-        f"{hi}시 {_grade_summary(by_band[hi], inv)} — 관측 구간 중 가장 {hi_word}",
-        f"{lo}시 {_grade_summary(by_band[lo], inv)} — 관측 구간 중 가장 {lo_word}",
-    ]
-
-
-def _band_dist(hours: list[int]) -> str:
-    """시간대별 관측 건수를 사실 그대로 표기한다.
-
-    구간별 관측 건수를 그대로 나열한다.
-    어느 구간이 비어 있는지도 정보이므로 생략하지 않는다.
-    """
-    if not hours:
-        return ""
-    cnt = defaultdict(int)
-    for h in hours:
-        cnt[_band(h)] += 1
-    parts = [f"{name} {cnt[name]}건"
-             for _, _, name in TIMEBANDS if cnt.get(name)]
-    return ", ".join(parts)
+    if rank[hi] == rank[lo]:
+        lines.append("    (참고) 구간 간 평균 차이 없음")
+    else:
+        # 판정에 쓰인 구간의 관측 수를 함께 적는다.
+        # 6건 평균과 17건 평균을 같은 자격으로 비교할 수 없으므로,
+        # 순위와 근거 크기를 한 줄에 붙여 오해를 줄인다.
+        lines.append(f"    (참고) 구간 평균 기준 가장 {hi_word} "
+                     f"{hi}시({len(by_band[hi])}건)"
+                     f" / 가장 {lo_word} {lo}시({len(by_band[lo])}건)")
+    return lines
 
 
 # ══════════════════════════════════════════
@@ -175,11 +129,19 @@ def _band_dist(hours: list[int]) -> str:
 # ══════════════════════════════════════════
 
 def fetch_market(weeks: int = 4) -> list[dict]:
-    """최근 N주 market_context 전체."""
+    """
+    최근 N주 market_context 전체.
+
+    [주의] limit 을 명시하지 않으면 PostgREST 기본 상한(1,000행)에 걸린다.
+      예외도 경고도 없이 결과만 조용히 잘리므로, 집계가 틀린 줄 모르고 쓰게 된다.
+      2지점 × 하루 30～60건이면 3～4주 만에 상한에 닿아
+      실측 구간(9～10월) 중에 반드시 도달한다.
+    """
     since = (datetime.now(KST) - timedelta(weeks=weeks)).isoformat()
     return (get_client().table("market_context")
             .select("*").gte("collected_at", since)
-            .order("collected_at", desc=True).execute().data or [])
+            .order("collected_at", desc=True)
+            .limit(100000).execute().data or [])
 
 
 def fetch_sales(dong_name: str, industry: str | None = None) -> list[dict]:
@@ -226,45 +188,33 @@ def summarize_population(rows: list[dict], spot: str, target_dow: int) -> list[s
     if not same:
         return [f"- {spot}: 해당 요일 관측 {NO_DATA}"]
 
-    hours = [_kst(r["collected_at"]).hour for r in same]
-    dist = _band_dist(hours)
+    lines = [f"- {spot}: {WEEKDAYS[target_dow]}요일 {len(same)}건 관측"]
 
-    lines = [f"- {spot}: {WEEKDAYS[target_dow]}요일 {len(same)}건 관측 ({dist})"]
-
-    # 시간대별 혼잡 정도 — 최고·최저 구간
+    # 시간대별 혼잡 정도 — 전 구간 분포 + (참고) 순위
     pairs = [(_kst(r["collected_at"]).hour, CONGEST_RANK[r["congestion_level"]])
              for r in same if CONGEST_RANK.get(r.get("congestion_level"))]
-    for line in _band_extremes(pairs, CONGEST_RANK, "혼잡", "한산"):
-        lines.append(f"    {line}")
+    lines += _band_lines(pairs, CONGEST_RANK, "혼잡", "한산")
     return lines
 
 
-def summarize_forecast(rows: list[dict], spot: str) -> list[str]:
-    """가장 최근 수집분의 12시간 예측."""
-    latest = next((r for r in rows if r["spot"] == spot and r.get("forecast_12h")), None)
-    if not latest:
-        return [f"- {NO_DATA}"]
-    fc = latest["forecast_12h"][:6]          # 앞 6시간만
-    parts = []
-    for f in fc:
-        t = f.get("time", "")[11:16]
-        parts.append(f"{t} {f.get('level')}")
-    return [f"- {spot}: " + " → ".join(parts)]
-
-
-def summarize_commercial(rows: list[dict]) -> list[str]:
+def summarize_commercial(rows: list[dict], target_dow: int) -> list[str]:
     """
     음식 중분류별 결제 현황.
+
+    인구와 동일하게 대상 시점과 같은 요일만 집계한다.
+    금요일 저녁의 결제 양상과 화요일 저녁은 다르므로, 요일을 섞으면
+    둘 중 어느 쪽도 아닌 값이 나온다.
 
     거래가 없는 카테고리는 응답에서 아예 빠진다. 따라서 '관측 건수'와
     '어느 시간대에 관측되었는지'를 함께 제시한다.
     관측률만으로는 언제 빠졌는지 알 수 없어 잘못된 추론을 유발한다.
     """
-    st = [r for r in rows if r["spot"] == STATION and r.get("food_pay")]
+    st = [r for r in rows
+          if r["spot"] == STATION and r.get("food_pay")
+          and _kst(r["collected_at"]).weekday() == target_dow]
     if not st:
-        return [f"- {NO_DATA}"]
+        return [f"- 해당 요일 관측 {NO_DATA}"]
 
-    recent = st[0]["food_pay"] or {}
     lv_by_cat: dict[str, list[int]] = defaultdict(list)
     hr_by_cat: dict[str, list[int]] = defaultdict(list)
     for r in st:
@@ -275,26 +225,39 @@ def summarize_commercial(rows: list[dict]) -> list[str]:
                 lv_by_cat[cat].append(lv)
                 hr_by_cat[cat].append(h)
 
-    lines = [f"- 전체 관측 {len(st)}건 기준"]
+    lines = [f"- {WEEKDAYS[target_dow]}요일 {len(st)}건 관측"]
     order = sorted(lv_by_cat,
                    key=lambda c: -sum(lv_by_cat[c]) / len(lv_by_cat[c]))
     for cat in order:
         n = len(lv_by_cat[cat])
-        now = f"현재 '{recent[cat]['level']}'" if cat in recent else "현재 거래 없음"
-        lines.append(f"- {cat}: {now}, 관측 {n}건")
-        for line in _band_extremes(list(zip(hr_by_cat[cat], lv_by_cat[cat])),
-                                   PAY_RANK, "분주", "한산"):
-            lines.append(f"    {line}")
+        lines.append(f"- {cat}: 관측 {n}건")
+        lines += _band_lines(list(zip(hr_by_cat[cat], lv_by_cat[cat])),
+                             PAY_RANK, "분주", "한산")
     return lines
 
 
 def summarize_weather(rows: list[dict]) -> list[str]:
+    """
+    가장 최근 수집분의 날씨.
+
+    [한계] 대상 시점의 날씨가 아니다.
+      협업 기획은 며칠~몇 주 뒤를 대상으로 하므로, 최근 관측치를 그대로
+      제시하면 그 시점 날씨로 오해될 수 있다.
+
+    [예정] 기상청 단기예보 API 연동
+      대상 시점의 예보를 조회해 대체한다. 한강 상권에서 강수 여부는
+      방문객 수를 좌우하므로 실제 예보가 필요하다.
+      단기예보는 3일, 중기예보는 10일까지 제공되므로 그보다 먼 시점은
+      과거 같은 시기 평년값으로 보완하거나 "예보 범위 밖"으로 표기한다.
+    """
     latest = next((r for r in rows if r.get("temp") is not None), None)
     if not latest:
         return [f"- {NO_DATA}"]
     p = latest.get("precpt_type") or "정보 없음"
     hum = f", 습도 {latest['humidity']}%" if latest.get("humidity") else ""
-    return [f"- 기온 {latest['temp']}도{hum}, 강수 {p}"]
+    when = _kst(latest["collected_at"]).strftime("%m/%d %H시")
+    return [f"- 기온 {latest['temp']}도{hum}, 강수 {p}",
+            f"  ※ {when} 관측치. 대상 시점의 예보가 아님"]
 
 
 def summarize_sales(dong: str, industry: str | None) -> list[str]:
@@ -345,15 +308,13 @@ def build(target: date, dong: str = "자양3동", industry: str | None = None) -
     sec = [
         f"[대상 시점] {target.year}년 {target.month}월 {week}주 {WEEKDAYS[dow]}요일",
         "",
-        "[실시간 인구]",
+        f"[실시간 인구]  ※ {WEEKDAYS[dow]}요일 관측분",
         *summarize_population(rows, PARK, dow),
         *summarize_population(rows, STATION, dow),
         "",
-        "[12시간 예측]",
-        *summarize_forecast(rows, PARK),
-        "",
-        "[실시간 상권]  ※ 뚝섬역 기준 (뚝섬한강공원은 상권 데이터 없음)",
-        *summarize_commercial(rows),
+        f"[실시간 상권]  ※ 뚝섬역 기준, {WEEKDAYS[dow]}요일 관측분"
+        f" (뚝섬한강공원은 상권 데이터 없음)",
+        *summarize_commercial(rows, dow),
         "",
         "[날씨]",
         *summarize_weather(rows),
