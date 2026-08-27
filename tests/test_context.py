@@ -1,7 +1,7 @@
 """
 컨텍스트 빌더 출력 확인 — T11 검증용
 
-출력을 눈으로 보는 것에 더해, 기본 점검을 함께 수행한다.
+출력을 눈으로 보는 것에 더해, 구조와 원칙 위반을 함께 점검한다.
 이 문장이 (1) 상권분석가의 유일한 입력이므로 여기서 틀리면
 이후 단계가 모두 틀린 전제 위에서 돌아간다.
 
@@ -10,36 +10,40 @@
 import re
 from datetime import date, datetime, timedelta, timezone
 
-from context.builder import build, NO_DATA
+from context.builder import build, fetch_market, NO_DATA, _kst
 
 KST = timezone(timedelta(hours=9))
 
 # 있어야 할 구획
-SECTIONS = ["[대상 시점]", "[실시간 인구]", "[12시간 예측]",
-            "[실시간 상권]", "[날씨]", "[분기 매출 프로파일]", "[인근 행사"]
+SECTIONS = ["[대상 시점]", "[실시간 인구]", "[실시간 상권]",
+            "[날씨]", "[분기 매출 프로파일]", "[인근 행사"]
+
+# 인구·상권 모두 대상 시점과 같은 요일만 집계한다.
+# 섹션 제목에 요일이 명시되어야 집계 범위를 오해하지 않는다.
+DOW_MARK = re.compile(r"※ .*?[월화수목금토일]요일 관측분")
+
+# 날씨는 최근 관측치이지 대상 시점의 예보가 아니다.
+# 그 사실을 밝히지 않으면 해당 시점 날씨로 오해된다. (U12 연동 전까지)
+WEATHER_NOTE = re.compile(r"관측치\. 대상 시점의 예보가 아님")
 
 # 내부 계산값이 노출되면 안 된다 (예: "평균 2.6/4")
 # LLM 이 해석할 맥락이 없어 판단에 쓰이지 못한다.
 RAW_SCORE = re.compile(r"\d+\.\d+\s*/\s*\d+|평균\s*\d+\.\d+")
 
-# 최고·최저 표기 줄 — 등급 이름이 반드시 함께 있어야 한다.
-# "가장 혼잡"만 쓰면 실제로는 '여유' 수준인데도 붐비는 것으로 읽힌다.
-EXTREME_LINE = re.compile(r"관측 구간 중 가장 (\S+)")
+# 구간 분포 표기 — 4단계를 항상 모두 적는다
+DIST_LINE = re.compile(r"(\d{2}-\d{2})시 관측 (\d+)건 — ((?:'[^']+' \d+(?: / )?)+)")
 
-# 구간 표기 — 두 형식을 허용한다
-#   최빈값 과반  : 06-11시 '여유' (6건 중 5건) / (6건 전부)
-#   과반 미달    : 14-17시 관측 2건 — '붐빔' 1 / '보통' 1
-BAND_GRADE = re.compile(r"^\s*(\d{2}-\d{2})시 (?:관측 \d+건 — )?'")
+# 코드가 낸 판정은 (참고) 로 분리해 제시한다
+REF_LINE = re.compile(r"\(참고\)")
 
-# 대표값 표기에서 근거 비율이 빠지면 안 된다
-REP_GRADE = re.compile(r"'[^']+' \((\d+)건 (?:전부|중 (\d+)건)\)")
+# 판정성 표현. (참고) 밖에 나오면 코드가 결론을 서술한 것이다.
+VERDICT = re.compile(r"가장 (?:혼잡|한산|분주)|차이 없음|전 구간")
 
-# 구간 간 차이가 없을 때의 표기
-NO_DIFF = re.compile(r"시간대에 따른 (?:뚜렷한 )?차이")
-
-# 등급 이름은 항상 작은따옴표로 감싼다.
-# 이 표기가 없으면 "가장 혼잡"처럼 최상급만 남아 실제 수준을 알 수 없다.
-HAS_GRADE = re.compile(r"'[^']+'")
+# (참고) 순위 줄에는 판정 근거가 된 관측 건수를 함께 적는다.
+# 6건 평균과 17건 평균을 같은 자격으로 비교할 수 없다.
+REF_RANK = re.compile(r"\(참고\) 구간 평균 기준 가장 \S+ (\d{2}-\d{2})시\((\d+)건\)"
+                      r" / 가장 \S+ (\d{2}-\d{2})시\((\d+)건\)")
+REF_ANY_RANK = re.compile(r"\(참고\) 구간 평균 기준")
 
 
 def check(text: str) -> list[str]:
@@ -49,6 +53,16 @@ def check(text: str) -> list[str]:
     for sec in SECTIONS:
         if sec not in text:
             issues.append(f"구획 누락: {sec}")
+
+    # 인구·상권 섹션에 집계 요일이 표시되어야 한다
+    for line in text.splitlines():
+        if line.startswith("[실시간 인구]") or line.startswith("[실시간 상권]"):
+            if not DOW_MARK.search(line):
+                issues.append(f"집계 요일 미표시: {line.strip()[:40]}")
+
+    # 날씨에 관측 시점 단서가 있어야 한다
+    if "기온" in text and not WEATHER_NOTE.search(text):
+        issues.append("날씨 출처 미표시 — 최근 관측치임을 밝혀야 함")
 
     if "{" in text or "}" in text:
         issues.append("치환되지 않은 중괄호가 남아 있음")
@@ -60,67 +74,30 @@ def check(text: str) -> list[str]:
     if hits:
         issues.append(f"내부 계산값 노출: {hits[:3]} — 등급 이름으로 표기할 것")
 
-    # 판단 근거 건수를 밝히는 것이 이번 설계의 핵심 원칙이다
+    # 판단 근거 건수를 밝히는 것이 핵심 원칙이다
     if "건 관측" not in text and "관측 " not in text:
         issues.append("관측 건수 표기 누락 — 판단 근거를 밝혀야 함")
 
-    # 최고·최저 표기에 등급 이름이 빠지면 안 된다
-    for line in text.splitlines():
-        if EXTREME_LINE.search(line) and not BAND_GRADE.match(line):
-            issues.append(f"등급 이름 누락: {line.strip()[:40]}")
+    # 4단계를 모두 적어야 한다.
+    # 0건 등급을 생략하면 관측이 0인지 항목이 누락된 것인지 구분되지 않는다.
+    for m in DIST_LINE.finditer(text):
+        band, total = m.group(1), int(m.group(2))
+        grades = re.findall(r"'([^']+)' (\d+)", m.group(3))
+        if len(grades) != 4:
+            issues.append(f"{band}시 등급 4단계 미표기 ({len(grades)}개)")
+        s_cnt = sum(int(c) for _, c in grades)
+        if s_cnt != total:
+            issues.append(f"{band}시 건수 불일치 (분포 합 {s_cnt} vs 표기 {total})")
 
-    # 차이 없음 표기에도 등급 이름 또는 분포가 있어야 한다
+    # 코드가 결론을 문장으로 내면 안 된다. (참고) 로만 제시한다.
     for line in text.splitlines():
-        if NO_DIFF.search(line) and not HAS_GRADE.search(line):
-            issues.append(f"등급 이름 누락: {line.strip()[:40]}")
+        if VERDICT.search(line) and not REF_LINE.search(line):
+            issues.append(f"코드가 결론 서술: {line.strip()[:40]}")
 
-    # 대표 등급은 최빈값이 과반일 때만 세운다.
-    # 과반에 못 미치는데 대표값으로 표기되면 근거가 약한 단정이 된다.
-    for m in REP_GRADE.finditer(text):
-        total = int(m.group(1))
-        top = int(m.group(2)) if m.group(2) else total
-        if top * 2 <= total:
-            issues.append(f"과반 미달인데 대표값 표기: {m.group(0)}")
-
-    # 최고·최저의 대표 등급이 같으면 대비가 성립하지 않는다.
-    # "'여유'인데 가장 혼잡"으로 읽혀 오해를 부른다.
-    owner2 = None
-    pair: dict[str, dict[str, str]] = {}
+    # (참고) 순위 줄에 관측 건수가 빠지면 표본 크기를 알 수 없다.
     for line in text.splitlines():
-        if line.startswith("- "):
-            owner2 = line[2:].split(":")[0].strip()
-            continue
-        # 대표값 형식일 때만 비교한다.
-        # 분포 형식("관측 4건 — '분주한' 2 / '바쁜' 1 ...")은 대표 등급이 없으므로
-        # 첫 등급을 대표값으로 오인하면 안 된다.
-        e = EXTREME_LINE.search(line)
-        g = REP_GRADE.search(line)
-        if e and g and owner2 and not NO_DIFF.search(line):
-            grade = g.group(0).split("'")[1]
-            pair.setdefault(owner2, {})[e.group(1)] = grade
-    for own, d in pair.items():
-        if len(d) == 2 and len(set(d.values())) == 1:
-            issues.append(f"대비 무의미: [{own}] 최고·최저 모두 '{next(iter(d.values()))}'")
-
-    # 같은 항목 안에서 같은 구간이 최고이자 최저로 표기되면 대비가 무의미하다.
-    # 서로 다른 항목(뚝섬역 / 한식 등)에서 같은 구간이 나오는 것은 정상이므로
-    # 반드시 항목 단위로 묶어서 본다.
-    owner = None
-    per_owner: dict[str, dict[str, set]] = {}
-    for line in text.splitlines():
-        if line.startswith("- "):
-            owner = line[2:].split(":")[0].strip()
-            continue
-        if NO_DIFF.search(line):
-            continue
-        m, e = BAND_GRADE.match(line), EXTREME_LINE.search(line)
-        if m and e and owner:
-            per_owner.setdefault(owner, {}).setdefault(m.group(1), set()).add(e.group(1))
-    for own, bands in per_owner.items():
-        for band, words in bands.items():
-            if len(words) > 1:
-                issues.append(
-                    f"동일 구간 중복 표기: [{own}] {band}시가 {'·'.join(words)} 양쪽")
+        if REF_ANY_RANK.search(line) and not REF_RANK.search(line):
+            issues.append(f"(참고) 순위에 관측 건수 누락: {line.strip()[:50]}")
 
     n_empty = text.count(NO_DATA)
     if n_empty:
@@ -153,10 +130,34 @@ def run(label: str, target: date) -> None:
     print()
 
 
+def busiest_weekday_date() -> tuple[date, int]:
+    """
+    수집분이 가장 많은 요일의 가장 최근 날짜를 찾는다.
+
+    오늘 날짜로 확인하면 요일에 따라 출력이 비어 있을 수 있어
+    형식을 제대로 볼 수 없다. 데이터가 있는 요일로 확인한다.
+
+    주의: DB 상태에 따라 결과가 달라지므로 재현성이 없다.
+          어느 요일을 골랐는지 함께 출력한다.
+    """
+    rows = fetch_market()
+    if not rows:
+        return datetime.now(KST).date(), 0
+    cnt: dict[int, int] = {}
+    for r in rows:
+        dow = _kst(r["collected_at"]).weekday()
+        cnt[dow] = cnt.get(dow, 0) + 1
+    best = max(cnt, key=cnt.get)
+    today = datetime.now(KST).date()
+    back = (today.weekday() - best) % 7
+    return today - timedelta(days=back), cnt[best]
+
+
 if __name__ == "__main__":
     today = datetime.now(KST).date()
     friday = today + timedelta(days=(4 - today.weekday()) % 7)
+    busy, n = busiest_weekday_date()
 
-    run("오늘", today)
+    run(f"수집분이 가장 많은 요일 ({n}건)", busy)
     run("이번 주 금요일", friday)
     run("2차 점포 방문일", date(2026, 8, 31))
