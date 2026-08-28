@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS beers (
   flavor_notes  TEXT[],                    -- {시트러스, 쌉쌀함}
   brewery       TEXT,
   is_alcohol    BOOLEAN NOT NULL DEFAULT true,
+  is_fixed      BOOLEAN NOT NULL DEFAULT false,
   valid_from    DATE NOT NULL,
   valid_to      DATE,                      -- NULL = 현재 판매 중
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()

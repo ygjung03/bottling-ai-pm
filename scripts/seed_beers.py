@@ -20,6 +20,11 @@ from db.client import get_client
 
 VALID_FROM = "2026-08-21"   # 자료요청서 회신일
 
+# 대표님이 자료요청서 A-1 에서 굵게 표시하신 고정 메뉴.
+# 나머지는 월 1회 3종씩 교체된다. 셀프탭 12개 중 고정 5 + 교체 7 구조다.
+FIXED = {"(논알콜) 체리에이드", "바틀링 라거", "37디그리스라거",
+         "카이저돔 켈러비어", "빅웨이브"}
+
 # 스타일·도수·맛 특성은 대표님 회신 그대로다.
 # 우리가 짐작해 적어둔 것을 대표님이 고쳐주신 결과이므로
 # 임의로 다듬지 않는다. 페어링 판단의 유일한 근거다.
@@ -56,6 +61,7 @@ def rows() -> list[dict]:
             "abv": abv,
             "flavor_notes": notes,
             "is_alcohol": abv > 0,
+            "is_fixed": name in FIXED,
             "valid_from": VALID_FROM,
             "valid_to": None,
         })
@@ -65,12 +71,14 @@ def rows() -> list[dict]:
 def main() -> None:
     data = rows()
 
-    print(f"적재 대상 {len(data)}종\n")
-    print(f"  {'맥주':22} {'원/ml':>6} {'스타일':10} {'도수':>5}  맛 특성")
+    print(f"적재 대상 {len(data)}종 (고정 {sum(r['is_fixed'] for r in data)}종)\n")
+    print(f"  {'맥주':22} {'원/ml':>6} {'스타일':10} {'도수':>5} {'구분':>6}  맛 특성")
     for r in data:
         mark = "  ★" if r["name"] in UNCERTAIN else ""
+        kind = "고정" if r["is_fixed"] else "교체"
         print(f"  {r['name']:22} {r['price_per_ml']:>6} "
-              f"{r['style']:10} {r['abv']:>5}  {', '.join(r['flavor_notes'])}{mark}")
+              f"{r['style']:10} {r['abv']:>5} {kind:>6}  "
+              f"{', '.join(r['flavor_notes'])}{mark}")
 
     for name, why in UNCERTAIN.items():
         print(f"\n  ★ {name}: {why}")
