@@ -18,7 +18,16 @@ LLM 호출이 아닌 일반 코드다. 숫자 집계를 LLM에 맡기면 값이 
     (0건 등급도 생략하지 않는다. 누락과 구분되지 않아 오해를 부른다)
   - 내부 계산값(평균 2.6/4 등)을 노출하지 않는다.
     LLM 이 해석할 맥락이 없어 판단에 쓰이지 못한다
+  - 상권은 같은 CMRCL_TIME 을 한 번만 센다. 인구는 5분, 상권은 10분
+    주기로 갱신되는데 수집이 5분 간격이라 상권만 2배로 중복된다.
+    새벽에는 결제가 없어 90～240분간 갱신되지 않아 최대 6.5배가 된다.
+    거르지 않으면 2회 관측이 9건으로 집계되어 근거 건수가 무의미해진다
   - 판단 근거가 몇 건인지 함께 밝힌다
+  - 방문객 구성(연령·성별·상주비율)도 혼잡도와 같은 6구간으로 쪼갠다.
+    요일 전체로 묶으면 새벽과 저녁이 한 값이 되어 비상주 비율이
+    19～65%처럼 벌어져 대표값이 아무것도 말하지 못한다.
+    영업시간만 남기지도 않는다. 재료 납품은 시간대가 무관하고
+    콘텐츠 촬영은 낮에 하므로, 어느 구간이 쓸모 있는지는 LLM이 정한다
   - 없는 항목은 "데이터 없음"으로 명시. 누락하면 LLM이 지어낸다
   - 날씨 포함 (한강 상권에서 강수는 방문객을 좌우)
   - 상권 지표는 뚝섬역 기준임을 명시 (한강공원은 상권 데이터 없음)
@@ -197,6 +206,46 @@ def summarize_population(rows: list[dict], spot: str, target_dow: int) -> list[s
     return lines
 
 
+def _cmrcl_time(row: dict) -> str | None:
+    """
+    상권 데이터의 갱신 시각. raw 에만 있고 별도 컬럼이 없다.
+
+    수집기가 이 값을 파싱하지 않아 collected_at 에는 PPLTN_TIME 만 들어간다.
+    따라서 상권의 중복 여부는 raw 를 직접 봐야 판단할 수 있다.
+    """
+    c = (row.get("raw") or {}).get("LIVE_CMRCL_STTS")
+    if isinstance(c, list):
+        c = c[0] if c else None
+    return (c or {}).get("CMRCL_TIME")
+
+
+def _dedup_cmrcl(rows: list[dict]) -> list[dict]:
+    """
+    같은 CMRCL_TIME 을 한 번만 남긴다.
+
+    인구는 5분, 상권은 10분 주기로 갱신되는데(서울시 공식) 수집은 5분
+    간격이므로 상권 값이 정확히 2배로 저장된다. 새벽에는 결제가 없어
+    90～240분간 갱신되지 않아 최대 6.5배까지 중복된다.
+
+    걸러내지 않으면 '보통' 2회 관측이 9건으로 집계되어, 근거 건수를
+    함께 밝히는 이 파일의 규칙 자체가 무의미해진다.
+
+    CMRCL_TIME 이 없는 행은 판단할 수 없으므로 남긴다. 지우면 실제
+    관측을 잃지만, 남기면 최악의 경우 중복이 하나 섞이는 데 그친다.
+    """
+    seen: set[str] = set()
+    out = []
+    for r in rows:
+        t = _cmrcl_time(r)
+        if t is None:
+            out.append(r)
+            continue
+        if t not in seen:
+            seen.add(t)
+            out.append(r)
+    return out
+
+
 def summarize_commercial(rows: list[dict], target_dow: int) -> list[str]:
     """
     음식 중분류별 결제 현황.
@@ -205,13 +254,16 @@ def summarize_commercial(rows: list[dict], target_dow: int) -> list[str]:
     금요일 저녁의 결제 양상과 화요일 저녁은 다르므로, 요일을 섞으면
     둘 중 어느 쪽도 아닌 값이 나온다.
 
+    같은 CMRCL_TIME 은 한 번만 센다. 갱신 주기가 인구보다 길어
+    거르지 않으면 표본이 2～6.5배로 부풀려진다.
+
     거래가 없는 카테고리는 응답에서 아예 빠진다. 따라서 '관측 건수'와
     '어느 시간대에 관측되었는지'를 함께 제시한다.
     관측률만으로는 언제 빠졌는지 알 수 없어 잘못된 추론을 유발한다.
     """
-    st = [r for r in rows
-          if r["spot"] == STATION and r.get("food_pay")
-          and _kst(r["collected_at"]).weekday() == target_dow]
+    st = _dedup_cmrcl([r for r in rows
+                       if r["spot"] == STATION and r.get("food_pay")
+                       and _kst(r["collected_at"]).weekday() == target_dow])
     if not st:
         return [f"- 해당 요일 관측 {NO_DATA}"]
 
@@ -233,6 +285,143 @@ def summarize_commercial(rows: list[dict], target_dow: int) -> list[str]:
         lines.append(f"- {cat}: 관측 {n}건")
         lines += _band_lines(list(zip(hr_by_cat[cat], lv_by_cat[cat])),
                              PAY_RANK, "분주", "한산")
+    return lines
+
+
+def _pct(vals: list[float]) -> tuple[int, int, int, int] | None:
+    """
+    비율값의 평균·최소·최대와 유효 관측 수를 돌려준다.
+
+    평균을 쓴다. 연령대마다 중앙값을 따로 내면 서로 다른 회차의 값이
+    섞여 합이 61%나 101%가 된다. 각 회차의 합이 100 이므로
+    평균의 합은 항상 100 이 되어 비중으로 읽을 수 있다.
+
+    평균은 이상치에 끌려가지만, 그 이상치는 관측이 적어서가 아니라
+    결제 자체가 1～2건이라 생긴다. 관측을 늘려도 사라지지 않으므로
+    감추는 대신 결제 건수를 함께 밝혀 판단을 맡긴다.
+
+    유효 수를 함께 돌려주는 이유는, 전체 관측 중 몇 건이 실제로 계산에
+    쓰였는지 밝히기 위해서다. None 인 행이 빠진 것을 모르면 몇 건으로
+    낸 값인지 알 수 없다.
+    """
+    v = sorted(x for x in vals if x is not None)
+    if not v:
+        return None
+    return round(sum(v) / len(v)), round(v[0]), round(v[-1]), len(v)
+
+
+def _top_ages(rows: list[dict], key: str, prefix: str, top: int = 3) -> str | None:
+    """
+    연령 비중 상위 N개를 큰 순서로 적는다.
+
+    8구간(0～70대)을 모두 적으면 길기만 하고 읽히지 않는다.
+    상위 3개면 방문객의 주축이 드러나고, 나머지는 합계로 묶어
+    생략이 아니라 집계임을 밝힌다.
+    """
+    avg: dict[int, int] = {}
+    for a in (0, 10, 20, 30, 40, 50, 60, 70):
+        got = _pct([(r.get(key) or {}).get(f"{prefix}{a}") for r in rows])
+        if got:
+            avg[a] = got[0]
+    if not avg:
+        return None
+
+    order = sorted(avg, key=lambda a: -avg[a])
+    parts = [f"{a}대 {avg[a]}%" for a in order[:top]]
+    rest = sum(avg[a] for a in order[top:])
+    if rest:
+        parts.append(f"그 외 합 {rest}%")
+    return " / ".join(parts)
+
+
+def _pay_total(rows: list[dict]) -> str:
+    """
+    구간의 결제 건수 합계. 소비 비중이 몇 건에 근거한 값인지 밝힌다.
+
+    업종별 범위(5～11건)로 적지 않는다. 소비 비중 자체가 업종
+    구분 없는 지점 전체 값이기 때문이다.
+    """
+    total = sum(v["count"] for r in rows
+                for v in (r.get("food_pay") or {}).values()
+                if v.get("count") is not None)
+    return f"  (결제 {total}건)" if total else ""
+
+
+def _visitor_line(rows: list[dict], key: str, prefix: str,
+                  label: str, indent: str, total: int) -> list[str]:
+    """
+    한 구간의 연령·성별 한 묶음.
+
+    total 은 이 구간의 전체 관측 수다. _pct 가 센 유효 수(n)가 그보다
+    적으면 값이 없는 행이 섞여 있었다는 뜻이므로 n/total 을 함께 적는다.
+
+    현재 데이터에서는 필드가 통째로 오거나 통째로 빠져 아직 발동한 적이
+    없다. 남의 API 이므로 언제 일부만 빠질지 알 수 없어 남겨둔다.
+    """
+    out = []
+    age = _top_ages(rows, key, prefix)
+    if age:
+        out.append(f"{indent}{label}연령 {age}")
+
+    male = _pct([(r.get(key) or {}).get("male") for r in rows])
+    if male:
+        mid, _, _, n = male
+        note = f" (유효 {n}/{total}건)" if n < total else ""
+        out.append(f"{indent}{label}성별 남 {mid}% / 여 {100 - mid}%{note}")
+    return out
+
+
+def summarize_visitors(rows: list[dict], spot: str, target_dow: int) -> list[str]:
+    """
+    방문객 구성 — 시간대별 상주 비율, 연령·성별, 소비 연령·성별.
+
+    혼잡도와 같은 6구간으로 쪼갠다. 요일 전체로 묶으면 새벽과 저녁이
+    한 값이 되어 비상주 비율이 19～65% 처럼 벌어졌다.
+    그 폭이면 대표값 하나로는 아무것도 말하지 못한다.
+
+    영업시간(15시 이후)만 남기지 않는 이유는, 협력사 사정이 다르기
+    때문이다. 재료 납품은 시간대가 무관하고 콘텐츠 촬영은 낮에 한다.
+    어느 구간이 쓸모 있는지는 코드가 아니라 LLM 이 판단한다.
+
+    인구 비중과 소비 비중을 나란히 적는다. 뚝섬역에서 40대는
+    인구 16% / 소비 31% 로 엇갈리는데, 한쪽만 보면 이것이 보이지 않는다.
+    """
+    same = [r for r in rows
+            if r["spot"] == spot and _kst(r["collected_at"]).weekday() == target_dow]
+    if not same:
+        return [f"- {spot}: 해당 요일 관측 {NO_DATA}"]
+
+    by_band: dict[str, list[dict]] = defaultdict(list)
+    for r in same:
+        by_band[_band(_kst(r["collected_at"]).hour)].append(r)
+
+    lines = [f"- {spot}: {WEEKDAYS[target_dow]}요일 {len(same)}건 관측"]
+
+    for name in [n for _, _, n in TIMEBANDS if n in by_band]:
+        grp = by_band[name]
+        n_obs = len(grp)
+        lines.append(f"    {name}시 관측 {n_obs}건")
+
+        nr = _pct([(r.get("ppltn_rates") or {}).get("non_resident") for r in grp])
+        if nr:
+            mid, lo, hi, _ = nr
+            span = f" (범위 {lo}～{hi}%)" if lo != hi else ""
+            lines.append(f"        비상주 {mid}%{span}")
+
+        lines += _visitor_line(grp, "ppltn_rates", "age_", "", " " * 8, n_obs)
+
+        # 소비 구성은 상권 데이터가 있는 지점에만 존재한다.
+        # 상권은 갱신 주기가 길어 같은 값이 반복 저장되므로,
+        # CMRCL_TIME 으로 걸러야 실제 관측 수에 근거한 평균이 나온다.
+        cm = _dedup_cmrcl([r for r in grp if r.get("cmrcl_rates")])
+        if cm:
+            out = _visitor_line(cm, "cmrcl_rates", "age_", "소비 ",
+                                " " * 8, len(cm))
+            if out:
+                out[0] += _pay_total(cm)
+            lines.append(f"        (소비는 {n_obs}건 중 상권 갱신 {len(cm)}건 기준)")
+            lines += out
+
     return lines
 
 
@@ -315,6 +504,11 @@ def build(target: date, dong: str = "자양3동", industry: str | None = None) -
         f"[실시간 상권]  ※ 뚝섬역 기준, {WEEKDAYS[dow]}요일 관측분"
         f" (뚝섬한강공원은 상권 데이터 없음)",
         *summarize_commercial(rows, dow),
+        "",
+        f"[방문객 구성]  ※ {WEEKDAYS[dow]}요일 관측분"
+        f" — 각 비율은 관측 평균. '소비'는 결제 기준으로 인구 비중과 별개",
+        *summarize_visitors(rows, PARK, dow),
+        *summarize_visitors(rows, STATION, dow),
         "",
         "[날씨]",
         *summarize_weather(rows),

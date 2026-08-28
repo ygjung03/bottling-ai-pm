@@ -15,12 +15,25 @@ from context.builder import build, fetch_market, NO_DATA, _kst
 KST = timezone(timedelta(hours=9))
 
 # 있어야 할 구획
-SECTIONS = ["[대상 시점]", "[실시간 인구]", "[실시간 상권]",
+SECTIONS = ["[대상 시점]", "[실시간 인구]", "[실시간 상권]", "[방문객 구성]",
             "[날씨]", "[분기 매출 프로파일]", "[인근 행사"]
 
 # 인구·상권 모두 대상 시점과 같은 요일만 집계한다.
 # 섹션 제목에 요일이 명시되어야 집계 범위를 오해하지 않는다.
 DOW_MARK = re.compile(r"※ .*?[월화수목금토일]요일 관측분")
+
+# 연령 비중 줄. 상위 3개 + "그 외 합" 형태이며 합이 100 이어야 한다.
+#
+# 연령대마다 중앙값을 따로 내면 서로 다른 회차의 값이 섞여
+# 합이 61% 나 101% 가 된다. 평균으로 바꾼 뒤 합이 100 이 되었으므로,
+# 다시 벗어나면 집계 방식이 되돌아간 것이다.
+AGE_LINE = re.compile(r"(소비 )?연령 ((?:\d+대|그 외 합) \d+%"
+                      r"(?: / (?:\d+대|그 외 합) \d+%)*)")
+AGE_ITEM = re.compile(r"(?:\d+대|그 외 합) (\d+)%")
+
+# 소비는 인구와 표본이 다르다. 상권 갱신 주기가 길어 중복을 걷어내면
+# 구간 관측 수보다 적어진다. 그 사실을 밝히지 않으면 같은 근거로 읽힌다.
+CONSUME_BASE = re.compile(r"\(소비는 (\d+)건 중 상권 갱신 (\d+)건 기준\)")
 
 # 날씨는 최근 관측치이지 대상 시점의 예보가 아니다.
 # 그 사실을 밝히지 않으면 해당 시점 날씨로 오해된다. (U12 연동 전까지)
@@ -98,6 +111,33 @@ def check(text: str) -> list[str]:
     for line in text.splitlines():
         if REF_ANY_RANK.search(line) and not REF_RANK.search(line):
             issues.append(f"(참고) 순위에 관측 건수 누락: {line.strip()[:50]}")
+
+    # 연령 비중의 합이 100 에서 벗어나면 집계 방식이 되돌아간 것이다.
+    #
+    # 각 회차의 비중 합이 100 이므로 평균의 합도 100 이 된다.
+    # 다만 항목마다 정수로 반올림하므로 항목당 최대 0.5 의 오차가 생긴다.
+    # 연령은 최대 8구간(0～70대)이라 이론상 96～104 를 벗어날 수 없다.
+    for m in AGE_LINE.finditer(text):
+        total = sum(int(v) for v in AGE_ITEM.findall(m.group(2)))
+        if not 96 <= total <= 104:
+            kind = "소비 연령" if m.group(1) else "연령"
+            issues.append(f"{kind} 비중 합 {total}% — 평균이 아닌 방식으로 집계됨")
+
+    # 소비 표본은 중복을 걷어낸 값이므로 구간 관측 수를 넘을 수 없다.
+    for m in CONSUME_BASE.finditer(text):
+        n_obs, n_cm = int(m.group(1)), int(m.group(2))
+        if n_cm > n_obs:
+            issues.append(f"소비 표본이 관측 수 초과 ({n_cm} > {n_obs})")
+
+    # 소비 줄은 반드시 표본 표기를 동반해야 한다.
+    # 인구와 근거 크기가 다른데 밝히지 않으면 같은 자격으로 읽힌다.
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if "소비 연령" not in line:
+            continue
+        prev = lines[i - 1] if i else ""
+        if not CONSUME_BASE.search(prev):
+            issues.append(f"소비 표본 표기 누락: {line.strip()[:40]}")
 
     n_empty = text.count(NO_DATA)
     if n_empty:
