@@ -137,9 +137,26 @@ def _band_lines(pairs: list[tuple[int, int]], rank_map: dict[str, int],
 # 조회
 # ══════════════════════════════════════════
 
+# 조회할 컬럼.
+#
+# raw 를 통째로 받으면 안 된다. 행당 수십 KB 라 280행에 10 MB 를 넘고,
+# 실측에서 select("*") 1.41초 / 10,535 KB 대 아래 조회 0.04초 / 142 KB 로
+# 응답의 98.6% 가 raw 였다. 행이 쌓이면서 statement timeout(57014)이
+# 실제로 발생하기 시작했다.
+#
+# raw 에서 필요한 것은 CMRCL_TIME 하나뿐이므로 PostgREST 의 JSONB
+# 문법으로 그것만 뽑아 cmrcl_time 이라는 이름으로 받는다.
+# LIVE_CMRCL_STTS 는 객체로 저장되어 있어 배열 인덱스(->0)를 쓰지 않는다.
+COLUMNS = (
+    "collected_at,spot,congestion_level,ppltn_rates,cmrcl_rates,"
+    "food_pay,temp,humidity,precpt_type,"
+    "cmrcl_time:raw->LIVE_CMRCL_STTS->>CMRCL_TIME"
+)
+
+
 def fetch_market(weeks: int = 4) -> list[dict]:
     """
-    최근 N주 market_context 전체.
+    최근 N주 market_context.
 
     [주의] limit 을 명시하지 않으면 PostgREST 기본 상한(1,000행)에 걸린다.
       예외도 경고도 없이 결과만 조용히 잘리므로, 집계가 틀린 줄 모르고 쓰게 된다.
@@ -148,7 +165,7 @@ def fetch_market(weeks: int = 4) -> list[dict]:
     """
     since = (datetime.now(KST) - timedelta(weeks=weeks)).isoformat()
     return (get_client().table("market_context")
-            .select("*").gte("collected_at", since)
+            .select(COLUMNS).gte("collected_at", since)
             .order("collected_at", desc=True)
             .limit(100000).execute().data or [])
 
@@ -208,15 +225,12 @@ def summarize_population(rows: list[dict], spot: str, target_dow: int) -> list[s
 
 def _cmrcl_time(row: dict) -> str | None:
     """
-    상권 데이터의 갱신 시각. raw 에만 있고 별도 컬럼이 없다.
+    상권 데이터의 갱신 시각.
 
     수집기가 이 값을 파싱하지 않아 collected_at 에는 PPLTN_TIME 만 들어간다.
-    따라서 상권의 중복 여부는 raw 를 직접 봐야 판단할 수 있다.
+    별도 컬럼이 없으므로 조회 시 raw 에서 뽑아 온다(COLUMNS 참조).
     """
-    c = (row.get("raw") or {}).get("LIVE_CMRCL_STTS")
-    if isinstance(c, list):
-        c = c[0] if c else None
-    return (c or {}).get("CMRCL_TIME")
+    return row.get("cmrcl_time")
 
 
 def _dedup_cmrcl(rows: list[dict]) -> list[dict]:
