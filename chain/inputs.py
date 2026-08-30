@@ -15,6 +15,8 @@ runner.run() 은 모든 입력을 문자열로 받는다. 그 문자열을 만�
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 from db.client import get_client
 
 NO_DATA = "데이터 없음"
@@ -57,6 +59,18 @@ KITCHEN = """[조리 여건]
 - 붕어빵기계: 대여. 자차 이동 가능. 예약 1주 전 필요
 - 화덕피자오븐 / 어묵중탕기 / 생맥주 셀프탭 / 생맥주 디스펜서:
   보유. 자차 이동 가능 (협력사 매장으로 옮겨 진행할 수 있다)"""
+
+# 바틀링 SNS 자산 — (3) 마케터 입력.
+#
+# 아직 받지 못했다. 자료요청서 A-4 는 협력사 SNS 만 물었고
+# 바틀링 자신의 계정 정보는 항목에 없었다.
+# 8/31 2차 방문에서 계정명·팔로워 수·주 콘텐츠 형식·반응 좋은 유형을 받는다.
+#
+# 그럴듯한 값을 지어넣지 않는다. 팔로워 수를 임의로 채우면
+# (3)이 그 숫자에 맞춰 도달 목표를 세우고, (4)가 그것을 근거로
+# 순위를 매긴다. 없는 근거 위에 결론이 쌓인다.
+BOTTLING_SNS = f"{NO_DATA} (8/31 방문에서 확인 예정)"
+
 
 # 협력사 시드 데이터 — T21 협력사 입력 폼 전까지 쓰는 가상 값.
 #
@@ -214,6 +228,34 @@ def build_partner_blockers(partner: dict | None) -> str:
     return "\n".join(f"- {x}" for x in items)
 
 
+def build_events(target: date, days: int = 30) -> str:
+    """
+    대상 시점 이후 N일 내 행사. (3) 마케터가 연계 여부를 판단한다.
+
+    A 담당 T10 이 적재 전이라 지금은 비어 있다.
+    citydata 의 CULTURALEVENTINFO 로 대체할 수 있는지 확인했으나
+    두 지점 모두 0건이었다. 8/29 광진 뮤직 페스타도 잡히지 않아
+    구청 주최 행사는 서울시 API 에서 누락되는 것으로 보인다.
+    """
+    try:
+        rows = (get_client().table("events").select("*")
+                .gte("end_date", target.isoformat())
+                .lte("start_date", (target + timedelta(days=days)).isoformat())
+                .order("start_date").limit(5).execute().data or [])
+    except Exception:
+        return f"{NO_DATA} (적재 전)"
+
+    if not rows:
+        return f"{NO_DATA} (적재 전)"
+
+    lines = []
+    for e in rows:
+        dist = f", 약 {e['distance_m']}m" if e.get("distance_m") else ""
+        lines.append(f"- {e.get('title')} / {e.get('start_date')}～"
+                     f"{e.get('end_date')} / {e.get('place')}{dist}")
+    return "\n".join(lines)
+
+
 def build_partner_sns(partner: dict | None) -> str:
     """(3) 마케터 입력. 팔로워 규모에 맞는 목표를 세우는 근거다."""
     if not partner:
@@ -226,11 +268,16 @@ def build_partner_sns(partner: dict | None) -> str:
 
 
 if __name__ == "__main__":
+    from datetime import datetime, timezone
+
     print("[바틀링 맥주 라인업]")
     print(build_beer_list())
     print()
     print("[바틀링 주방 여건]")
     print(KITCHEN)
+    print()
+    print("[바틀링 SNS]")
+    print(BOTTLING_SNS)
 
     p = fetch_partner()
     print()
@@ -242,3 +289,7 @@ if __name__ == "__main__":
     print()
     print("[협력사 SNS]")
     print(build_partner_sns(p))
+    print()
+    print("[인근 행사 (30일 내)]")
+    today = datetime.now(timezone(timedelta(hours=9))).date()
+    print(build_events(today))
