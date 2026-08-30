@@ -39,6 +39,7 @@ def run(context: str, target_date: str, beer_list: str, kitchen: str,
 
     p4 = step(4, "최종 검토 중...", "p4_consultant",
               p1_output=p1, p2_output=p2, p3_output=p3,
+              beer_list=beer_list,
               rec_reason=rec_reason, constraints=constraints, fewshot=fewshot)
 
     return {"p1": p1, "p2": p2, "p3": p3, "final": p4, "latency_ms": total_ms}
