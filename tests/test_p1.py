@@ -11,6 +11,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 
 from chain.gemini import call
+from chain.inputs import fetch_partner
 from chain.loader import build
 from context.builder import build as build_context, fetch_market, _kst
 
@@ -111,7 +112,11 @@ def run(label: str, target: date) -> None:
     print(f"{label} — {target} ({dow})")
     print("=" * 64)
 
-    ctx = build_context(target)
+    # 협력사 업종에 맞는 매출 프로파일을 싣는다.
+    # 협력사가 없으면 바틀링 업종만 실린다.
+    partner = fetch_partner()
+    ctx = build_context(target,
+                        partner_category=(partner or {}).get("category"))
     prompt = build("p1_analyst", context=ctx, target_date=target.isoformat())
     print(f"프롬프트 {len(prompt)}자 (컨텍스트 {len(ctx)}자)\n")
 

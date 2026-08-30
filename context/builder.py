@@ -64,6 +64,29 @@ PAY_RANK = {"한산한": 1, "보통": 2, "바쁜": 3, "분주한": 4}
 TIMEBANDS = [(0, 6, "00-06"), (6, 11, "06-11"), (11, 14, "11-14"),
              (14, 17, "14-17"), (17, 21, "17-21"), (21, 24, "21-24")]
 
+# 바틀링의 업종. sales_profile.industry_name 값 그대로다.
+BOTTLING_INDUSTRY = "호프-간이주점"
+
+# partners.category → sales_profile.industry_name 매핑.
+#
+# 두 출처의 업종명이 다르다. 협력사는 사람이 고르는 분류(제과·디저트)이고
+# 매출 데이터는 공공데이터의 서비스 업종명(제과점)이다.
+#
+# 자양3동에 실재하는 43종 중 협업 후보가 될 만한 것만 적었다.
+# 피자 전용 업종은 없어 치킨전문점으로 대응한다(명세서 3-3의
+# "피자·튀김·그릴"에 해당). 협력사가 늘면 여기에 추가한다.
+INDUSTRY_MAP = {
+    "제과·디저트": "제과점",
+    "카페": "커피-음료",
+    "분식·스낵": "분식전문점",
+    "피자·튀김·그릴": "치킨전문점",
+    "한식": "한식음식점",
+    "중식": "중식음식점",
+    "일식": "일식음식점",
+    "양식": "양식음식점",
+    "패스트푸드": "패스트푸드점",
+}
+
 
 def _band(hour: int) -> str:
     for lo, hi, name in TIMEBANDS:
@@ -463,27 +486,60 @@ def summarize_weather(rows: list[dict]) -> list[str]:
             f"  ※ {when} 관측치. 대상 시점의 예보가 아님"]
 
 
-def summarize_sales(dong: str, industry: str | None) -> list[str]:
-    """sales_profile 축별 순위. 조합 데이터는 존재하지 않는다 (명세서 2-4)."""
-    rows = fetch_sales(dong, industry)
-    if not rows:
-        return [f"- {NO_DATA} (적재 전)"]
+def summarize_sales(dong: str, industries: list[str]) -> list[str]:
+    """
+    sales_profile 축별 순위. 조합 데이터는 존재하지 않는다 (명세서 2-4).
 
-    lines = []
-    for r in rows[:3]:
-        name = r.get("industry_name", "?")
+    업종을 지정해서 부른다. 지정하지 않으면 43종 중 앞의 몇 개가
+    순서대로 잘려 나가, 한식·중식처럼 협업과 무관한 업종이 실린다.
+    쓰이는 것은 바틀링 업종과 협력사 업종 둘뿐이다.
+
+    매출·건수는 분기를 모두 적고 비중은 최신 분기만 적는다.
+    금액에서 추세가 드러나므로 코드가 "증가/감소"를 판정할 필요가 없고,
+    비중은 실측상 분기별 차이가 작아(21-24시가 네 분기 내내 57～62%)
+    모두 적으면 길이만 늘어난다.
+    """
+    out = []
+    for ind in industries:
+        rows = fetch_sales(dong, ind)
+        if not rows:
+            out.append(f"- {ind}: {NO_DATA}")
+            continue
+
+        rows.sort(key=lambda r: str(r.get("quarter") or ""), reverse=True)
+        out.append(f"- {ind}")
+
+        for r in rows:
+            q = r.get("quarter") or "?"
+            amt, cnt = r.get("sales_amount"), r.get("sales_count")
+            if amt and cnt:
+                out.append(f"    {q}  매출 {amt:,}원 / {cnt:,}건"
+                           f" / 객단가 {amt // cnt:,}원")
+            else:
+                out.append(f"    {q}  매출 {NO_DATA}")
+
+        latest = rows[0]
         parts = []
         for label, key in [("요일", "weekday_ratio"), ("시간대", "timeband_ratio"),
-                           ("연령", "age_ratio"), ("성별", "gender_ratio")]:
-            d = r.get(key) or {}
+                           ("연령", "age_ratio")]:
+            d = {k: v for k, v in (latest.get(key) or {}).items() if v}
             if not d:
                 continue
             top = max(d, key=d.get)
             parts.append(f"{label} 최고 {top} {d[top]:.0%}")
-        amt, cnt = r.get("sales_amount"), r.get("sales_count")
-        unit = f", 객단가 {amt // cnt:,}원" if amt and cnt else ""
-        lines.append(f"- {name}: " + " / ".join(parts) + unit)
-    return lines or [f"- {NO_DATA}"]
+
+        # 성별은 두 값뿐이라 "최고"가 성립하지 않는다.
+        # 남 49% 를 "최고"로 적으면 과반으로 읽히지만 실제로는 여성이 많다.
+        g = latest.get("gender_ratio") or {}
+        if g:
+            order = [k for k in ("남", "여") if k in g] + \
+                    [k for k in g if k not in ("남", "여")]
+            parts.append("성별 " + " / ".join(f"{k} {g[k]:.0%}" for k in order))
+
+        if parts:
+            out.append(f"    ({latest.get('quarter')}) " + " / ".join(parts))
+
+    return out or [f"- {NO_DATA}"]
 
 
 def summarize_events(target: date) -> list[str]:
@@ -502,11 +558,23 @@ def summarize_events(target: date) -> list[str]:
 # 조립
 # ══════════════════════════════════════════
 
-def build(target: date, dong: str = "자양3동", industry: str | None = None) -> str:
-    """(1) 상권분석가에 넣을 컨텍스트 문장을 만든다."""
+def build(target: date, dong: str = "자양3동",
+          partner_category: str | None = None) -> str:
+    """
+    (1) 상권분석가에 넣을 컨텍스트 문장을 만든다.
+
+    partner_category 는 partners.category 값이다(예: "제과·디저트").
+    INDUSTRY_MAP 으로 매출 데이터의 업종명으로 옮긴다.
+    협력사가 정해지지 않았으면 바틀링 업종만 싣는다.
+    """
     rows = fetch_market()
     dow = target.weekday()
     week = (target.day - 1) // 7 + 1
+
+    inds = [BOTTLING_INDUSTRY]
+    mapped = INDUSTRY_MAP.get(partner_category or "")
+    if mapped and mapped != BOTTLING_INDUSTRY:
+        inds.append(mapped)
 
     sec = [
         f"[대상 시점] {target.year}년 {target.month}월 {week}주 {WEEKDAYS[dow]}요일",
@@ -527,8 +595,10 @@ def build(target: date, dong: str = "자양3동", industry: str | None = None) -
         "[날씨]",
         *summarize_weather(rows),
         "",
-        f"[분기 매출 프로파일]  ※ {dong} 기준",
-        *summarize_sales(dong, industry),
+        f"[분기 매출 프로파일]  ※ {dong} 기준. 공공데이터라 최신 분기가"
+        f" 현재보다 수개월 뒤처짐.",
+        "  성별·연령 비율은 미상 결제가 있어 합이 100%가 되지 않는다",
+        *summarize_sales(dong, inds),
         "",
         "[인근 행사 (30일 내)]",
         *summarize_events(target),

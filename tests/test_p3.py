@@ -151,7 +151,9 @@ def run(label: str, target: date) -> None:
           f"{'확보' if sns_known else '미확보'}\n")
 
     # (1) 상권분석가
-    ctx = build_context(target)
+    # 협력사 업종에 맞는 매출 프로파일을 싣기 위해 category 를 넘긴다.
+    # 넘기지 않으면 바틀링 업종만 실려 상대 업종의 매출 성향을 알 수 없다.
+    ctx = build_context(target, partner_category=partner.get("category"))
     try:
         p1, ms1 = call(build("p1_analyst", context=ctx,
                              target_date=target.isoformat()))

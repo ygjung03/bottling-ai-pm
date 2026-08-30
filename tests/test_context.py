@@ -10,6 +10,7 @@
 import re
 from datetime import date, datetime, timedelta, timezone
 
+from chain.inputs import fetch_partner
 from context.builder import build, fetch_market, NO_DATA, _kst
 
 KST = timezone(timedelta(hours=9))
@@ -151,7 +152,11 @@ def run(label: str, target: date) -> None:
     print(f"{label} — {target} ({['월','화','수','목','금','토','일'][target.weekday()]})")
     print("=" * 64)
     try:
-        text = build(target)
+        # 협력사 업종에 맞는 매출 프로파일을 싣는다.
+        # 넘기지 않으면 바틀링 업종만 실려 상대 업종을 볼 수 없다.
+        partner = fetch_partner()
+        text = build(target,
+                     partner_category=(partner or {}).get("category"))
     except Exception as e:
         print(f"  실패: {e}")
         return
