@@ -84,17 +84,22 @@ CREATE INDEX IF NOT EXISTS idx_mc_spot_time ON market_context (spot, collected_a
 
 -- 분기 매출 프로파일
 CREATE TABLE IF NOT EXISTS sales_profile (
-  id            BIGSERIAL PRIMARY KEY,
-  quarter       TEXT NOT NULL,          -- 2026Q2
-  area_code     TEXT NOT NULL,
-  industry      TEXT NOT NULL,
-  weekday       TEXT NOT NULL,
-  time_band     TEXT NOT NULL,
-  age_group     TEXT,
-  gender        TEXT,
-  sales_amount  BIGINT,
-  sales_ratio   NUMERIC(5,2),
-  UNIQUE (quarter, area_code, industry, weekday, time_band, age_group, gender)
+  id              BIGSERIAL PRIMARY KEY,
+  quarter         TEXT NOT NULL,        -- '2025Q4'
+  dong_code       TEXT NOT NULL,
+  dong_name       TEXT NOT NULL,        -- '자양3동'
+  industry_code   TEXT,
+  industry_name   TEXT NOT NULL,        -- '호프-간이주점'
+
+  sales_amount    BIGINT,               -- 당월_매출_금액
+  sales_count     INTEGER,
+
+  weekday_ratio   JSONB,
+  timeband_ratio  JSONB,
+  gender_ratio    JSONB,
+  age_ratio       JSONB,
+
+  UNIQUE (quarter, dong_code, industry_code)
 );
 
 -- 반경 점포 (월 배치)
