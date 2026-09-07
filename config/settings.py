@@ -19,15 +19,15 @@ SEOUL_API_KEY     = os.getenv("SEOUL_API_KEY", "")
 DATA_GO_KR_KEY    = os.getenv("DATA_GO_KR_KEY", "")
 SEOUL_CULTURE_KEY = os.getenv("SEOUL_CULTURE_KEY", "")
 GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 # --- Supabase ---
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 
 # --- 바틀링 ---
-BOTTLING_LAT = float(os.getenv("BOTTLING_LAT", "37.5305"))
-BOTTLING_LNG = float(os.getenv("BOTTLING_LNG", "127.0664"))
+BOTTLING_LAT = float(os.getenv("BOTTLING_LAT", "37.5318919"))
+BOTTLING_LNG = float(os.getenv("BOTTLING_LNG", "127.0679483"))
 
 # --- 수집 대상 지점 ---
 # TODO(A): 「서울시 주요 120장소 목록」에서 확인 후 실제 코드값으로 교체

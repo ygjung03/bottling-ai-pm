@@ -45,4 +45,4 @@ def load(csv_path, dong_names):
     return rows
 
 if __name__ == "__main__":
-    load("data/raw/sales_profile_2025.csv", dong_names=["자양3동"])
+    load("data/raw/sales_profile_2026.csv", dong_names=["자양3동"])
