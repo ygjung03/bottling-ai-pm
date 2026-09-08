@@ -1,32 +1,462 @@
 """
-기획안 생성 — 핵심 화면
+기획안 생성 — 핵심 화면 (T22, 명세서 4-2)
 
-체인 4단계를 순차 실행한다. 실측 약 17초이므로 동기 방식으로 충분하다.
-다만 무반응 구간이 길게 느껴지고 어느 단계에서 실패했는지 보여야 하므로
-단계별 진행 표시는 유지한다. (명세서 4-2, 6-2-3)
+체인 4단계를 순차 실행한다. 실측 약 20초라 동기 방식으로 충분하다.
+다만 무반응 구간이 길게 느껴지고 어느 단계에서 멈췄는지 보여야 하므로
+단계별 진행 표시는 유지한다 (명세서 6-2-3).
+
+[결과를 세션에 남긴다]
+  Streamlit 은 위젯을 건드릴 때마다 스크립트를 처음부터 다시 돌린다.
+  결과를 지역 변수에 두면 탭을 옮기거나 expander 를 여는 순간 사라지고,
+  20초짜리 체인이 다시 돈다. session_state 에 넣어야 한다.
+
+[미구현 기능은 화면에 흔적을 남기지 않는다]
+  메뉴 이미지(T43)·협업 제안서(T44)·채택 폐기(T23)는 아직 없다.
+  자리표시자를 두지 않고 그 영역째 감춘다. 대표님이 보는 화면에
+  개발 티켓 번호가 나오면 안 된다.
 """
+import json
+import re
+import subprocess
+from datetime import date, datetime, timedelta, timezone
+
 import _path  # noqa: F401  (프로젝트 루트를 sys.path 에 추가)
 import streamlit as st
 
 from app.auth import require_owner
+from chain.inputs import (BOTTLING_SNS, MARGIN_REF, NO_REC_REASON,
+                          NO_TREND_MENU, PAST_CASES, WEATHER_PREF,
+                          build_beer_list, build_constraints, build_events,
+                          build_partner_blockers, build_partner_resources,
+                          build_partner_sns)
+from chain.runner import run
+from context.builder import build as build_context
+from db.client import get_client
 
 st.set_page_config(page_title="기획안 생성", page_icon="📝", layout="wide")
 require_owner()
 
-st.title("기획안 생성")
+KST = timezone(timedelta(hours=9))
+SS_RESULT = "plan_result"      # 체인 출력
+SS_META = "plan_meta"          # 협력사·날짜 등 생성 조건
 
-c1, c2, c3 = st.columns([2, 2, 1])
-with c1:
-    st.selectbox("협력사", ["(선택)"], disabled=True)
-with c2:
-    st.date_input("실행 희망일")
-with c3:
+# 나란히 둔 상자의 높이를 서로 맞춘다.
+#
+# 높이를 숫자로 고정하지는 않는다. 내용이 넘치면 잘린 채로 보이는데
+# 스크롤이 되는지조차 알 수 없어, 더 있다는 사실을 모른다.
+#
+# 그래서 긴 쪽에 맞춰 늘린다. 컬럼(stColumn)은 이미 서로 같은 높이로
+# 늘어나 있으나 그 안의 테두리 상자가 제 내용만큼만 차지해서, 짧은 쪽이
+# 위로 붙어 보인다. 상자를 컬럼 높이만큼 채우면 둘이 같아진다.
+EQUAL_HEIGHT_BOXES = """
+<style>
+  [data-testid="stColumn"] [data-testid="stVerticalBlockBorderWrapper"] {
+    height: 100%;
+  }
+</style>
+"""
+
+
+# ══════════════════════════════════════════
+# 조회
+# ══════════════════════════════════════════
+
+@st.cache_data(ttl=60)
+def load_partners() -> list[dict]:
+    """협력사 목록. T21 폼이 붙으면 여기에 실제 입력이 쌓인다."""
+    try:
+        return (get_client().table("partners")
+                .select("id, name, category, wholesale_price")
+                .order("id").execute().data or [])
+    except Exception as e:
+        st.error(f"협력사 조회 실패: {e}")
+        return []
+
+
+def prompt_version() -> str | None:
+    """
+    prompts/ 디렉터리의 git 해시.
+
+    프롬프트를 고친 뒤 결과가 나빠졌을 때 어느 버전으로 만든 기획안인지
+    알아야 비교가 성립한다 (명세서 5-5). 실패해도 생성은 막지 않는다.
+    """
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD:prompts"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip() or None
+    except Exception:
+        return None
+
+
+def save_plan(result: dict, meta: dict) -> int | None:
+    """
+    생성 결과를 plans 에 남긴다.
+
+    체인이 중간에 끊기면 final_output 이 없다. 그 컬럼이 NOT NULL 이라
+    저장할 수 없으므로 건너뛴다. 화면에는 살아남은 단계를 그대로 보여준다.
+    """
+    if not result.get("final"):
+        return None
+    try:
+        rows = get_client().table("plans").insert({
+            "partner_id": meta["partner_id"],
+            "partner_source": "manual",     # 추천 엔진 미구현 — 직접 지정
+            "date_mode": "fixed",
+            "target_date": meta["target_date"],
+            "context_snapshot": meta["context"],
+            "p1_output": result["p1"],
+            "p2_output": result["p2"],
+            "p3_output": result["p3"],
+            "final_output": result["final"],
+            "auto_check": {"issues": result["issues"]},
+            "latency_ms": result["latency_ms"],
+            "prompt_version": meta["prompt_version"],
+        }).execute().data or []
+        return rows[0]["id"] if rows else None
+    except Exception as e:
+        st.warning(f"기획안은 만들어졌으나 저장에 실패했습니다 — {e}")
+        return None
+
+
+# ══════════════════════════════════════════
+# 생성
+# ══════════════════════════════════════════
+
+def generate(partner: dict, target: date) -> None:
+    """체인을 돌리고 결과를 세션에 남긴다."""
+    with st.status("기획안 생성 중...", expanded=True) as box:
+        step_slot = st.empty()
+
+        def on_step(n: int, label: str) -> None:
+            step_slot.write(f"({n}/4) {label}")
+
+        try:
+            ctx = build_context(target, partner_category=partner.get("category"))
+        except Exception as e:
+            box.update(label="상권 데이터를 읽지 못했습니다", state="error")
+            st.error(f"컨텍스트 빌더 실패: {e}")
+            return
+
+        result = run(
+            context=ctx,
+            target_date=target.isoformat(),
+            beer_list=build_beer_list(),
+            partner_res=build_partner_resources(partner),
+            partner_blockers=build_partner_blockers(partner),
+            margin_ref=MARGIN_REF,
+            weather_pref=WEATHER_PREF,
+            trend_menu=NO_TREND_MENU,
+            constraints=build_constraints(),
+            fewshot="(없음 — 채택 사례가 아직 없다)",
+            bottling_sns=BOTTLING_SNS,
+            partner_sns=build_partner_sns(partner),
+            events=build_events(target),
+            past_cases=PAST_CASES,
+            rec_reason=NO_REC_REASON,
+            on_step=on_step,
+        )
+
+        sec = result["latency_ms"] / 1000
+        if result["error"]:
+            box.update(label=f"체인이 중간에 멈췄습니다 ({sec:.0f}초)", state="error")
+        else:
+            box.update(label=f"완료 — {sec:.0f}초", state="complete")
+
+    meta = {
+        "partner_id": partner["id"],
+        "partner_name": partner["name"],
+        "target_date": target.isoformat(),
+        "context": ctx,
+        "prompt_version": prompt_version(),
+    }
+    meta["plan_id"] = save_plan(result, meta)
+    st.session_state[SS_RESULT] = result
+    st.session_state[SS_META] = meta
+
+
+# ══════════════════════════════════════════
+# 결과 표시
+# ══════════════════════════════════════════
+
+def _bullets(items) -> None:
+    for x in items or []:
+        st.write(f"- {x}")
+
+
+def _won(text) -> int | None:
+    """
+    "매입가 1,500원", "1500원 — 판매가 4000원 대비 38%" 에서 앞의 금액을 뽑는다.
+
+    "산출 불가" 나 숫자가 없는 문장이면 None. 모르는 값을 0 으로 두면
+    마진이 판매가 전액으로 잡혀 실제보다 좋아 보인다.
+    """
+    if text is None:
+        return None
+    if isinstance(text, (int, float)):
+        return int(text)
+    m = re.search(r"(\d[\d,]*)", str(text))
+    return int(m.group(1).replace(",", "")) if m else None
+
+
+def render_price(item: dict, per_ml) -> None:
+    """
+    가격을 역할 상자에서 떼어 따로 보인다.
+
+    판매가를 「협력사가 준비」 안에 두면 그 돈을 협력사가 받는 것처럼 읽힌다.
+    실제로 협력사가 받는 것은 매입가이고, 판매가는 손님에게 받는 돈이다.
+
+    마진을 코드가 계산해 보여준다. 대표님이 실행 여부를 정할 때 보는 가장
+    직접적인 수치인데, 세 숫자가 흩어져 있으면 직접 더하고 빼야 한다.
+
+    [맥주값을 합산하는 근거] 세트로 파는 구성이므로 손님은 두 값을 함께 낸다.
+    맥주는 바틀링 자체 상품이라 매입가가 없어 마진에 그대로 남는다.
+    """
+    food = item.get("판매가_제안")
+    beer_name = (item.get("페어링_맥주") or {}).get("메뉴명") or "페어링 맥주"
+    beer_price = int(per_ml * 500) if per_ml else None
+
+    # 1위는 (4)가 낸 제안 매입가가 더 정확하다. 2·3위는 (2)의 예상 원가뿐이다
+    deal = item.get("매입") or {}
+    cost = _won(deal.get("제안_매입가")) or _won(item.get("예상_원가"))
+
+    total = (food or 0) + (beer_price or 0)
+
+    st.markdown("##### 가격")
+
+    # 내역을 쌓고 합계를 아래에 둔다 (docs/ref/figma_세트구성.png).
+    # 항목이 흩어져 있으면 총액을 머릿속에서 더해야 한다.
+    with st.container(border=True):
+        for label, value in [(item.get("메뉴명") or "메뉴", food),
+                             (f"{beer_name} 500ml", beer_price)]:
+            c_l, c_r = st.columns([3, 1])
+            c_l.write(label)
+            c_r.markdown(f"<div style='text-align:right'>"
+                         f"{value:,}원</div>" if value else
+                         "<div style='text-align:right'>미정</div>",
+                         unsafe_allow_html=True)
+
+        st.divider()
+        c1, c2, c3 = st.columns(3)
+        c1.metric("손님이 내는 값", f"{total:,}원" if total else "미정")
+
+        c2.metric("협력사에 주는 값", f"{cost:,}원" if cost else "산출 불가")
+        c2.caption("협의 대상" if cost else "협력사 단가 미확보")
+
+        # 맥주는 바틀링 자체 상품이라 매입가가 없다. 마진에 그대로 남는다
+        if total and cost:
+            margin = total - cost
+            c3.metric("바틀링 마진", f"{margin:,}원")
+            c3.caption(f"{margin / total:.0%}")
+        else:
+            c3.metric("바틀링 마진", "산출 불가")
+            c3.caption("매입가가 정해지면 계산된다")
+
+
+def render_rank(item: dict, is_top: bool) -> None:
+    """
+    순위 한 건. 대표님이 이 화면만 보고 실행 여부를 정할 수 있어야 한다.
+
+    [읽는 순서] 명세서 4-2 — 이 문서만 보고 실행 여부를 정할 수 있어야 한다
+      ① 무엇을 파는가   ② 왜 이 안인가   ③ 얼마가 남는가
+      ④ 누가 무엇을 하는가   ⑤ 어떻게 알리는가   ⑥ 무엇이 걸리는가
+
+    돈 이야기를 역할 상자에서 떼어 ③으로 모은다. 판매가가 「협력사가 준비」
+    안에 있으면 그 돈을 협력사가 받는 것처럼 읽힌다.
+    """
+    # ── ① 무엇을 파는가 ──
+    #
+    # 이미지가 없으면 그 자리를 두지 않는다. 미구현 자리표시자가 티켓 번호와
+    # 함께 대표님 화면에 남아 있으면 안 된다.
+    img = item.get("메뉴_이미지")
+    if img:
+        c_txt, c_img = st.columns([2, 1])
+        with c_txt:
+            st.subheader(item.get("메뉴명") or "이름 없음")
+            st.write(item.get("구성") or "")
+        c_img.image(img, use_container_width=True)
+    else:
+        st.subheader(item.get("메뉴명") or "이름 없음")
+        st.write(item.get("구성") or "")
+
+    # ── ② 왜 이 안인가 ──
+    if item.get("선정_사유"):
+        with st.container(border=True):
+            st.markdown("##### 선정 사유")
+            st.write(item["선정_사유"])
+
+    # ── ③ 얼마가 남는가 ──
+    beer = item.get("페어링_맥주") or {}
+    per_ml = beer.get("원_ml")
+    render_price(item, per_ml)
+
+    # ── ④ 누가 무엇을 하는가 ──
+    #
+    # 품목과 조건만 남긴다. 금액은 ③ 이 다룬다.
+    st.markdown("##### 구성과 역할")
+    c1, c2 = st.columns(2)
+    with c1:
+        with st.container(border=True):
+            st.markdown("**협력사가 준비**")
+            _bullets(item.get("협력사_제공"))
+            st.write("")
+            st.caption(f"보관　{item.get('보관_조건') or '데이터 없음'}")
+            st.caption(f"납품　{item.get('1회_납품_수량') or '1회 수량 협의'}")
+    with c2:
+        with st.container(border=True):
+            st.markdown("**바틀링이 준비**")
+            st.write(f"- {beer.get('메뉴명') or '페어링 맥주 없음'} 500ml")
+            _bullets(item.get("바틀링_준비"))
+            if beer.get("이유"):
+                st.write("")
+                st.caption(f"페어링 이유　{beer['이유']}")
+
+    # ── ⑤ 어떻게 알리는가 ──
+    ev = item.get("이벤트") or {}
+    with st.container(border=True):
+        st.markdown(f"##### 홍보 — {ev.get('명칭') or '이벤트 없음'}")
+        st.write(ev.get("내용") or "")
+        st.caption(f"기간 {ev.get('기간') or '미정'} · "
+                   f"준비 {item.get('소요_기간') or '미정'}")
+
+        schedule = item.get("홍보_일정") or []
+        if schedule:
+            # st.dataframe 은 행이 둘뿐이어도 스크롤 영역을 만든다.
+            # st.table 은 내용만큼 늘어나므로 짧은 표에 맞다.
+            st.table(schedule)
+
+        copy = item.get("홍보_문구")
+        if copy:
+            # st.code 는 우측 상단에 복사 버튼이 붙는다.
+            #
+            # 문구의 말투까지 프롬프트로 규정하지 않는다. 어떤 문구가 먹히는지는
+            # SNS 를 다뤄 본 사람이 안다. 초안임을 밝히고 다듬어 쓰게 둔다.
+            # 루브릭 「홍보 실효성」 채점(5-2)에서 같은 지적이 반복되면
+            # 그때 constraints 로 올린다 (명세서 1-5).
+            st.code(copy, language=None)
+            st.caption("초안입니다. 다듬어 쓰세요.")
+        tags = item.get("해시태그") or []
+        if tags:
+            st.caption(" ".join(tags))
+
+    # ── ⑥ 무엇이 걸리는가 ──
+    #
+    # 준비물은 펼쳐 두고, 길이가 크게 튀는 둘만 접는다.
+    with st.container(border=True):
+        st.markdown("##### 실행 준비물")
+        _bullets(item.get("실행_준비물"))
+
+    risks = item.get("예상_리스크") or []
+    if risks:
+        with st.expander(f"예상 리스크 {len(risks)}건"):
+            _bullets(risks)
+
+    basis = item.get("추천_근거") or {}
+    if basis:
+        with st.expander("추천 근거"):
+            for k, v in basis.items():
+                st.markdown(f"**{k.replace('_', ' ')}** — {v}")
+
+    # 협업 제안서(T44)는 아직 없다. 미구현 안내를 화면에 두지 않는다.
+
+
+def render_result(result: dict, meta: dict) -> None:
+    if result["error"]:
+        done = [k for k in ("p1", "p2", "p3", "final") if result[k]]
+        st.error(f"체인이 끝까지 돌지 않았습니다 — {result['error']}")
+        st.caption(f"살아남은 단계: {', '.join(done) if done else '없음'}. "
+                   f"다시 생성하면 처음부터 돌립니다.")
+
+    # runner 가 넘긴 경고. 지금 담기는 것은 재생성_필요 하나다 (검증 루프 1단계)
+    for w in result["issues"]:
+        st.warning(w)
+
+    final = result["final"]
+    if not final:
+        return
+
+    ranks = sorted(final.get("순위") or [], key=lambda r: r.get("순위") or 99)
+    excluded = final.get("제외") or []
+
+    for e in excluded:
+        st.warning(f"{e.get('안_id')}안 제외 — {e.get('제외_사유')}")
+
+    if not ranks:
+        st.error("순위가 비어 있습니다. 다시 생성해 주세요.")
+        return
+
+    # 고르는 자리와 결과를 확실히 끊는다
+    st.divider()
+
+    tabs = st.tabs([f"{r.get('순위')}순위 · {r.get('메뉴명')}" for r in ranks])
+    for tab, item in zip(tabs, ranks):
+        with tab:
+            render_rank(item, is_top=item.get("순위") == 1)
+
+    with st.expander("검수 결과"):
+        rows = final.get("체크리스트") or []
+        if rows:
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+        fixes = final.get("수정_내역") or []
+        if fixes:
+            st.markdown("**수정 내역**")
+            for f in fixes:
+                st.write(f"- {f}")
+
+    with st.expander("생성 조건"):
+        st.write(f"협력사 **{meta['partner_name']}** · 실행일 "
+                 f"**{meta['target_date']}** · {result['latency_ms']/1000:.1f}초")
+        st.caption(f"프롬프트 버전 {meta.get('prompt_version') or '확인 불가'} · "
+                   f"저장 id {meta.get('plan_id') or '저장 안 됨'}")
+        st.text_area("컨텍스트 원문", meta["context"], height=240,
+                     disabled=True, label_visibility="collapsed")
+
+    # 채택 / 폐기(T23)는 아직 없다. 미구현 안내를 화면에 두지 않는다.
+
+
+# ══════════════════════════════════════════
+# 화면
+# ══════════════════════════════════════════
+
+st.title("기획안 생성")
+st.markdown(EQUAL_HEIGHT_BOXES, unsafe_allow_html=True)
+
+partners = load_partners()
+if not partners:
+    st.info("등록된 협력사가 없습니다. 협력사 입력 폼(T21)으로 먼저 받아 주세요.")
+    st.stop()
+
+labels = {p["id"]: f"{p['name']} ({p['category']})" for p in partners}
+
+# 고를 것이 몇 개 안 되므로 폭을 다 쓰지 않는다. 왼쪽 일부만 쓰고 비워 둔다.
+# 버튼은 입력을 다 채운 뒤 누르는 것이라 흐름의 마지막에 온다.
+c_in, _ = st.columns([2, 3])
+with c_in:
+    pid = st.selectbox("협력사", list(labels), format_func=labels.get)
+
+    # 명세서 4-2 는 「날짜 지정 / 희망 기간」 두 방식을 둔다.
+    # 희망 기간은 (1)을 요일 수만큼 반복 호출해야 해 T45(W4)로 미뤘다.
+    mode = st.radio("실행일", ["날짜 지정", "희망 기간"], horizontal=True)
+    is_range = mode == "희망 기간"
+    target = st.date_input(
+        "실행 희망일", label_visibility="collapsed",
+        value=datetime.now(KST).date() + timedelta(days=7),
+        disabled=is_range)
+
+    if is_range:
+        st.caption("희망 기간 방식은 아직 준비 중입니다. 날짜를 지정해 주세요.")
+
     st.write("")
-    st.button("기획안 생성", type="primary", use_container_width=True,
-              disabled=True)
+    go = st.button("기획안 생성", type="primary",
+                   use_container_width=True, disabled=is_range)
 
 st.divider()
-st.info("협력사를 선택하면 기획안을 생성할 수 있습니다.")
 
-# TODO(T22): 생성 실행 + 진행 표시 + 결과 탭
-st.caption("T22에서 구현 예정 — 진행 표시, 3안 탭, 채택/폐기")
+if go:
+    partner = next(p for p in partners if p["id"] == pid)
+    generate(partner, target)
+
+if st.session_state.get(SS_RESULT):
+    render_result(st.session_state[SS_RESULT], st.session_state[SS_META])
+elif not go:
+    st.info("협력사와 실행일을 고르고 생성을 누르면 약 20초 뒤 기획안 3안이 나옵니다.")
