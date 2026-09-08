@@ -12,6 +12,8 @@ T21 협력사 입력 폼이 붙기 전까지 (2) 셰프를 테스트할 데이�
 
 실행: python -m scripts.seed_partner
 """
+import sys
+
 from chain.inputs import SEED_PARTNER
 from db.client import get_client
 
@@ -34,7 +36,18 @@ def main() -> None:
 
     if cur:
         print(f"\n이미 등록되어 있다 (id={cur[0]['id']}, {cur[0]['name']}).")
-        print("중복 적재를 막기 위해 중단한다.")
+        # 시드 값에 컬럼이 늘면(예: wholesale_price) 기존 행에는 비어 있다.
+        # 덮어쓰기는 요청이 있을 때만 한다 — 실수로 실제 입력을 지우지 않는다.
+        if "--update" not in sys.argv:
+            print("중복 적재를 막기 위해 중단한다.")
+            print("시드 값으로 덮어쓰려면 --update 를 붙인다.")
+            return
+        try:
+            (cli.table("partners").update(SEED_PARTNER)
+             .eq("invite_code", code).execute())
+            print("시드 값으로 갱신했다.")
+        except Exception as e:
+            print(f"갱신 실패: {e}")
         return
 
     try:

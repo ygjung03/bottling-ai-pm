@@ -11,17 +11,17 @@ import re
 from datetime import date, datetime, timedelta, timezone
 
 from chain.gemini import call
-from chain.inputs import (BOTTLING_SNS, KITCHEN, NO_DATA, build_beer_list,
-                          build_events, build_partner_blockers,
-                          build_partner_resources, build_partner_sns,
-                          fetch_partner)
+from chain.inputs import (BOTTLING_SNS, MARGIN_REF, NO_DATA, NO_TREND_MENU,
+                          PAST_CASES, WEATHER_PREF, build_beer_list,
+                          build_constraints, build_events,
+                          build_partner_blockers, build_partner_resources,
+                          build_partner_sns, fetch_partner)
 from chain.loader import build
 from context.builder import build as build_context
 
 KST = timezone(timedelta(hours=9))
 WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
 
-NO_CONSTRAINTS = "(없음 — 폐기 사례가 아직 없다)"
 NO_FEWSHOT = "(없음 — 채택 사례가 아직 없다)"
 
 # 도달·노출 목표에 쓰이는 수치 표현.
@@ -43,11 +43,41 @@ NOT_A_COPY = re.compile(r"(?:하는|강조|어필|소구|담은|활용한|중심
 # "20대 21% / 40대 18%" 처럼 비중을 옮겨 적으면 홍보 대상이 아니다.
 STAT_TARGET = re.compile(r"\d+대\s*\d+%.*?\d+대\s*\d+%")
 
-# 준비물에 들어오면 안 되는 것 — 조리 장비.
-# 그것은 (2)의 "필요_장비"가 다룬다. (3)의 준비물은 홍보·이벤트 실행에
-# 새로 챙길 것(포장재·홍보물·촬영 소품 등)이어야 한다.
+# 준비물에 들어오면 안 되는 것 — 조리·보관 장비.
+# 협업이 완제품 매입 하나이므로 바틀링은 조리하지 않는다.
+# (3)의 준비물은 홍보·이벤트 실행에 새로 챙길 것
+# (포장재·홍보물·촬영 소품 등)이어야 한다.
 OWNED = ["냉장고", "냉동", "전자레인지", "화덕", "오븐", "그릴",
          "어묵중탕기", "착즙기", "셀프탭", "디스펜서", "소도구"]
+
+# 홍보 일정의 "실행 전" 시점. C001·C002 의 자동 검사다 (명세서 5-1 A7).
+# 실행 기간에만 알리면 사람들이 알기 전에 끝난다 — 카페 위켄드가 그랬다.
+BEFORE_EXEC = re.compile(r"전|예고|티저|D-\s*\d")
+
+# 실행 기간을 며칠로 잡았는지. C003 의 자동 검사다 (A8).
+MIN_DAYS = 3
+
+
+def duration_days(text: str) -> int | None:
+    """
+    "9/5(금)～9/7(일) 3일간" 같은 표기에서 일수를 뽑는다.
+
+    "3일간"이 있으면 그대로 쓰고, 없으면 날짜 범위로 센다.
+    둘 다 없으면 None — 판정하지 않는다. 근거 없이 위반으로 몰지 않는다.
+    """
+    named = re.findall(r"(\d+)\s*일간?", text)
+    if named:
+        return max(int(x) for x in named)
+
+    md = re.findall(r"(\d{1,2})/(\d{1,2})", text)
+    if len(md) >= 2:
+        try:
+            a = date(2026, int(md[0][0]), int(md[0][1]))
+            b = date(2026, int(md[-1][0]), int(md[-1][1]))
+        except ValueError:
+            return None
+        return (b - a).days + 1 if b >= a else None
+    return None
 
 
 def latest_weekday(dow: int) -> date:
@@ -71,6 +101,28 @@ def check(out: dict, p2: dict, sns_known: bool) -> list[str]:
         tgt = str(axis.get("타겟") or "")
         if STAT_TARGET.search(tgt):
             issues.append(f"타겟이 통계 나열임 — {tgt[:40]}")
+
+        # A7 — 홍보 일정에 실행 전 항목이 하나 이상 (C001·C002)
+        schedule = axis.get("홍보_일정") or []
+        if not schedule:
+            issues.append("홍보 일정 없음 — 언제 무엇을 올리는지가 있어야 한다")
+        else:
+            for s in schedule:
+                for k in ("시점", "채널", "내용"):
+                    if not s.get(k):
+                        issues.append(f"홍보 일정 항목에 '{k}' 없음: {s}")
+            if not any(BEFORE_EXEC.search(str(s.get("시점") or ""))
+                       for s in schedule):
+                when = [str(s.get("시점")) for s in schedule]
+                issues.append(f"홍보 일정에 '실행 전' 항목 없음 — {when}")
+
+        # A9 — 채널별 전략에 협력사 주체가 하나 이상
+        channels = axis.get("채널별_전략") or []
+        for c in channels:
+            if not c.get("주체"):
+                issues.append(f"채널별 전략에 '주체' 없음: {c}")
+        if not any(c.get("주체") == "협력사" for c in channels):
+            issues.append("채널별 전략에 협력사 주체 없음 — 도달이 절반으로 준다")
 
     plans = out.get("안별_기획") or []
     p2_ids = [m.get("안_id") for m in (p2.get("메뉴안") or [])]
@@ -97,6 +149,11 @@ def check(out: dict, p2: dict, sns_known: bool) -> list[str]:
                 issues.append(f"{pid}: 이벤트안에 '{k}' 없음")
             elif NO_DATA in str(v):
                 issues.append(f"{pid}: 이벤트안 '{k}'가 데이터 없음 — 마케터가 정할 값이다")
+
+        # A8 — 실행 기간 3일 이상 (C003)
+        days = duration_days(str(ev.get("기간") or ""))
+        if days is not None and days < MIN_DAYS:
+            issues.append(f"{pid}: 실행 기간 {days}일 — {MIN_DAYS}일 이상이어야 함")
 
         copy = str(p.get("홍보_문구") or "")
         if not copy:
@@ -166,14 +223,17 @@ def run(label: str, target: date) -> None:
     print(f"(1) 완료 {ms1/1000:.1f}초")
 
     # (2) 셰프
+    rules = build_constraints()
     try:
         p2, ms2 = call(build(
             "p2_chef",
             p1_output=json.dumps(p1, ensure_ascii=False),
-            beer_list=beer_text, kitchen_constraints=KITCHEN,
+            beer_list=beer_text,
             partner_resources=build_partner_resources(partner),
             partner_blockers=build_partner_blockers(partner),
-            constraints=NO_CONSTRAINTS, fewshot=NO_FEWSHOT))
+            margin_ref=MARGIN_REF, weather_pref=WEATHER_PREF,
+            trend_menu=NO_TREND_MENU,
+            constraints=rules["p2"], fewshot=NO_FEWSHOT))
     except Exception as e:
         print(f"(2) 실패: {e}\n")
         return
@@ -187,7 +247,8 @@ def run(label: str, target: date) -> None:
         p2_output=json.dumps(p2, ensure_ascii=False),
         bottling_sns=BOTTLING_SNS,
         partner_sns=build_partner_sns(partner),
-        events=build_events(target))
+        events=build_events(target),
+        constraints=rules["p3"], past_cases=PAST_CASES)
     print(f"(3) 프롬프트 {len(p3_prompt)}자\n")
 
     try:
@@ -208,6 +269,10 @@ def run(label: str, target: date) -> None:
     print(f"  시점     {axis.get('공략_시점')}")
     print(f"  행사연계 {axis.get('행사_연계')}")
     print(f"  목표     {axis.get('목표')}")
+    for c in axis.get("채널별_전략") or []:
+        print(f"  채널     [{c.get('주체')}] {c.get('채널')} / {c.get('형식')}")
+    for s in axis.get("홍보_일정") or []:
+        print(f"  일정     {s.get('시점')} — {s.get('채널')} / {s.get('내용')}")
     for p in out.get("안별_기획") or []:
         name = next((m.get("메뉴명") for m in menus
                      if m.get("안_id") == p.get("안_id")), "?")

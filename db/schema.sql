@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS partners (
   sns_channel       TEXT,
   sns_followers     INTEGER,
   sns_content_type  TEXT,                            -- 릴스 / 피드 / 스토리
+  wholesale_price   INTEGER,                         -- 완제품 납품 희망 단가 (원). 선택 입력
   blockers          TEXT[]      NOT NULL DEFAULT '{}',   -- 절대 불가 조건 (하드 제약)
   lat               DOUBLE PRECISION,
   lng               DOUBLE PRECISION,
@@ -84,18 +85,45 @@ CREATE TABLE IF NOT EXISTS market_context (
 CREATE INDEX IF NOT EXISTS idx_mc_spot_time ON market_context (spot, collected_at DESC);
 
 -- 분기 매출 프로파일
+--
+-- 단위는 상권이 아니라 행정동(자양3동)이다. 바틀링이 서울시 주요상권 82곳에
+-- 포함되지 않아 상권코드를 쓸 수 없다 (명세서 2-4).
+--
+-- 축이 조합되지 않고 독립 합계로만 온다. "금요일 × 20대 × 여성" 같은 행이
+-- 원본에 없어 컬럼 조합형으로는 담을 수 없다. 축별 비중을 JSONB 로 둔다.
+--
+-- [2026-09-08] 금액 비중에 더해 건수 비중을 담는다 (명세서 9-1 M3).
+--   원본 CSV 에 축마다 금액과 건수가 모두 있는데 8/29 적재에서 금액만 넣었다.
+--   그래서 전체 객단가(sales_amount / sales_count)는 나와도 "17-21시 손님이
+--   한 번에 얼마 쓰나"를 낼 수 없었다.
+--
+--   구간 객단가 = (금액비중 × sales_amount) / (건수비중 × sales_count)
+--
+--   실측으로 호프-간이주점 2026Q2 는 21-24시 49,539원 / 17-21시 43,094원이다.
+--   협업 메뉴의 판매가와 매입가를 정할 때 전체 평균보다 정확한 근거가 된다.
 CREATE TABLE IF NOT EXISTS sales_profile (
-  id            BIGSERIAL PRIMARY KEY,
-  quarter       TEXT NOT NULL,          -- 2026Q2
-  area_code     TEXT NOT NULL,
-  industry      TEXT NOT NULL,
-  weekday       TEXT NOT NULL,
-  time_band     TEXT NOT NULL,
-  age_group     TEXT,
-  gender        TEXT,
-  sales_amount  BIGINT,
-  sales_ratio   NUMERIC(5,2),
-  UNIQUE (quarter, area_code, industry, weekday, time_band, age_group, gender)
+  id                    BIGSERIAL PRIMARY KEY,
+  quarter               TEXT NOT NULL,   -- 2026Q2
+  dong_code             TEXT NOT NULL,   -- 행정안전부 주민등록 행정기관코드
+  dong_name             TEXT NOT NULL,   -- 자양3동
+  industry_code         TEXT,
+  industry_name         TEXT NOT NULL,   -- 호프-간이주점 / 제과점 ...
+  sales_amount          BIGINT,          -- 매출 금액 (원)
+  sales_count           INTEGER,         -- 매출 건수 (거래 건수. 점포 수가 아니다)
+
+  -- 매출 금액 기준 비중
+  weekday_ratio         JSONB,           -- {"월": 0.12, ..., "일": 0.18}
+  timeband_ratio        JSONB,           -- {"00-06": 0.03, ..., "21-24": 0.21}
+  gender_ratio          JSONB,           -- {"남": 0.52, "여": 0.48}
+  age_ratio             JSONB,           -- {"10": 0.02, ..., "60_이상": 0.09}
+
+  -- 매출 건수 기준 비중. 위와 짝을 이뤄 축별 객단가를 만든다
+  weekday_count_ratio   JSONB,
+  timeband_count_ratio  JSONB,
+  gender_count_ratio    JSONB,
+  age_count_ratio       JSONB,
+
+  UNIQUE (quarter, dong_code, industry_code)
 );
 
 -- 반경 점포 (월 배치)
@@ -138,9 +166,16 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE TABLE IF NOT EXISTS plans (
   id                BIGSERIAL PRIMARY KEY,
   partner_id        BIGINT REFERENCES partners(id),
-  partner_source    TEXT    NOT NULL DEFAULT 'recommended',  -- recommended | manual
+  partner_source    TEXT    NOT NULL DEFAULT 'recommended',
+                    -- recommended | manual | menu_search
+  trend_menu        TEXT,               -- 메뉴 검색으로 시작한 경우 그 메뉴명
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  target_date       DATE,
+
+  date_mode         TEXT    NOT NULL DEFAULT 'fixed',  -- fixed | range
+  target_date       DATE,               -- 확정된 실행일
+  range_from        DATE,               -- 희망 기간 시작 (date_mode='range')
+  range_to          DATE,               -- 희망 기간 끝
+  date_reason       TEXT,               -- 그 날짜를 고른 이유 (range 인 경우)
 
   context_snapshot  TEXT    NOT NULL,   -- 컨텍스트 빌더 출력 원문 (재현·검증용)
   p1_output         JSONB,
@@ -148,8 +183,12 @@ CREATE TABLE IF NOT EXISTS plans (
   p3_output         JSONB,
   final_output      JSONB   NOT NULL,
 
+  menu_images       JSONB,              -- {"A": "img/plans/...png", "B": null}
+  image_model       TEXT,               -- 생성 모델명 (재현용)
+
   auto_check        JSONB,              -- 1층 자동 검증 결과
-  latency_ms        INTEGER,
+  latency_ms        INTEGER,            -- 4단계 합계 (이미지 제외)
+  image_latency_ms  INTEGER,            -- 이미지 생성은 별도 호출이라 분리한다
   prompt_version    TEXT,               -- prompts/ git hash
 
   adopted_option    TEXT,               -- 채택한 안_id (A|B|C)
@@ -157,10 +196,14 @@ CREATE TABLE IF NOT EXISTS plans (
                     -- generated | adopted | rejected | executed
   reject_reason     TEXT,
   executed_at       DATE,
+  agreed_wholesale  INTEGER,            -- 협의로 확정된 매입가 (협력사에게 주는 돈)
+  retail_price      INTEGER,            -- 실제 판매가 (손님에게 받는 돈)
+  sold_qty          INTEGER,            -- 판매 수량
   sales_before      BIGINT,             -- 직전 같은 요일 총매출
   sales_after       BIGINT,             -- 실행일 총매출
-  performance       JSONB,              -- {insta_reach, insta_save, coupon_new, coupon_return_rate}
+  performance       JSONB,              -- 쿠폰 앱 지표 (명세서 2-7)
   rubric_score      JSONB,              -- {실행가능성:4, 자원정합성:3, ...}
+  lead_time_min     INTEGER,            -- 기획 착수부터 제안서 완성까지 (분). 주 지표
   note              TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_plans_status ON plans (status, created_at DESC);

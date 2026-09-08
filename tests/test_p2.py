@@ -11,18 +11,26 @@ import re
 from datetime import date, datetime, timedelta, timezone
 
 from chain.gemini import call
-from chain.inputs import (KITCHEN, build_beer_list, build_partner_blockers,
-                          build_partner_resources, fetch_partner)
+from chain.inputs import (MARGIN_REF, NO_TREND_MENU, WEATHER_PREF,
+                          build_beer_list, build_constraints,
+                          build_partner_blockers, build_partner_resources,
+                          fetch_partner)
 from chain.loader import build
 from context.builder import build as build_context
 
 KST = timezone(timedelta(hours=9))
 WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
 
-# constraints.yaml / fewshot.yaml 은 아직 비어 있다.
-# 폐기·채택 사례가 없으므로 지어내지 않는다.
-NO_CONSTRAINTS = "(없음 — 폐기 사례가 아직 없다)"
+# fewshot.yaml 은 아직 비어 있다. 채택 사례가 없으므로 지어내지 않는다.
+# constraints 는 8/31 사례에서 뽑은 7건이 들어와 실제 값을 쓴다.
 NO_FEWSHOT = "(없음 — 채택 사례가 아직 없다)"
+
+# 완제품 매입 단일화로 사라진 필드 (명세서 1-2).
+# 남아 있으면 프롬프트에 옛 지시가 붙어 있다는 뜻이다.
+COOKING_FIELDS = ["조리_방법", "조리_주체", "조리_난이도", "필요_장비", "필요_재료"]
+
+# 「접근」은 조리 방식이 아니라 구성과 가격대로 나뉜다.
+APPROACHES = {"단품", "세트", "원가 절감형"}
 
 
 def latest_weekday(dow: int) -> date:
@@ -58,7 +66,7 @@ def parse_beers(text: str) -> dict[str, dict]:
     return out
 
 
-def check(out: dict, beers: dict, partner: dict) -> list[str]:
+def check(out: dict, beers: dict) -> list[str]:
     """프롬프트가 지시한 제약을 지켰는지 본다."""
     issues = []
     menus = out.get("메뉴안") or []
@@ -73,12 +81,19 @@ def check(out: dict, beers: dict, partner: dict) -> list[str]:
     approaches = [m.get("접근") for m in menus]
     if len(set(approaches)) != len(approaches):
         issues.append(f"접근이 중복됨: {approaches}")
+    unknown = [a for a in approaches if a not in APPROACHES]
+    if unknown:
+        issues.append(f"정의에 없는 접근 {unknown} — {sorted(APPROACHES)} 중이어야 함")
 
-    p_ing = set(partner.get("ingredients") or [])
     picked_prices = []
 
     for m in menus:
         mid = m.get("안_id", "?")
+
+        # 조리가 없어졌는데 필드가 남아 있으면 옛 프롬프트다
+        left = [k for k in COOKING_FIELDS if m.get(k)]
+        if left:
+            issues.append(f"{mid}: 사라진 조리 필드가 남아 있음 {left}")
 
         # 페어링은 라인업 안에서, 알코올 중에서
         pair = (m.get("페어링_맥주") or {}).get("메뉴명")
@@ -95,38 +110,45 @@ def check(out: dict, beers: dict, partner: dict) -> list[str]:
         if len(reason) < 15:
             issues.append(f"{mid}: 페어링 이유가 너무 짧음")
 
-        # 협력사 식재료를 최소 1개
-        used = {r.get("재료") for r in (m.get("필요_재료") or [])
-                if r.get("제공처") == "협력사"}
-        if not used:
-            issues.append(f"{mid}: 협력사 식재료 미사용")
-        elif p_ing and not (used & p_ing):
-            issues.append(f"{mid}: 협력사가 없는 재료 {sorted(used - p_ing)}")
+        # 누가 무엇을 대는지 나뉘어 있는가.
+        # 협력사가 완제품을 내지 않으면 매입할 것이 없어 협업이 아니다.
+        if not (m.get("협력사_제공") or []):
+            issues.append(f"{mid}: 협력사 제공 품목 없음 — 매입할 것이 없다")
+        if not (m.get("바틀링_준비") or []):
+            issues.append(f"{mid}: 바틀링 준비 항목 없음")
 
-        # 원가·판매가
+        # 완제품 조건. 보관 방법과 유통 기한이 기획의 전제다 (C006)
+        if not m.get("보관_조건"):
+            issues.append(f"{mid}: 보관 조건 없음")
+        if not m.get("1회_납품_수량"):
+            issues.append(f"{mid}: 1회 납품 수량 없음")
+
+        # 원가·판매가.
+        #
+        # 원가율 40% 검사는 뺐다(명세서 5-1). 매입 형태에서는 매입가가
+        # 원가이고 그것은 협력사와 협의할 값이라, 40% 라는 기준에 근거가 없다.
+        # 대신 손익 역전만 막는다 (A6).
         cost, price = m.get("예상_원가"), m.get("판매가_제안")
         if not price:
             issues.append(f"{mid}: 판매가 미제시 (원가와 별개로 정해야 함)")
+
+        # 무엇에 근거했는지 밝혀야 한다. 마진 기준값 3건에만 기대면
+        # 근거가 얇다 — 형태가 다른 값이라 참고 이상이 못 된다 (U18).
+        basis = str(m.get("판매가_근거") or "")
+        if not basis:
+            issues.append(f"{mid}: 판매가 근거 없음")
+        elif not re.search(r"\d", basis):
+            issues.append(f"{mid}: 판매가 근거에 수치가 없음 — {basis[:40]}")
         if isinstance(cost, str) and "산출 불가" not in cost:
             n = re.search(r"([\d,]+)", cost)
             if n and price:
                 c = int(n.group(1).replace(",", ""))
-                if c > price * 0.4:
-                    issues.append(f"{mid}: 원가율 {c/price:.0%} (40% 초과)")
+                if c >= price:
+                    issues.append(f"{mid}: 원가 {c:,}원 ≥ 판매가 {price:,}원 — 손익 역전")
 
-        # 누가 어디서 만드는지 밝혔는가
-        if not m.get("조리_주체"):
-            issues.append(f"{mid}: 조리 주체 미표기")
-
-        # 바틀링이 대는 장비가 실제로 있는가
-        for e in m.get("필요_장비") or []:
-            if e.get("제공처") != "바틀링":
-                continue
-            name = str(e.get("장비", ""))
-            # 표기가 "A 또는 B" 처럼 올 수 있어 조각으로 대조한다
-            frags = re.split(r"\s*(?:또는|/|,)\s*", name)
-            if not any(f and f in KITCHEN for f in frags):
-                issues.append(f"{mid}: 바틀링에 없는 장비 '{name}'")
+        # 이미지는 이 단계 다음에 별도로 생성된다 (명세서 1-2 ④)
+        if m.get("메뉴_이미지"):
+            issues.append(f"{mid}: 메뉴 이미지를 지어냄 — 별도 단계에서 생성한다")
 
         if not m.get("제약_충족_확인"):
             issues.append(f"{mid}: 제약 충족 확인 누락")
@@ -149,10 +171,14 @@ GHOST = ["아이스크림", "생크림", "치즈", "베이컨", "시럽", "잼",
 
 
 def check_ghost(out: dict, partner: dict) -> list[str]:
-    """목록에 없는 재료가 메뉴명·구성에 등장하는지 본다."""
+    """목록에 없는 재료가 메뉴명·구성에 등장하는지 본다.
+
+    대조 대상이 협력사 자원뿐이다. 바틀링 주방 여건은 완제품 매입에서
+    쓰이지 않으므로(기획서 6-1) 재료를 대는 곳은 협력사 하나다.
+    """
     have = " ".join([
         " ".join(partner.get("ingredients") or []),
-        KITCHEN,
+        str(partner.get("signature_menu") or ""),
     ])
     issues = []
     for m in out.get("메뉴안") or []:
@@ -199,10 +225,12 @@ def run(label: str, target: date) -> None:
     p2_prompt = build("p2_chef",
                       p1_output=json.dumps(p1, ensure_ascii=False),
                       beer_list=beer_text,
-                      kitchen_constraints=KITCHEN,
                       partner_resources=build_partner_resources(partner),
                       partner_blockers=build_partner_blockers(partner),
-                      constraints=NO_CONSTRAINTS,
+                      margin_ref=MARGIN_REF,
+                      weather_pref=WEATHER_PREF,
+                      trend_menu=NO_TREND_MENU,
+                      constraints=build_constraints()["p2"],
                       fewshot=NO_FEWSHOT)
     print(f"(2) 프롬프트 {len(p2_prompt)}자\n")
 
@@ -224,8 +252,9 @@ def run(label: str, target: date) -> None:
         print(f"  {m.get('안_id')}. {m.get('메뉴명')} [{m.get('접근')}]")
         print(f"      페어링 {pair} ({tag})"
               f" / 원가 {m.get('예상_원가')} / 판매가 {m.get('판매가_제안')}")
+        print(f"      보관 {m.get('보관_조건')} / 납품 {m.get('1회_납품_수량')}")
 
-    issues = check(out, beers, partner) + check_ghost(out, partner)
+    issues = check(out, beers) + check_ghost(out, partner)
     print("-" * 64)
     if issues:
         for i in issues:

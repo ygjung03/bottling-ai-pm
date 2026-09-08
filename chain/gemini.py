@@ -33,7 +33,8 @@ def get_client() -> genai.Client:
     return _client
 
 
-def call(prompt: str, retry: int = 1, model: str | None = None) -> tuple[dict, int]:
+def call(prompt: str, retry: int = 1, model: str | None = None,
+         on_wait=None) -> tuple[dict, int]:
     """
     JSON 응답을 강제하고 파싱해서 돌려준다.
 
@@ -41,6 +42,14 @@ def call(prompt: str, retry: int = 1, model: str | None = None) -> tuple[dict, i
 
     retry 는 JSON 파싱 실패와 일시적 오류에만 적용된다.
     429(할당량 초과)는 대기 후 재시도한다.
+
+    on_wait(초, 시도횟수): 429 대기에 들어갈 때 부른다.
+      대기가 20초부터 시작하는데 그동안 화면에는 직전 단계 문구가 그대로
+      떠 있어, 멈춘 것처럼 보인다. 호출자가 그 사실을 표시할 수 있게 알린다.
+
+    [주의] 여기의 retry 는 전송 계층 재시도다. 같은 프롬프트를 그대로 다시
+      보내므로 파싱 실패·429 는 넘겨도 내용 오류는 못 잡는다. 생성물이
+      제약을 어긴 경우의 재호출은 runner 의 되감기가 맡는다. 층위가 다르다.
     """
     cfg = types.GenerateContentConfig(response_mime_type="application/json")
     model_name = model or GEMINI_MODEL
@@ -65,6 +74,8 @@ def call(prompt: str, retry: int = 1, model: str | None = None) -> tuple[dict, i
             if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
                 wait = 20 * (attempt + 1)
                 print(f"[retry {attempt}] 호출 한도 도달 — {wait}초 대기")
+                if on_wait:
+                    on_wait(wait, attempt)
                 time.sleep(wait)
             else:
                 print(f"[retry {attempt}] 호출 실패: {msg[:100]}")

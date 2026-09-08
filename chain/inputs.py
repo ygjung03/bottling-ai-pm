@@ -4,9 +4,12 @@
 [담당] B
 [티켓] T12
 
-runner.run() 은 모든 입력을 문자열로 받는다. 그 문자열을 만드는 곳이다.
+runner.run() 이 받는 입력을 만드는 곳이다.
 컨텍스트 빌더(context/builder.py)가 상권 데이터를 맡고,
 여기는 바틀링·협력사 자원처럼 우리가 직접 관리하는 값을 맡는다.
+
+대부분은 문자열이다. 제약만 단계별로 갈려 dict 를 돌려준다
+(build_constraints, 명세서 1-5 의 target 필드).
 
 [원칙]
   - 없는 값을 지어내지 않는다. 비면 "데이터 없음"으로 적는다
@@ -17,6 +20,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+from chain.loader import load
 from db.client import get_client
 
 NO_DATA = "데이터 없음"
@@ -29,6 +33,18 @@ NO_DATA = "데이터 없음"
 #
 # [출처] 자료요청서 A-2·A-3 (2026-08-21 대표님 회신)
 #        매장 수용 7인, 테이크아웃 중심 — 1차 현장방문 관찰 (8/17)
+#
+# [2026-09-08] 협업 기획에서 빠졌다.
+#   8/31 2차 방문으로 협업 형태가 「완제품 매입 후 판매」 하나로 좁혀졌다
+#   (기획서 6-1). 협력사가 자기 장비로 만들어 오므로 바틀링 주방 여건이
+#   개입하지 않는다. (2) 셰프에 더 이상 넘기지 않는다.
+#
+#   지우지 않고 남기는 것은 「가게 자체 메뉴 개발」(기획서 3-5 ⑦)이
+#   이 값을 쓰기 때문이다. 그 기능은 (2)의 변형으로 만들며, 협력사 자원
+#   대신 주방 여건이 핵심 제약이 된다. 지금은 어디서도 참조하지 않는다.
+#
+#   완제품이라도 매장 보관은 필요하다. 냉장·냉동 용량만 p2_chef.yaml
+#   본문에 상수로 적어 두었다 (명세서 1-2).
 #
 # 처음에 우리가 "전자레인지·에어프라이어만, 화기 불가"로 짐작했으나
 # 실제로는 가스·전기 모두 쓸 수 있고 조리기구도 갖춰져 있다.
@@ -59,6 +75,65 @@ KITCHEN = """[조리 여건]
 [장비 이동]
 - 화덕피자오븐 / 어묵중탕기 / 생맥주 셀프탭 / 생맥주 디스펜서는
   자차로 옮길 수 있다 (협력사 매장으로 가서 진행할 수도 있다)"""
+
+# 마진 기준값 — (2) 셰프 입력.
+#
+# [출처] 8/31 2차 방문 대표님 청취 (기획서 3-5 ①)
+#
+# 판매가를 정할 때 쓴다. 지금까지 (2)가 원가를 "산출 불가"로 두면
+# 판매가까지 0 으로 두는 일이 있었는데, 그러면 (4)가 평가할 수 없다.
+# 실제 마진율을 주어 원가를 몰라도 판매가를 정할 근거를 만든다.
+#
+# 세 건뿐이라 근거가 얇다. 이것으로 충분한지는 U18 로 남아 있다.
+MARGIN_REF = """- 감자튀김: 마진율 70%
+- 닭다리: 마진율 50～60%
+- 화덕피자 도우: 원가 500원 — 도우를 많이 쓰는 형태면 마진이 남는다
+
+※ 이 값은 바틀링이 직접 만드는 경우의 기준이다.
+   완제품 매입에서는 매입가가 곧 원가이므로 판매가를 정할 때 참고로만 쓴다."""
+
+
+# 날씨별 선호 — (2) 셰프 입력.
+#
+# [출처] 8/31 2차 방문 대표님 청취 (기획서 5장)
+#
+# 데이터가 말하지 않는 것을 사람이 안다. 상권 데이터로는 어느 맥주가
+# 어느 날씨에 나가는지 알 수 없다. 대표님이 실제로 관찰한 것이다.
+WEATHER_PREF = """- 비 오거나 추운 날: 흑맥주 (캄캄)
+- 더운 날: 라거 — 시원한 것
+
+※ 컨텍스트의 날씨는 대상 시점의 예보가 아니라 최근 관측치다 (U12).
+   페어링 판단의 참고로만 쓴다."""
+
+
+# 기존 협업 3건의 결과 — (3) 마케터 입력.
+#
+# [출처] 8/31 2차 방문 대표님 청취 (기획서 3-4)
+#
+# 시스템 도입 전에 대표님이 직접 하셨던 협업이다. 세 건 모두 홍보에서
+# 아쉬웠고, 그래서 (3)이 이 프로젝트의 실제 병목이다.
+#
+# 사례를 그대로 흉내내게 하지 않는다. 규칙(constraints C001～C003)이
+# 이미 이것을 긍정형으로 담고 있으므로, 여기서는 왜 그 규칙이 있는지를
+# 이해하는 맥락으로만 쓰인다 (명세서 1-3).
+PAST_CASES = """- 떡붕 (드론쇼 기간): 유동인구는 많았으나 유인 요인이 부족했다.
+  현수막만으로는 부족했다
+- YARR 화덕피자: 반응은 괜찮았으나 맛이 대중적이지 않았다
+- 카페 위켄드: 파는지도 모를 정도로 인지가 부족했다.
+  소요 대비 효과가 없어 중단했다
+
+※ 세 건 모두 홍보에서 아쉬웠다. 대표님 말씀은
+   "길게 꾸준히 하든가, 하기 전에 사람들이 많이 인지할 수 있게 콘텐츠를 뽑든가"였다."""
+
+
+# 유행 메뉴 — (2) 셰프 입력.
+#
+# 메뉴 검색 경로(명세서 3-5)로 시작한 경우에만 대표님이 입력한 메뉴명이
+# 넘어온다. 그 경로가 아니면 이 값이다. "없음"이 아니라 "데이터 없음"인
+# 것은, 축으로 삼을 메뉴가 없다는 뜻이지 메뉴를 자유롭게 정하라는 뜻이
+# 아님을 구분하기 위해서다.
+NO_TREND_MENU = f"{NO_DATA} (메뉴 검색 경로로 시작하지 않음)"
+
 
 # 바틀링 SNS 자산 — (3) 마케터 입력.
 #
@@ -101,6 +176,10 @@ SEED_PARTNER = {
     "sns_channel": "인스타그램",
     "sns_followers": 3200,
     "sns_content_type": "릴스",
+    # 완제품 납품 희망 단가. 협업 형태가 매입 하나로 좁혀지면서(기획서 6-1)
+    # 이 값이 있으면 (2)의 예상_원가가 "산출 불가"에서 벗어나고
+    # (4)의 제안_매입가도 근거를 얻는다. 실제로는 협력사가 폼(T21)에 적는다.
+    "wholesale_price": 1200,
     "blockers": ["반죽은 당일 소진해야 하므로 사전 대량 준비가 불가하다",
                  "주말은 자체 매장 운영으로 출장이 어렵다",
                  "붕어빵 기계를 빌리려면 1주 전에 예약해야 한다"],
@@ -204,6 +283,13 @@ def build_partner_resources(partner: dict | None) -> str:
     빈 항목은 줄째로 빼지 않고 "데이터 없음"으로 적는다.
     줄이 없으면 협력사가 안 가진 것인지 아직 입력하지 않은 것인지
     구분되지 않아, 없는 장비를 쓰는 메뉴가 나온다.
+
+    희망 단가를 함께 싣는다(명세서 2-1). 협업이 완제품 매입 하나이므로
+    매입가가 곧 원가다. 이 값이 있으면 (2)가 원가를 실제 수치로 채우고
+    (4)가 제안 매입가의 근거를 얻는다.
+
+    (4)에도 이 문자열을 넘긴다. 역할분담을 쓰려면 상대가 무엇을 가졌는지
+    알아야 한다(명세서 1-4).
     """
     if not partner:
         return f"{NO_DATA} (협력사 미선택)"
@@ -211,6 +297,12 @@ def build_partner_resources(partner: dict | None) -> str:
     def _join(key: str) -> str:
         v = partner.get(key) or []
         return ", ".join(str(x) for x in v) if v else NO_DATA
+
+    # 선택 항목이라 비어 있을 수 있다(명세서 4-1). 협력사가 미리 정하지
+    # 못한 것이지 무료라는 뜻이 아니므로, 협의 대상임을 함께 적는다.
+    price = partner.get("wholesale_price")
+    price_txt = (f"{int(price):,}원" if price
+                 else f"{NO_DATA} (협력사 미입력 — 협의 대상)")
 
     head = f"{partner.get('name', '?')} / {partner.get('category') or NO_DATA}"
     return "\n".join([
@@ -220,7 +312,43 @@ def build_partner_resources(partner: dict | None) -> str:
         f"- 보유 장비: {_join('equipment')}",
         f"- 가능한 협업 형태: {_join('collab_types')}",
         f"- 가능 일정: {partner.get('available_slots') or NO_DATA}",
+        f"- 완제품 납품 희망 단가: {price_txt}",
     ])
+
+
+# 제약을 받는 단계. (1) 상권분석가는 받지 않는다 — 데이터를 읽을 뿐
+# 기획을 만들지 않으므로 지킬 제약이 없다.
+CONSTRAINT_STEPS = ("p2", "p3", "p4")
+
+
+def build_constraints() -> dict[str, str]:
+    """
+    단계별 하드 제약. constraints.yaml 의 target 으로 갈라 담는다.
+
+    규칙이 7건으로 늘면서 (2) 셰프와 (3) 마케터에 해당하는 것이 갈렸다
+    (명세서 1-5). 모든 규칙을 모든 단계에 넣으면 프롬프트가 길어지고,
+    관계없는 제약이 판단을 흐린다. target 이 없는 규칙은 전 단계에 넣는다.
+
+    [(4)만 전부 받는다] (4)는 세 안을 최종 검수하는 단계다. 검수 2번이
+    준비 기간 3일(C007, target=p2)을 명시적으로 참조하므로, (2)(3)의
+    제약을 모르면 위반을 잡을 수 없다. 검수자가 규칙을 못 보는 구조는
+    성립하지 않는다.
+
+    origin 은 넣지 않는다. 이력 추적용이며 프롬프트에는 rule 만 간다.
+    """
+    try:
+        rules = load("constraints").get("constraints") or []
+    except Exception as e:
+        return {s: f"{NO_DATA} (constraints.yaml 조회 실패: {e})"
+                for s in CONSTRAINT_STEPS}
+
+    out = {}
+    for step in CONSTRAINT_STEPS:
+        picked = (rules if step == "p4"
+                  else [r for r in rules if r.get("target") in (None, step)])
+        out[step] = ("\n".join(f"- {r['rule']}" for r in picked) if picked
+                     else f"{NO_DATA} (해당 단계에 적용할 규칙 없음)")
+    return out
 
 
 def build_partner_blockers(partner: dict | None) -> str:
@@ -283,11 +411,24 @@ if __name__ == "__main__":
     print("[바틀링 맥주 라인업]")
     print(build_beer_list())
     print()
-    print("[바틀링 주방 여건]")
-    print(KITCHEN)
+    print("[마진 기준값]")
+    print(MARGIN_REF)
+    print()
+    print("[날씨별 선호]")
+    print(WEATHER_PREF)
+    print()
+    print("[기존 협업 사례]")
+    print(PAST_CASES)
     print()
     print("[바틀링 SNS]")
     print(BOTTLING_SNS)
+
+    print()
+    print("[단계별 제약]")
+    for step, text in build_constraints().items():
+        print(f"  ({step})")
+        for line in text.splitlines():
+            print(f"    {line}")
 
     p = fetch_partner()
     print()

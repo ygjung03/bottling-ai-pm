@@ -16,8 +16,9 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from chain.gemini import call
-from chain.inputs import (BOTTLING_SNS, KITCHEN, NO_REC_REASON,
-                          build_beer_list, build_events,
+from chain.inputs import (BOTTLING_SNS, MARGIN_REF, NO_REC_REASON,
+                          NO_TREND_MENU, PAST_CASES, WEATHER_PREF,
+                          build_beer_list, build_constraints, build_events,
                           build_partner_blockers, build_partner_resources,
                           build_partner_sns, fetch_partner)
 from chain.loader import build
@@ -26,16 +27,19 @@ from context.builder import build as build_context
 KST = timezone(timedelta(hours=9))
 WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
 
-NO_CONSTRAINTS = "(없음 — 폐기 사례가 아직 없다)"
 NO_FEWSHOT = "(없음 — 채택 사례가 아직 없다)"
 
 OUT_DIR = Path("tests/out")
 
 # 1위 안에 반드시 있어야 하는 것.
 # 대표가 이 문서만 보고 실행할 수 있어야 한다(명세서 4-2).
-REQUIRED = ["메뉴명", "구성", "필요_재료", "조리_주체", "판매가_제안",
-            "페어링_맥주", "이벤트", "홍보_문구", "실행_준비물",
-            "소요_기간", "추천_근거"]
+REQUIRED = ["메뉴명", "구성", "협력사_제공", "바틀링_준비", "보관_조건",
+            "1회_납품_수량", "판매가_제안", "페어링_맥주", "이벤트",
+            "홍보_일정", "홍보_문구", "실행_준비물", "소요_기간", "추천_근거"]
+
+# 협업 제안서 4필드 (명세서 1-4, 자동 검증 A10).
+# 하나라도 없으면 협력사에 보낼 제안서를 만들 수 없다 — T44 를 직접 막는다.
+PROPOSAL = ["역할분담", "상호_이익", "배경", "매입"]
 
 # 순위를 회피하는 표현.
 VAGUE = re.compile(r"우열을? (?:가리기|판단하기) (?:어렵|힘들)"
@@ -135,6 +139,54 @@ def check(out: dict, p2: dict, beers: dict) -> list[str]:
             if not basis.get(k):
                 issues.append(f"1위 추천 근거에 '{k}' 없음")
 
+        # A10 — 협업 제안서 4필드. 없으면 T44 가 만들 것이 없다.
+        for k in PROPOSAL:
+            if not top.get(k):
+                issues.append(f"1위에 제안서 필드 '{k}' 없음")
+
+        roles = top.get("역할분담") or {}
+        for side in ("바틀링", "협력사"):
+            if not roles.get(side):
+                issues.append(f"1위 역할분담에 '{side}' 없음")
+
+        # 한쪽만 이득이면 협업이 성사되지 않는다
+        gains = top.get("상호_이익") or {}
+        for side in ("바틀링", "협력사"):
+            if not gains.get(side):
+                issues.append(f"1위 상호 이익에 '{side}' 없음")
+
+        # 매입가는 AI 가 정할 값이 아니다. 항상 협의 대상이다 (명세서 1-4 ④)
+        deal = top.get("매입") or {}
+        for k in ("제안_매입가", "근거"):
+            if not deal.get(k):
+                issues.append(f"1위 매입에 '{k}' 없음")
+        if deal and deal.get("협의_필요") is not True:
+            issues.append(f"1위 매입의 협의_필요가 {deal.get('협의_필요')} "
+                          f"— 항상 true 여야 한다")
+
+        # 대표님이 이 숫자를 들고 협상하신다. 어디서 나온 값인지 보여야 한다.
+        why = deal.get("근거")
+        if why is not None and not isinstance(why, dict):
+            issues.append(f"1위 매입 근거가 자유 문장임 — 세 갈래로 나눠야 함: {str(why)[:40]}")
+        elif isinstance(why, dict):
+            for k in ("희망_단가", "판매가_대비", "소비_근거"):
+                if not why.get(k):
+                    issues.append(f"1위 매입 근거에 '{k}' 없음")
+            # 협력사 제조 원가는 우리가 모른다. 모른다고 적혀야 정직하다.
+            if not (why.get("미확인") or []):
+                issues.append("1위 매입 근거에 미확인 항목이 비었음 "
+                              "— 협력사 실제 원가를 안다고 말하는 셈이다")
+
+        # 2·3위에는 쓰지 않는다. 출력이 세 배가 되고, 실제로 보내는 것은
+        # 채택된 안 하나다.
+        for r in ranks:
+            if r is top:
+                continue
+            extra = [k for k in PROPOSAL if r.get(k)]
+            if extra:
+                issues.append(f"{r.get('안_id')}({r.get('순위')}위): "
+                              f"1위 전용 필드가 채워짐 {extra}")
+
     # 후순위 사유가 있어야 한다
     for r in ranks:
         if r.get("순위") != 1 and not r.get("선정_사유"):
@@ -185,14 +237,18 @@ def run(label: str, target: date, save: bool = False) -> None:
     print(f"(1) 완료 {ms['p1']/1000:.1f}초")
 
     # (2)
+    rules = build_constraints()
+    partner_res = build_partner_resources(partner)
     try:
         p2, ms["p2"] = call(build(
             "p2_chef",
             p1_output=json.dumps(p1, ensure_ascii=False),
-            beer_list=beer_text, kitchen_constraints=KITCHEN,
-            partner_resources=build_partner_resources(partner),
+            beer_list=beer_text,
+            partner_resources=partner_res,
             partner_blockers=build_partner_blockers(partner),
-            constraints=NO_CONSTRAINTS, fewshot=NO_FEWSHOT))
+            margin_ref=MARGIN_REF, weather_pref=WEATHER_PREF,
+            trend_menu=NO_TREND_MENU,
+            constraints=rules["p2"], fewshot=NO_FEWSHOT))
     except Exception as e:
         print(f"(2) 실패: {e}\n")
         return
@@ -206,7 +262,8 @@ def run(label: str, target: date, save: bool = False) -> None:
             p2_output=json.dumps(p2, ensure_ascii=False),
             bottling_sns=BOTTLING_SNS,
             partner_sns=build_partner_sns(partner),
-            events=build_events(target)))
+            events=build_events(target),
+            constraints=rules["p3"], past_cases=PAST_CASES))
     except Exception as e:
         print(f"(3) 실패: {e}\n")
         return
@@ -218,9 +275,9 @@ def run(label: str, target: date, save: bool = False) -> None:
         p1_output=json.dumps(p1, ensure_ascii=False),
         p2_output=json.dumps(p2, ensure_ascii=False),
         p3_output=json.dumps(p3, ensure_ascii=False),
-        beer_list=beer_text,
+        beer_list=beer_text, partner_resources=partner_res,
         rec_reason=NO_REC_REASON,
-        constraints=NO_CONSTRAINTS, fewshot=NO_FEWSHOT)
+        constraints=rules["p4"], fewshot=NO_FEWSHOT)
     print(f"(4) 프롬프트 {len(p4_prompt)}자\n")
 
     try:
@@ -246,6 +303,20 @@ def run(label: str, target: date, save: bool = False) -> None:
         print(f"        사유   {str(r.get('선정_사유'))[:60]}")
         for risk in (r.get("예상_리스크") or [])[:2]:
             print(f"        리스크 {risk[:60]}")
+
+        # 1위는 협력사에 보낼 제안서가 된다 (명세서 4-2-1)
+        if r.get("순위") != 1:
+            continue
+        deal = r.get("매입") or {}
+        roles = r.get("역할분담") or {}
+        gains = r.get("상호_이익") or {}
+        print(f"        매입   {deal.get('제안_매입가')} "
+              f"(협의 필요 {deal.get('협의_필요')})")
+        print(f"        역할   바틀링 {roles.get('바틀링')}")
+        print(f"               협력사 {roles.get('협력사')}")
+        print(f"        이익   바틀링 {str(gains.get('바틀링'))[:50]}")
+        print(f"               협력사 {str(gains.get('협력사'))[:50]}")
+        print(f"        배경   {str(r.get('배경'))[:60]}")
     for e in out.get("제외") or []:
         print(f"  제외  {e.get('안_id')} — {str(e.get('제외_사유'))[:60]}")
 

@@ -17,8 +17,9 @@ import json
 import time
 from datetime import date, datetime, timedelta, timezone
 
-from chain.inputs import (BOTTLING_SNS, KITCHEN, NO_REC_REASON,
-                          build_beer_list, build_events,
+from chain.inputs import (BOTTLING_SNS, MARGIN_REF, NO_REC_REASON,
+                          NO_TREND_MENU, PAST_CASES, WEATHER_PREF,
+                          build_beer_list, build_constraints, build_events,
                           build_partner_blockers, build_partner_resources,
                           build_partner_sns, fetch_partner)
 from chain.runner import run
@@ -27,7 +28,6 @@ from context.builder import build as build_context
 KST = timezone(timedelta(hours=9))
 WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
 
-NO_CONSTRAINTS = "(없음 — 폐기 사례가 아직 없다)"
 NO_FEWSHOT = "(없음 — 채택 사례가 아직 없다)"
 
 
@@ -55,20 +55,28 @@ def main() -> None:
         context=build_context(target, partner_category=partner.get("category")),
         target_date=target.isoformat(),
         beer_list=build_beer_list(),
-        kitchen=KITCHEN,
         partner_res=build_partner_resources(partner),
         partner_blockers=build_partner_blockers(partner),
-        constraints=NO_CONSTRAINTS,
+        margin_ref=MARGIN_REF,
+        weather_pref=WEATHER_PREF,
+        trend_menu=NO_TREND_MENU,
+        constraints=build_constraints(),
         fewshot=NO_FEWSHOT,
         bottling_sns=BOTTLING_SNS,
         partner_sns=build_partner_sns(partner),
         events=build_events(target),
+        past_cases=PAST_CASES,
         rec_reason=NO_REC_REASON,
     )
 
     print("입력 크기")
     for k, v in args.items():
-        print(f"  {k:18} {len(str(v)):>6}자")
+        # constraints 만 dict 다. 단계별로 규칙이 갈린다 (명세서 1-5)
+        if isinstance(v, dict):
+            inner = " / ".join(f"{s} {len(t)}자" for s, t in v.items())
+            print(f"  {k:18} {inner}")
+        else:
+            print(f"  {k:18} {len(str(v)):>6}자")
     print()
 
     print("체인 실행")
@@ -79,12 +87,16 @@ def main() -> None:
         # runner 의 인자 이름이 바뀌면 여기서 걸린다
         print(f"\n인자 불일치: {e}")
         raise SystemExit(1)
-    except Exception as e:
-        print(f"\n실패: {e}")
-        raise SystemExit(1)
 
     sec = time.perf_counter() - t0
     print(f"\n완료 — 총 {sec:.1f}초 (LLM {r['latency_ms']/1000:.1f}초)")
+
+    # run() 은 더 이상 예외를 밖으로 던지지 않는다. 중간에 끊겨도 앞 단계
+    # 결과를 살려 돌려주므로, 어디까지 나왔는지 함께 본다.
+    if r["error"]:
+        done = [k for k in ("p1", "p2", "p3", "final") if r[k]] or ["없음"]
+        print(f"  체인이 끊겼다 — {r['error']}")
+        print(f"  살아남은 단계 {done}")
 
     # 단계별 산출물이 실제로 왔는지
     print()
@@ -92,21 +104,22 @@ def main() -> None:
     print("단계별 출력")
     print("=" * 56)
 
-    slots = r["p1"].get("공략_시간대") or []
+    # 끊긴 뒤의 단계는 None 이다. 그 자체가 결과이므로 죽지 않고 그대로 센다.
+    slots = (r["p1"] or {}).get("공략_시간대") or []
     print(f"  (1) 공략 시간대 : {len(slots)}개")
     for s in slots:
         print(f"        {s.get('시작')}~{s.get('종료')} ({s.get('근거_건수')})")
 
-    menus = r["p2"].get("메뉴안") or []
+    menus = (r["p2"] or {}).get("메뉴안") or []
     print(f"  (2) 메뉴안      : {len(menus)}개")
     for m in menus:
         print(f"        {m.get('안_id')}. {m.get('메뉴명')} "
               f"— {(m.get('페어링_맥주') or {}).get('메뉴명')}")
 
-    plans = r["p3"].get("안별_기획") or []
+    plans = (r["p3"] or {}).get("안별_기획") or []
     print(f"  (3) 안별 기획   : {len(plans)}개")
 
-    ranks = r["final"].get("순위") or []
+    ranks = (r["final"] or {}).get("순위") or []
     print(f"  (4) 순위        : {len(ranks)}개")
     for rk in ranks:
         beer = rk.get("페어링_맥주") or {}
@@ -116,7 +129,14 @@ def main() -> None:
     # runner 가 입력을 빠뜨리면 나타나는 증상
     print()
     print("-" * 56)
+
+    # runner 가 화면에 넘길 경고. 지금 담기는 것은 재생성_필요 하나다.
+    for w in r["issues"]:
+        print(f"  (경고) {w}")
+
     issues = []
+    if r["error"]:
+        issues.append(f"체인이 끝까지 돌지 않음 — {r['error']}")
     if len(menus) != 3:
         issues.append(f"메뉴안 {len(menus)}개 — 3개여야 함")
     if len(plans) != len(menus):
@@ -128,6 +148,16 @@ def main() -> None:
         if not price:
             issues.append(f"{rk.get('안_id')}: 맥주 단가가 비어 있음 "
                           f"— runner 가 beer_list 를 넘기지 않았을 수 있다")
+
+    # 제안서 4필드는 1위에만 온다 (명세서 1-4).
+    # 비어 있으면 runner 가 partner_resources 를 (4)에 넘기지 않았을 수 있다.
+    top = next((r for r in ranks if r.get("순위") == 1), None)
+    if top:
+        missing = [k for k in ("역할분담", "상호_이익", "배경", "매입")
+                   if not top.get(k)]
+        if missing:
+            issues.append(f"1위에 제안서 필드 없음 {missing} "
+                          f"— T44 협업 제안서를 만들 수 없다")
 
     if issues:
         for i in issues:
