@@ -10,3 +10,6 @@ data/raw/*
 *.log
 .idea/
 .vscode/
+
+# 제3자 제안서·미공개 협상 자료 (공개 저장소이므로 올리지 않는다)
+docs/private/
