@@ -16,8 +16,8 @@
   3. 연속 호출이 견디는가
 
 실행
-  python -m tests.probe_naver_menu "블랙스미스 자양동"
-  python -m tests.probe_naver_menu "블랙스미스 자양동" --repeat 5
+  python -m tests.probe_naver_menu "○○커피 자양동"
+  python -m tests.probe_naver_menu "○○커피 자양동" --repeat 5
 """
 import json
 import random
@@ -169,7 +169,7 @@ def fetch_menu_html(place_id: str) -> list | None:
 
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    query = args[0] if args else "블랙스미스 자양동"
+    query = args[0] if args else "○○커피 자양동"
     repeat = 1
     if "--repeat" in sys.argv:
         i = sys.argv.index("--repeat")

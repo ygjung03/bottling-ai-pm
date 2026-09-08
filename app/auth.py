@@ -9,6 +9,8 @@
     from app.auth import require_owner
     require_owner()          # 대표님 전용 페이지 맨 위
 """
+import os
+
 import streamlit as st
 
 from db.client import get_client
@@ -18,12 +20,29 @@ SS_PARTNER = "auth_partner"      # 초대 코드로 확인된 협력사 정보
 
 
 def _password() -> str:
-    """st.secrets 우선, 없으면 환경변수. 둘 다 없으면 개발용 기본값."""
+    """
+    st.secrets 우선, 없으면 환경변수.
+
+    [2026-09-08] 기본값을 없앴다.
+
+    전에는 둘 다 비면 개발용 기본값으로 통과했다. 저장소가 공개라
+    그 값이 그대로 읽혔고, 설정을 빠뜨려도 아무 표시 없이 열려서
+    빠뜨린 사실조차 알 수 없었다.
+
+    지금은 설정이 없으면 로그인 화면에서 멈춘다. 배포(T27) 때
+    Streamlit Cloud secrets 에 OWNER_PASSWORD 를 넣어야 한다.
+    """
     try:
         return st.secrets["OWNER_PASSWORD"]
     except Exception:
-        import os
-        return os.getenv("OWNER_PASSWORD", "bottling")
+        pass
+
+    pw = os.getenv("OWNER_PASSWORD")
+    if not pw:
+        st.error("OWNER_PASSWORD 가 설정되지 않았습니다.")
+        st.caption("로컬은 .env, 배포는 Streamlit Cloud secrets 에 넣습니다.")
+        st.stop()
+    return pw
 
 
 def is_owner() -> bool:
