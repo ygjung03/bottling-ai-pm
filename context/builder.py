@@ -539,7 +539,51 @@ def summarize_sales(dong: str, industries: list[str]) -> list[str]:
         if parts:
             out.append(f"    ({latest.get('quarter')}) " + " / ".join(parts))
 
+        out.extend(_timeband_ticket(latest))
+
     return out or [f"- {NO_DATA}"]
+
+
+def _timeband_ticket(row: dict) -> list[str]:
+    """
+    시간대별 객단가. 전체 평균 하나로는 안 보이는 차이가 여기서 드러난다.
+
+    실측으로 호프-간이주점 2026Q2 는 21-24시 49,539원 / 17-21시 43,094원이다.
+    같은 가게라도 심야 손님이 한 번에 더 많이 쓴다. 협업 메뉴의 판매가를
+    정할 때 공략 시간대의 값을 봐야 하는 이유다.
+
+        구간 객단가 = (금액비중 × 총매출) / (건수비중 × 총건수)
+
+    판정하지 않는다. 어느 구간이 유리한지는 LLM 이 정한다. 코드는 여섯
+    구간을 그대로 늘어놓고 근거가 된 건수를 함께 적는다 (명세서 6-3 원칙 ①·④).
+    거래가 없는 구간은 객단가가 0 원이 아니라 없는 것이므로 따로 밝힌다.
+
+    비중을 소수 넷째 자리까지만 저장하므로 원값 대비 몇 원 어긋난다
+    (실측 49,542원 / 원값 49,539원). 판매가 근거로 쓰는 값이라 이 정도
+    오차는 무해하고, 원본 건수를 그대로 담으면 축마다 컬럼이 배로 는다.
+    """
+    amt, cnt = row.get("sales_amount"), row.get("sales_count")
+    a_ratio = row.get("timeband_ratio") or {}
+    c_ratio = row.get("timeband_count_ratio") or {}
+    if not (amt and cnt and a_ratio and c_ratio):
+        return []
+
+    priced, empty = [], []
+    for band in sorted(a_ratio):
+        band_cnt = round(c_ratio.get(band, 0) * cnt)
+        if band_cnt <= 0:
+            empty.append(band)
+            continue
+        band_amt = a_ratio[band] * amt
+        priced.append(f"{band} {int(band_amt // band_cnt):,}원({band_cnt:,}건)")
+
+    if not priced:
+        return []
+
+    lines = [f"    ({row.get('quarter')}) 구간 객단가  " + " / ".join(priced)]
+    if empty:
+        lines.append(f"             ※ {'·'.join(empty)} 는 거래 없음")
+    return lines
 
 
 def summarize_events(target: date) -> list[str]:
@@ -599,6 +643,8 @@ def build(target: date, dong: str = "자양3동",
         f" 현재보다 수개월 뒤처짐.",
         "  요일·시간대·성별·연령 비율은 모두 매출 금액 기준이며,"
         " 미상 결제가 있어 합이 100%가 되지 않는다",
+        "  객단가는 결제 1건당 금액이다. 한 번에 여러 개를 살 수 있으므로"
+        " 메뉴 한 개의 가격이 아니다",
         *summarize_sales(dong, inds),
         "",
         "[인근 행사 (30일 내)]",

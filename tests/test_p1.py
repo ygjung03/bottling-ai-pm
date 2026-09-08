@@ -73,6 +73,25 @@ def check(out: dict, ctx: str, target: date) -> list[str]:
         if not s.get("근거_건수"):
             issues.append(f"근거 건수 누락: {s.get('시작')}")
 
+    # 소비 수준을 옮겨야 (2)(4)가 판매가·매입가를 근거 있게 정한다.
+    # 이후 단계는 [분기 매출 프로파일]을 직접 보지 못하고 이 값만 본다.
+    lv = out.get("소비_수준") or {}
+    if not lv:
+        issues.append("소비_수준 없음 — (2)(4)가 객단가를 못 본다")
+    else:
+        for side in ("협력사_업종", "바틀링_업종"):
+            d = lv.get(side) or {}
+            if not d:
+                issues.append(f"소비_수준에 '{side}' 없음")
+                continue
+            if not d.get("전체_객단가"):
+                issues.append(f"소비_수준 {side}: 전체 객단가 없음")
+            # 지어낸 값이 아닌지 — 컨텍스트에 있는 숫자여야 한다
+            for k in ("구간_객단가", "전체_객단가"):
+                v = d.get(k)
+                if v and f"{int(v):,}" not in ctx:
+                    issues.append(f"소비_수준 {side}.{k} {int(v):,}원이 입력에 없음")
+
     # 근거 지표는 원문을 인용해야 한다
     for g in out.get("근거_지표") or []:
         if not any(p.search(g) for p in CITED):
