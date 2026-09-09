@@ -80,12 +80,31 @@ def duration_days(text: str) -> int | None:
     return None
 
 
+def span_start(text: str, year: int) -> date | None:
+    """
+    "2026-09-17(목)~2026-09-19(토) 3일간" 같은 표기에서 시작일을 뽑는다.
+
+    "9/17(목)~" 처럼 연도가 빠진 표기가 흔하다. 이때는 인자로 받은
+    year, 즉 대상일의 연도를 쓴다.
+
+    날짜를 찾지 못하면 None 을 돌려준다. "3일간"처럼 일수만 적힌 경우가
+    여기 해당하며, 근거가 없으므로 위반으로 몰지 않는다.
+    """
+    m = re.search(r"(?:(\d{4})\s*[-./년]\s*)?(\d{1,2})\s*[-./월]\s*(\d{1,2})", text)
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1) or year), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
 def latest_weekday(dow: int) -> date:
     today = datetime.now(KST).date()
     return today - timedelta(days=(today.weekday() - dow) % 7)
 
 
-def check(out: dict, p2: dict, sns_known: bool) -> list[str]:
+def check(out: dict, p2: dict, sns_known: bool, target: date) -> list[str]:
     """프롬프트가 지시한 제약을 지켰는지 본다."""
     issues = []
 
@@ -111,8 +130,19 @@ def check(out: dict, p2: dict, sns_known: bool) -> list[str]:
                 for k in ("시점", "채널", "내용"):
                     if not s.get(k):
                         issues.append(f"홍보 일정 항목에 '{k}' 없음: {s}")
-            if not any(BEFORE_EXEC.search(str(s.get("시점") or ""))
-                       for s in schedule):
+            # 시점은 "실행 1주 전" 같은 상대 표현으로도, "2026-09-03" 같은
+            # 실제 날짜로도 온다. 실행일을 알려준 뒤로는 날짜 쪽이 많다.
+            #
+            # 날짜가 적혀 있으면 그것으로 판정한다. 실행일 당일이나 그 뒤는
+            # 사전 홍보가 아니다. 날짜가 없을 때만 표현을 본다.
+            def is_before(s) -> bool:
+                when = str(s.get("시점") or "")
+                day = span_start(when, target.year)
+                if day:
+                    return day < target
+                return bool(BEFORE_EXEC.search(when))
+
+            if not any(is_before(s) for s in schedule):
                 when = [str(s.get("시점")) for s in schedule]
                 issues.append(f"홍보 일정에 '실행 전' 항목 없음 — {when}")
 
@@ -151,9 +181,19 @@ def check(out: dict, p2: dict, sns_known: bool) -> list[str]:
                 issues.append(f"{pid}: 이벤트안 '{k}'가 데이터 없음 — 마케터가 정할 값이다")
 
         # A8 — 실행 기간 3일 이상 (C003)
-        days = duration_days(str(ev.get("기간") or ""))
+        span = str(ev.get("기간") or "")
+        days = duration_days(span)
         if days is not None and days < MIN_DAYS:
             issues.append(f"{pid}: 실행 기간 {days}일 — {MIN_DAYS}일 이상이어야 함")
+
+        # 기간이 실행 예정일부터 시작하는가.
+        #
+        # (3)이 실행일을 몰라 스키마 예시를 그대로 베끼거나 엉뚱한 달을
+        # 지어낸 적이 있다. 이 값은 제안서에 그대로 실려 협력사에 나간다.
+        start = span_start(span, target.year)
+        if start and start != target:
+            issues.append(f"{pid}: 실행 기간이 대상일부터 시작하지 않음 "
+                          f"— 대상 {target} / 기간 '{span}'")
 
         copy = str(p.get("홍보_문구") or "")
         if not copy:
@@ -245,6 +285,7 @@ def run(label: str, target: date) -> None:
         "p3_marketer",
         p1_output=json.dumps(p1, ensure_ascii=False),
         p2_output=json.dumps(p2, ensure_ascii=False),
+        target_date=target.isoformat(),
         bottling_sns=BOTTLING_SNS,
         partner_sns=build_partner_sns(partner),
         events=build_events(target),
@@ -281,7 +322,7 @@ def run(label: str, target: date) -> None:
         print(f"      \"{p.get('홍보_문구')}\"")
         print(f"      {' '.join(p.get('해시태그') or [])}")
 
-    issues = check(out, p2, sns_known)
+    issues = check(out, p2, sns_known, target)
     print("-" * 64)
     if issues:
         for i in issues:
