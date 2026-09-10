@@ -11,7 +11,7 @@
   20초짜리 체인이 다시 돈다. session_state 에 넣어야 한다.
 
 [미구현 기능은 화면에 흔적을 남기지 않는다]
-  메뉴 이미지(T43)·협업 제안서(T44)·채택 폐기(T23)는 아직 없다.
+  메뉴 이미지(T43)·채택 폐기(T23)는 아직 없다.
   자리표시자를 두지 않고 그 영역째 감춘다. 대표님이 보는 화면에
   개발 티켓 번호가 나오면 안 된다.
 """
@@ -24,6 +24,8 @@ import _path  # noqa: F401  (프로젝트 루트를 sys.path 에 추가)
 import streamlit as st
 
 from app.auth import require_owner
+from app.proposal import (build_proposal, build_proposal_docx, missing_fields,
+                          proposal_no, won)
 from chain.inputs import (BOTTLING_SNS, MARGIN_REF, NO_REC_REASON,
                           NO_TREND_MENU, PAST_CASES, WEATHER_PREF,
                           build_beer_list, build_constraints, build_events,
@@ -184,21 +186,6 @@ def _bullets(items) -> None:
         st.write(f"- {x}")
 
 
-def _won(text) -> int | None:
-    """
-    "매입가 1,500원", "1500원 — 판매가 4000원 대비 38%" 에서 앞의 금액을 뽑는다.
-
-    "산출 불가" 나 숫자가 없는 문장이면 None. 모르는 값을 0 으로 두면
-    마진이 판매가 전액으로 잡혀 실제보다 좋아 보인다.
-    """
-    if text is None:
-        return None
-    if isinstance(text, (int, float)):
-        return int(text)
-    m = re.search(r"(\d[\d,]*)", str(text))
-    return int(m.group(1).replace(",", "")) if m else None
-
-
 def render_price(item: dict, per_ml) -> None:
     """
     가격을 역할 상자에서 떼어 따로 보인다.
@@ -218,7 +205,7 @@ def render_price(item: dict, per_ml) -> None:
 
     # 1위는 (4)가 낸 제안 매입가가 더 정확하다. 2·3위는 (2)의 예상 원가뿐이다
     deal = item.get("매입") or {}
-    cost = _won(deal.get("제안_매입가")) or _won(item.get("예상_원가"))
+    cost = won(deal.get("제안_매입가")) or won(item.get("예상_원가"))
 
     total = (food or 0) + (beer_price or 0)
 
@@ -253,7 +240,43 @@ def render_price(item: dict, per_ml) -> None:
             c3.caption("매입가가 정해지면 계산된다")
 
 
-def render_rank(item: dict, is_top: bool) -> None:
+def render_proposal(item: dict, meta: dict) -> None:
+    """1위 안에만 붙는다. 실제로 협력사에 보내는 것은 채택된 한 안이다 (명세서 1-4)."""
+    missing = missing_fields(item)
+    if missing:
+        st.warning(f"제안서를 만들 수 없습니다 — 1위 안에 {', '.join(missing)}이(가) 없습니다. "
+                   f"다시 생성해 주세요.")
+        return
+
+    text = build_proposal(item, meta)
+
+    with st.container(border=True):
+        st.markdown("##### 협업 제안서")
+        st.caption(f"{proposal_no(meta)} · 협력사에 그대로 보낼 수 있는 문서입니다.")
+
+        deal = item.get("매입") or {}
+        if deal.get("협의_필요"):
+            st.info("제안 매입가는 협의 대상입니다. 협력사의 원가를 알 수 없으므로 "
+                    "이 값은 협상의 출발점으로 쓰십시오.")
+
+        st.code(text, language=None)
+
+        c1, c2 = st.columns(2)
+        try:
+            c1.download_button(
+                "Word로 내려받기",
+                data=build_proposal_docx(text, meta),
+                file_name=f"{proposal_no(meta)}_협업제안서.docx",
+                mime=("application/vnd.openxmlformats-officedocument"
+                      ".wordprocessingml.document"),
+                use_container_width=True,
+            )
+        except Exception as e:
+            c1.caption(f"Word 생성 실패 — 위 본문을 복사해 쓰십시오 ({e})")
+        c2.caption("본문 오른쪽 위 아이콘으로 전체 복사할 수 있습니다.")
+
+
+def render_rank(item: dict, is_top: bool, meta: dict) -> None:
     """
     순위 한 건. 대표님이 이 화면만 보고 실행 여부를 정할 수 있어야 한다.
 
@@ -357,7 +380,8 @@ def render_rank(item: dict, is_top: bool) -> None:
             for k, v in basis.items():
                 st.markdown(f"**{k.replace('_', ' ')}** — {v}")
 
-    # 협업 제안서(T44)는 아직 없다. 미구현 안내를 화면에 두지 않는다.
+    if is_top:
+        render_proposal(item, meta)
 
 
 def render_result(result: dict, meta: dict) -> None:
@@ -391,7 +415,7 @@ def render_result(result: dict, meta: dict) -> None:
     tabs = st.tabs([f"{r.get('순위')}순위 · {r.get('메뉴명')}" for r in ranks])
     for tab, item in zip(tabs, ranks):
         with tab:
-            render_rank(item, is_top=item.get("순위") == 1)
+            render_rank(item, is_top=item.get("순위") == 1, meta=meta)
 
     with st.expander("검수 결과"):
         rows = final.get("체크리스트") or []
