@@ -37,10 +37,10 @@ def _pad(s: str, width: int) -> str:
 
 def won(text) -> int | None:
     """
-    "매입가 1,500원", "1500원 — 판매가 4000원 대비 38%" 에서 앞의 금액을 뽑는다.
+    "1500원", "1800원 — 협력사 정가 3000원 대비 60%" 에서 앞의 금액을 뽑는다.
 
     "산출 불가" 나 숫자가 없는 문장이면 None. 모르는 값을 0 으로 두면
-    마진이 판매가 전액으로 잡혀 실제보다 좋아 보인다.
+    협력사에 주는 돈이 없는 것처럼 보인다.
     """
     if text is None:
         return None
@@ -80,7 +80,8 @@ def build_proposal(item: dict, meta: dict) -> str:
     roles = item.get("역할분담") or {}
     gains = item.get("상호_이익") or {}
     ev = item.get("이벤트") or {}
-    price = item.get("판매가_제안")
+    set_price = item.get("판매가_제안")
+    listed = item.get("정가_합")
 
     def pairs(rows: list[tuple[str, str]]) -> list[str]:
         w = max((_cols(k) for k, _ in rows), default=0)
@@ -129,15 +130,22 @@ def build_proposal(item: dict, meta: dict) -> str:
     ])))
 
     cond = [("협업 방식", "완제품 매입 후 판매")]
-    if deal.get("제안_매입가"):
-        # (4)가 "1,200원 — 판매가 4000원 대비 30%" 처럼 판매가를 함께 적는다.
-        # 바로 아래 줄에 판매가가 또 나오므로 금액만 남긴다.
-        amount = won(deal["제안_매입가"])
-        shown = f"{amount:,}원" if amount else str(deal["제안_매입가"])
+    if deal.get("바틀링_제안_매입가"):
+        # (4)가 "1,800원 — 협력사 정가 3000원 대비 60%" 처럼 비율을 함께
+        # 적는다. 아래 줄에 값이 또 나오므로 여기서는 금액만 남긴다.
+        amount = won(deal["바틀링_제안_매입가"])
+        shown = (f"{amount:,}원" if amount
+                 else str(deal["바틀링_제안_매입가"]))
         note = "  ※ 협의 필요" if deal.get("협의_필요") else ""
         cond.append(("제안 매입가", f"{shown}{note}"))
-    if price:
-        cond.append(("판매가", f"{price:,}원"))
+    # 정가_합은 세트인 안에만 있다. 단품은 맥주를 묶어 팔지 않으므로
+    # 비교할 「따로 살 때」가 없다 (셀프탭이라 맥주는 별개 거래다).
+    if listed:
+        cond.append(("따로 살 때", f"{listed:,}원"))
+        cond.append(("세트 판매가", f"{set_price:,}원 (맥주 500ml 이상)"
+                                if set_price else "협의 필요"))
+    elif set_price:
+        cond.append(("판매가", f"{set_price:,}원"))
     if deal.get("협력사_수익"):
         cond.append(("협력사 수익", deal["협력사_수익"]))
     cond += [("보관 조건", item.get("보관_조건") or "협의 필요"),

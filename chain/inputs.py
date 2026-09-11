@@ -58,6 +58,18 @@ NO_DATA = "데이터 없음"
 #
 # A-3 장비 표의 붕어빵기계는 협력사에게서 빌려오는 것이라
 # 여기가 아니라 partners.equipment 에 둔다.
+# 바틀링이 이미 갖고 있는 식재료.
+#
+# 협업이 완제품 매입 하나가 되면서(기획서 6-1) 협력사가 무엇으로 만드는지는
+# 알 필요가 없어졌다. 사 오는 것은 완성품이고, 변형은 바틀링 쪽에서 한다.
+# 그래서 (2)가 알아야 하는 것은 바틀링이 무엇을 갖고 있느냐다 —
+# 이미 있는 재료로 진행할 수 있으면 새 재료를 사 올 필요가 없다.
+#
+# [미확보] 대표님께 여쭤야 한다 (자료요청 목록). 짐작으로 채우면 없는 재료를
+# 전제한 메뉴가 나온다. 비어 있는 동안 (2)는 더하는 것을 전부 「사 온다」로
+# 적고 바틀링_준비에 올린다.
+BOTTLING_INGREDIENTS = NO_DATA
+
 KITCHEN = """[조리 여건]
 - 조리 시간: 주문 접수부터 포장까지 4분 이내.
   단, 미리 전처리해두고 바로 낼 수 있으면 시간 제한을 넘겨도 된다
@@ -179,11 +191,18 @@ SEED_PARTNER = {
     "name": "테스트용 제과점",
     "category": "제과·디저트",
     "signature_menu": "붕어빵",
+    # 협력사가 지금 팔고 있는 것과 그 가격. 협업이 완제품 매입 하나이므로
+    # 새 메뉴를 만드는 것이 아니라 팔던 것을 변형한다 (기획서 6-1).
+    # 납품가는 메뉴마다 받는다. 단가 하나로는 메뉴별 차이를 덮을 수 없다.
+    "menu_prices": [
+        {"메뉴": "붕어빵 3개", "가격": 3000, "납품가": 2100},
+        {"메뉴": "슈크림 붕어빵 3개", "가격": 3500, "납품가": 2500},
+        {"메뉴": "미니 붕어빵 10개", "가격": 5000, "납품가": 3500},
+    ],
     "ingredients": ["팥앙금", "슈크림", "붕어빵 반죽", "우유크림"],
     # 붕어빵기계는 바틀링이 협력사에게서 빌려오는 장비다(자료요청서 A-3).
     "equipment": ["붕어빵 기계 (자차 이동 가능)", "반죽 보관용 냉장고",
                   "제과용 소도구"],
-    "collab_types": ["팝업 출장", "재료 납품", "콘텐츠 촬영"],
     "available_slots": "평일 오후 협의 가능",
     "sns_channel": "인스타그램",
     "sns_followers": 3200,
@@ -191,7 +210,7 @@ SEED_PARTNER = {
     # 완제품 납품 희망 단가. 협업 형태가 매입 하나로 좁혀지면서(기획서 6-1)
     # 이 값이 있으면 (2)의 예상_원가가 "산출 불가"에서 벗어나고
     # (4)의 제안_매입가도 근거를 얻는다. 실제로는 협력사가 폼(T21)에 적는다.
-    "wholesale_price": 1200,
+    "wholesale_price": 700,
     "blockers": ["반죽은 당일 소진해야 하므로 사전 대량 준비가 불가하다",
                  "주말은 자체 매장 운영으로 출장이 어렵다",
                  "붕어빵 기계를 빌리려면 1주 전에 예약해야 한다"],
@@ -287,6 +306,34 @@ def fetch_partner(partner_id: int | None = None) -> dict | None:
     return rows[0] if rows else None
 
 
+def _menus(partner: dict) -> str:
+    """
+    협력사가 지금 팔고 있는 메뉴와 두 가지 값.
+
+    협업이 완제품 매입 하나이므로(기획서 6-1) 셰프가 할 일은 새 메뉴를
+    만드는 것이 아니라 팔던 것을 고르는 것이다.
+
+    판매가는 손님에게 받는 값이고 납품가는 바틀링에 주는 값이다.
+    납품가를 메뉴마다 받는 이유는 메뉴에 따라 값이 다르기 때문이다.
+    단가 하나로 모든 메뉴를 덮으면 어떤 메뉴는 소매가보다 비싸게 매입하는
+    값이 나온다.
+
+    납품가는 선택 입력이라 비어 있을 수 있다. 그때는 협의로 정한다.
+    """
+    parts = []
+    for r in partner.get("menu_prices") or []:
+        name = str(r.get("메뉴") or "").strip()
+        if not name:
+            continue
+        price, wholesale = r.get("가격"), r.get("납품가")
+        bits = [name]
+        bits.append(f"판매가 {int(price):,}원" if price else "판매가 미입력")
+        bits.append(f"납품가 {int(wholesale):,}원" if wholesale
+                    else "납품가 미정 (협의 대상)")
+        parts.append(" ".join(bits))
+    return " / ".join(parts) if parts else NO_DATA
+
+
 def build_partner_resources(partner: dict | None) -> str:
     """
     협력사가 가진 것. 셰프가 메뉴를 짜는 재료다.
@@ -295,9 +342,9 @@ def build_partner_resources(partner: dict | None) -> str:
     줄이 없으면 협력사가 안 가진 것인지 아직 입력하지 않은 것인지
     구분되지 않아, 없는 장비를 쓰는 메뉴가 나온다.
 
-    희망 단가를 함께 싣는다(명세서 2-1). 협업이 완제품 매입 하나이므로
-    매입가가 곧 원가다. 이 값이 있으면 (2)가 원가를 실제 수치로 채우고
-    (4)가 제안 매입가의 근거를 얻는다.
+    납품가는 메뉴마다 다르므로 「판매 중인 메뉴」 줄 안에 함께 싣는다.
+    매장 전체에 하나의 단가를 두면 어떤 메뉴에서는 소매가보다 비싸게
+    매입하는 값이 나온다.
 
     (4)에도 이 문자열을 넘긴다. 역할분담을 쓰려면 상대가 무엇을 가졌는지
     알아야 한다(명세서 1-4).
@@ -309,21 +356,13 @@ def build_partner_resources(partner: dict | None) -> str:
         v = partner.get(key) or []
         return ", ".join(str(x) for x in v) if v else NO_DATA
 
-    # 선택 항목이라 비어 있을 수 있다(명세서 4-1). 협력사가 미리 정하지
-    # 못한 것이지 무료라는 뜻이 아니므로, 협의 대상임을 함께 적는다.
-    price = partner.get("wholesale_price")
-    price_txt = (f"{int(price):,}원" if price
-                 else f"{NO_DATA} (협력사 미입력 — 협의 대상)")
-
     head = f"{partner.get('name', '?')} / {partner.get('category') or NO_DATA}"
     return "\n".join([
         head,
         f"- 대표 메뉴: {partner.get('signature_menu') or NO_DATA}",
-        f"- 보유 식재료: {_join('ingredients')}",
+        f"- 판매 중인 메뉴: {_menus(partner)}",
         f"- 보유 장비: {_join('equipment')}",
-        f"- 가능한 협업 형태: {_join('collab_types')}",
         f"- 가능 일정: {partner.get('available_slots') or NO_DATA}",
-        f"- 완제품 납품 희망 단가: {price_txt}",
     ])
 
 

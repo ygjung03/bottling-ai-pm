@@ -11,9 +11,9 @@ import re
 from datetime import date, datetime, timedelta, timezone
 
 from chain.gemini import call
-from chain.inputs import (BOTTLING_SNS, MARGIN_REF, NO_DATA, NO_TREND_MENU,
-                          PAST_CASES, WEATHER_PREF, build_beer_list,
-                          build_constraints, build_events,
+from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
+                          NO_DATA, NO_TREND_MENU, PAST_CASES, WEATHER_PREF,
+                          build_beer_list, build_constraints, build_events,
                           build_partner_blockers, build_partner_resources,
                           build_partner_sns, fetch_partner)
 from chain.loader import build
@@ -271,6 +271,7 @@ def run(label: str, target: date) -> None:
             beer_list=beer_text,
             partner_resources=build_partner_resources(partner),
             partner_blockers=build_partner_blockers(partner),
+            bottling_ingredients=BOTTLING_INGREDIENTS,
             margin_ref=MARGIN_REF, weather_pref=WEATHER_PREF,
             trend_menu=NO_TREND_MENU,
             constraints=rules["p2"], fewshot=NO_FEWSHOT))

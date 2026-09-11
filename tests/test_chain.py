@@ -17,11 +17,12 @@ import json
 import time
 from datetime import date, datetime, timedelta, timezone
 
-from chain.inputs import (BOTTLING_SNS, MARGIN_REF, NO_REC_REASON,
-                          NO_TREND_MENU, PAST_CASES, WEATHER_PREF,
-                          build_beer_list, build_constraints, build_events,
-                          build_partner_blockers, build_partner_resources,
-                          build_partner_sns, fetch_partner)
+from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
+                          NO_REC_REASON, NO_TREND_MENU, PAST_CASES,
+                          WEATHER_PREF, build_beer_list, build_constraints,
+                          build_events, build_partner_blockers,
+                          build_partner_resources, build_partner_sns,
+                          fetch_partner)
 from chain.runner import run
 from context.builder import build as build_context
 
@@ -57,6 +58,7 @@ def main() -> None:
         beer_list=build_beer_list(),
         partner_res=build_partner_resources(partner),
         partner_blockers=build_partner_blockers(partner),
+        bottling_ingredients=BOTTLING_INGREDIENTS,
         margin_ref=MARGIN_REF,
         weather_pref=WEATHER_PREF,
         trend_menu=NO_TREND_MENU,

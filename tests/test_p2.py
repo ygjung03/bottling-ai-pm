@@ -11,8 +11,8 @@ import re
 from datetime import date, datetime, timedelta, timezone
 
 from chain.gemini import call
-from chain.inputs import (MARGIN_REF, NO_TREND_MENU, WEATHER_PREF,
-                          build_beer_list, build_constraints,
+from chain.inputs import (BOTTLING_INGREDIENTS, MARGIN_REF, NO_TREND_MENU,
+                          WEATHER_PREF, build_beer_list, build_constraints,
                           build_partner_blockers, build_partner_resources,
                           fetch_partner)
 from chain.loader import build
@@ -123,14 +123,14 @@ def check(out: dict, beers: dict) -> list[str]:
         if not m.get("1회_납품_수량"):
             issues.append(f"{mid}: 1회 납품 수량 없음")
 
-        # 원가·판매가.
+        # 매입가·판매가.
         #
-        # 원가율 40% 검사는 뺐다(명세서 5-1). 매입 형태에서는 매입가가
-        # 원가이고 그것은 협력사와 협의할 값이라, 40% 라는 기준에 근거가 없다.
+        # 원가율 40% 검사는 뺐다(명세서 5-1). 매입 형태에서 매입가는
+        # 협력사와 협의할 값이라 40% 라는 기준에 근거가 없다.
         # 대신 손익 역전만 막는다 (A6).
-        cost, price = m.get("예상_원가"), m.get("판매가_제안")
+        cost, price = m.get("협력사희망_매입가"), m.get("판매가_제안")
         if not price:
-            issues.append(f"{mid}: 판매가 미제시 (원가와 별개로 정해야 함)")
+            issues.append(f"{mid}: 판매가 미제시 (매입가와 별개로 정해야 함)")
 
         # 무엇에 근거했는지 밝혀야 한다. 마진 기준값 3건에만 기대면
         # 근거가 얇다 — 형태가 다른 값이라 참고 이상이 못 된다 (U18).
@@ -144,7 +144,8 @@ def check(out: dict, beers: dict) -> list[str]:
             if n and price:
                 c = int(n.group(1).replace(",", ""))
                 if c >= price:
-                    issues.append(f"{mid}: 원가 {c:,}원 ≥ 판매가 {price:,}원 — 손익 역전")
+                    issues.append(f"{mid}: 매입가 {c:,}원 ≥ 판매가 {price:,}원"
+                                  f" — 손익 역전")
 
         # 이미지는 이 단계 다음에 별도로 생성된다 (명세서 1-2 ④)
         if m.get("메뉴_이미지"):
@@ -171,21 +172,25 @@ GHOST = ["아이스크림", "생크림", "치즈", "베이컨", "시럽", "잼",
 
 
 def check_ghost(out: dict, partner: dict) -> list[str]:
-    """목록에 없는 재료가 메뉴명·구성에 등장하는지 본다.
-
-    대조 대상이 협력사 자원뿐이다. 바틀링 주방 여건은 완제품 매입에서
-    쓰이지 않으므로(기획서 6-1) 재료를 대는 곳은 협력사 하나다.
     """
-    have = " ".join([
-        " ".join(partner.get("ingredients") or []),
-        str(partner.get("signature_menu") or ""),
-    ])
+    메뉴명·구성에 나온 재료가 어디서 오는지 본다 (프롬프트 규칙 8).
+
+    올 곳은 둘뿐이다 — 협력사가 납품하는 메뉴, 그리고 바틀링이 준비하는 것.
+    둘 다 아니면 아무도 준비하지 않는 재료라 그 안은 실행되지 않는다.
+    """
+    sold = " ".join(str(m.get("메뉴") or "")
+                    for m in (partner.get("menu_prices") or []))
+    base = f"{sold} {partner.get('signature_menu') or ''}"
+
     issues = []
     for m in out.get("메뉴안") or []:
         text = f"{m.get('메뉴명', '')} {m.get('구성', '')}"
+        prep = " ".join(str(x) for x in (m.get("바틀링_준비") or []))
+        have = f"{base} {prep}"
         for g in GHOST:
             if g in text and g not in have:
-                issues.append(f"{m.get('안_id', '?')}: 목록에 없는 재료 '{g}'")
+                issues.append(f"{m.get('안_id', '?')}: '{g}' 가 어디서 오는지 "
+                              f"없음 — 바틀링_준비에 적혀야 한다")
     return issues
 
 
@@ -227,6 +232,7 @@ def run(label: str, target: date) -> None:
                       beer_list=beer_text,
                       partner_resources=build_partner_resources(partner),
                       partner_blockers=build_partner_blockers(partner),
+                      bottling_ingredients=BOTTLING_INGREDIENTS,
                       margin_ref=MARGIN_REF,
                       weather_pref=WEATHER_PREF,
                       trend_menu=NO_TREND_MENU,
@@ -251,7 +257,8 @@ def run(label: str, target: date) -> None:
         tag = f"{price:.0f}원/ml" if price else "?"
         print(f"  {m.get('안_id')}. {m.get('메뉴명')} [{m.get('접근')}]")
         print(f"      페어링 {pair} ({tag})"
-              f" / 원가 {m.get('예상_원가')} / 판매가 {m.get('판매가_제안')}")
+              f" / 매입 {m.get('협력사희망_매입가')}"
+              f" / 정가합 {m.get('정가_합')} / 판매가 {m.get('판매가_제안')}")
         print(f"      보관 {m.get('보관_조건')} / 납품 {m.get('1회_납품_수량')}")
 
     issues = check(out, beers) + check_ghost(out, partner)

@@ -39,7 +39,7 @@ def _j(obj) -> str:
 
 
 def run(context: str, target_date: str, beer_list: str,
-        partner_res: str, partner_blockers: str,
+        partner_res: str, partner_blockers: str, bottling_ingredients: str,
         margin_ref: str, weather_pref: str, trend_menu: str,
         constraints: dict, fewshot: str,
         bottling_sns: str, partner_sns: str, events: str, past_cases: str,
@@ -88,6 +88,7 @@ def run(context: str, target_date: str, beer_list: str,
                             p1_output=_j(result["p1"]), beer_list=beer_list,
                             partner_resources=partner_res,
                             partner_blockers=partner_blockers,
+                            bottling_ingredients=bottling_ingredients,
                             margin_ref=margin_ref, weather_pref=weather_pref,
                             trend_menu=trend_menu,
                             constraints=constraints["p2"], fewshot=fewshot)

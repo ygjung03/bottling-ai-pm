@@ -26,11 +26,11 @@ import streamlit as st
 from app.auth import require_owner
 from app.proposal import (build_proposal, build_proposal_docx, missing_fields,
                           proposal_no, won)
-from chain.inputs import (BOTTLING_SNS, MARGIN_REF, NO_REC_REASON,
-                          NO_TREND_MENU, PAST_CASES, WEATHER_PREF,
-                          build_beer_list, build_constraints, build_events,
-                          build_partner_blockers, build_partner_resources,
-                          build_partner_sns)
+from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
+                          NO_REC_REASON, NO_TREND_MENU, PAST_CASES,
+                          WEATHER_PREF, build_beer_list, build_constraints,
+                          build_events, build_partner_blockers,
+                          build_partner_resources, build_partner_sns)
 from chain.runner import run
 from context.builder import build as build_context
 from db.client import get_client
@@ -146,6 +146,7 @@ def generate(partner: dict, target: date) -> None:
             beer_list=build_beer_list(),
             partner_res=build_partner_resources(partner),
             partner_blockers=build_partner_blockers(partner),
+            bottling_ingredients=BOTTLING_INGREDIENTS,
             margin_ref=MARGIN_REF,
             weather_pref=WEATHER_PREF,
             trend_menu=NO_TREND_MENU,
@@ -193,29 +194,33 @@ def render_price(item: dict, per_ml) -> None:
     판매가를 「협력사가 준비」 안에 두면 그 돈을 협력사가 받는 것처럼 읽힌다.
     실제로 협력사가 받는 것은 매입가이고, 판매가는 손님에게 받는 돈이다.
 
-    마진을 코드가 계산해 보여준다. 대표님이 실행 여부를 정할 때 보는 가장
-    직접적인 수치인데, 세 숫자가 흩어져 있으면 직접 더하고 빼야 한다.
+    맥주값은 「세트」 안에서만 값에 들어간다. 바틀링은 손님이 원하는 만큼
+    따라 마시는 셀프탭이라, 단품에서는 맥주가 별개 거래다.
 
-    [맥주값을 합산하는 근거] 세트로 파는 구성이므로 손님은 두 값을 함께 낸다.
-    맥주는 바틀링 자체 상품이라 매입가가 없어 마진에 그대로 남는다.
+    마진은 맥주 원가를 몰라 직접 계산이 불가능하고, 이 협업 기획에 꼭
+    필요한 숫자도 아니기 때문에 따로 산출하지 않는다.
     """
-    food = item.get("판매가_제안")
     beer_name = (item.get("페어링_맥주") or {}).get("메뉴명") or "페어링 맥주"
     beer_price = int(per_ml * 500) if per_ml else None
 
-    # 1위는 (4)가 낸 제안 매입가가 더 정확하다. 2·3위는 (2)의 예상 원가뿐이다
-    deal = item.get("매입") or {}
-    cost = won(deal.get("제안_매입가")) or won(item.get("예상_원가"))
+    listed = item.get("정가_합")
+    price = item.get("판매가_제안")
+    menu_price = item.get("협력사_정가")
 
-    total = (food or 0) + (beer_price or 0)
+    # 1위는 (4)가 낸 제안 매입가가 더 정확하다. 2·3위는 (2)의 값뿐이다
+    deal = item.get("매입") or {}
+    cost = (won(deal.get("바틀링_제안_매입가"))
+            or won(item.get("협력사희망_매입가")))
 
     st.markdown("##### 가격")
 
     # 내역을 쌓고 합계를 아래에 둔다 (docs/ref/figma_세트구성.png).
     # 항목이 흩어져 있으면 총액을 머릿속에서 더해야 한다.
     with st.container(border=True):
-        for label, value in [(item.get("메뉴명") or "메뉴", food),
-                             (f"{beer_name} 500ml", beer_price)]:
+        rows = [(item.get("메뉴명") or "메뉴", menu_price)]
+        if listed:                      # 세트일 때만 맥주가 값에 들어간다
+            rows.append((f"{beer_name} 500ml", beer_price))
+        for label, value in rows:
             c_l, c_r = st.columns([3, 1])
             c_l.write(label)
             c_r.markdown(f"<div style='text-align:right'>"
@@ -224,20 +229,20 @@ def render_price(item: dict, per_ml) -> None:
                          unsafe_allow_html=True)
 
         st.divider()
-        c1, c2, c3 = st.columns(3)
-        c1.metric("손님이 내는 값", f"{total:,}원" if total else "미정")
 
-        c2.metric("협력사에 주는 값", f"{cost:,}원" if cost else "산출 불가")
-        c2.caption("협의 대상" if cost else "협력사 단가 미확보")
-
-        # 맥주는 바틀링 자체 상품이라 매입가가 없다. 마진에 그대로 남는다
-        if total and cost:
-            margin = total - cost
-            c3.metric("바틀링 마진", f"{margin:,}원")
-            c3.caption(f"{margin / total:.0%}")
+        if listed:
+            c1, c2, c3 = st.columns(3)
+            c1.metric("따로 사면", f"{listed:,}원")
+            c2.metric("세트로 내는 값", f"{price:,}원" if price else "미정")
+            if price and listed > price:
+                c2.caption(f"{listed - price:,}원 싸다 · 맥주 500ml 이상")
         else:
-            c3.metric("바틀링 마진", "산출 불가")
-            c3.caption("매입가가 정해지면 계산된다")
+            c2, c3 = st.columns(2)
+            c2.metric("손님이 내는 값", f"{price:,}원" if price else "미정")
+            c2.caption(f"맥주는 따로 계산 · {beer_name} 추천")
+
+        c3.metric("협력사에 주는 값", f"{cost:,}원" if cost else "산출 불가")
+        c3.caption("협의 대상" if cost else "협력사 납품가 미확보")
 
 
 def render_proposal(item: dict, meta: dict) -> None:

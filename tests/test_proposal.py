@@ -16,11 +16,12 @@ from datetime import date, datetime, timedelta, timezone
 
 from app.proposal import (build_proposal, build_proposal_docx, missing_fields,
                           proposal_no)
-from chain.inputs import (BOTTLING_SNS, MARGIN_REF, NO_REC_REASON, NO_TREND_MENU,
-                          PAST_CASES, WEATHER_PREF, build_beer_list,
-                          build_constraints, build_events,
-                          build_partner_blockers, build_partner_resources,
-                          build_partner_sns, fetch_partner)
+from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
+                          NO_REC_REASON, NO_TREND_MENU, PAST_CASES,
+                          WEATHER_PREF, build_beer_list, build_constraints,
+                          build_events, build_partner_blockers,
+                          build_partner_resources, build_partner_sns,
+                          fetch_partner)
 from chain.runner import run
 from context.builder import build as build_context
 
@@ -111,7 +112,7 @@ def check(text: str, item: dict, meta: dict, target: date) -> list[str]:
     if not field(text, "협업 메뉴"):
         issues.append("협업 메뉴 없음")
     deal = item.get("매입") or {}
-    if not deal.get("제안_매입가"):
+    if not deal.get("바틀링_제안_매입가"):
         issues.append("제안 매입가 없음")
 
     return issues
@@ -136,6 +137,7 @@ def main() -> None:
         beer_list=build_beer_list(),
         partner_res=build_partner_resources(partner),
         partner_blockers=build_partner_blockers(partner),
+        bottling_ingredients=BOTTLING_INGREDIENTS,
         margin_ref=MARGIN_REF,
         weather_pref=WEATHER_PREF,
         trend_menu=NO_TREND_MENU,

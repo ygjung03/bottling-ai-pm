@@ -11,7 +11,13 @@ CREATE TABLE IF NOT EXISTS partners (
   name              TEXT        NOT NULL,
   category          TEXT        NOT NULL,           -- 제과·디저트 / 피자 / 분식 / 카페 ...
   signature_menu    TEXT,
-  ingredients       TEXT[]      NOT NULL DEFAULT '{}',   -- 셰프의 핵심 입력
+  menu_prices       JSONB       NOT NULL DEFAULT '[]',
+                    -- 협력사가 실제로 팔고 있는 메뉴와 가격 3~5개
+                    -- [{"메뉴": "붕어빵 2개", "가격": 2000}, ...]
+                    -- 협업은 완제품 매입 하나이므로(기획서 6-1) 새 메뉴를 만드는
+                    -- 것이 아니라 팔던 것을 변형한다. 실제 판매가를 알아야
+                    -- 매입가 제안에 근거가 생긴다
+  ingredients       TEXT[]      NOT NULL DEFAULT '{}',   -- 메뉴 변형 시 참고
   equipment         TEXT[]      NOT NULL DEFAULT '{}',
   collab_types      TEXT[]      NOT NULL DEFAULT '{}',   -- 팝업출장 / 재료납품 / 콘텐츠
   available_slots   TEXT,
@@ -177,11 +183,13 @@ CREATE TABLE IF NOT EXISTS plans (
   range_to          DATE,               -- 희망 기간 끝
   date_reason       TEXT,               -- 그 날짜를 고른 이유 (range 인 경우)
 
-  context_snapshot  TEXT    NOT NULL,   -- 컨텍스트 빌더 출력 원문 (재현·검증용)
+  -- AI PM 을 쓰지 않은 협업도 여기에 남긴다. 리드타임 기준선이 되므로
+  -- (기획서 7-1) 체인 출력이 없다고 막으면 비교할 대상이 없어진다.
+  context_snapshot  TEXT,               -- 컨텍스트 빌더 출력 원문 (재현·검증용)
   p1_output         JSONB,
   p2_output         JSONB,
   p3_output         JSONB,
-  final_output      JSONB   NOT NULL,
+  final_output      JSONB,
 
   menu_images       JSONB,              -- {"A": "img/plans/...png", "B": null}
   image_model       TEXT,               -- 생성 모델명 (재현용)
