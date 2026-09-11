@@ -58,6 +58,8 @@ NO_DATA = "데이터 없음"
 #
 # A-3 장비 표의 붕어빵기계는 협력사에게서 빌려오는 것이라
 # 여기가 아니라 partners.equipment 에 둔다.
+
+
 # 바틀링이 이미 갖고 있는 식재료.
 #
 # 협업이 완제품 매입 하나가 되면서(기획서 6-1) 협력사가 무엇으로 만드는지는
@@ -203,14 +205,12 @@ SEED_PARTNER = {
     # 붕어빵기계는 바틀링이 협력사에게서 빌려오는 장비다(자료요청서 A-3).
     "equipment": ["붕어빵 기계 (자차 이동 가능)", "반죽 보관용 냉장고",
                   "제과용 소도구"],
-    "available_slots": "평일 오후 협의 가능",
+    "available_slots": "화~일 오전 중 가능. 월요일 휴무",
+    # 체인에는 안 들어간다. 대표님이 연락하실 때 보는 값이다.
+    "contact_slots": "평일 오전",
     "sns_channel": "인스타그램",
     "sns_followers": 3200,
     "sns_content_type": "릴스",
-    # 완제품 납품 희망 단가. 협업 형태가 매입 하나로 좁혀지면서(기획서 6-1)
-    # 이 값이 있으면 (2)의 예상_원가가 "산출 불가"에서 벗어나고
-    # (4)의 제안_매입가도 근거를 얻는다. 실제로는 협력사가 폼(T21)에 적는다.
-    "wholesale_price": 700,
     "blockers": ["반죽은 당일 소진해야 하므로 사전 대량 준비가 불가하다",
                  "주말은 자체 매장 운영으로 출장이 어렵다",
                  "붕어빵 기계를 빌리려면 1주 전에 예약해야 한다"],
@@ -362,7 +362,7 @@ def build_partner_resources(partner: dict | None) -> str:
         f"- 대표 메뉴: {partner.get('signature_menu') or NO_DATA}",
         f"- 판매 중인 메뉴: {_menus(partner)}",
         f"- 보유 장비: {_join('equipment')}",
-        f"- 가능 일정: {partner.get('available_slots') or NO_DATA}",
+        f"- 납품 가능 요일·시간: {partner.get('available_slots') or NO_DATA}",
     ])
 
 

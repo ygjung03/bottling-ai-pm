@@ -136,8 +136,14 @@ with st.form("partner"):
                         if x not in EQUIPMENT_CHOICES))
 
     slots = st.text_input(
-        "협업 가능 일정", value=partner.get("available_slots") or "",
-        placeholder="예: 평일 오후 협의 가능 / 주말 불가")
+        "납품 가능한 요일과 시간",
+        value=partner.get("available_slots") or "",
+        placeholder="예: 화~일 오전 중 가능. 월요일 휴무")
+    contact = st.text_input(
+        "협의 가능한 시간",
+        value=partner.get("contact_slots") or "",
+        placeholder="예: 평일 오전 / 브레이크타임 15~17시",
+        help="전화나 방문으로 이야기 나누기 편하신 때")
 
     st.markdown("##### SNS")
     st.caption("바틀링과 함께 올리면 같은 노력으로 두 배가 닿습니다. "
@@ -179,7 +185,9 @@ if len(menu_rows) < MENU_MIN:
 elif any(m["가격"] is None for m in menu_rows):
     missing.append("적으신 메뉴의 가격")
 if not slots.strip():
-    missing.append("협업 가능 일정")
+    missing.append("납품 가능한 요일과 시간")
+if not contact.strip():
+    missing.append("협의 가능한 시간")
 if not blocker_rows:
     missing.append("절대 불가 조건")
 
@@ -195,6 +203,7 @@ values = {
     "equipment": equipment + [x.strip() for x in equipment_etc.split(",")
                               if x.strip()],
     "available_slots": slots.strip(),
+    "contact_slots": contact.strip(),
     "sns_channel": sns.strip() or None,
     "sns_followers": followers or None,
     "sns_content_type": content or None,

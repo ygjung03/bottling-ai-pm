@@ -68,7 +68,7 @@ def load_partners() -> list[dict]:
     """협력사 목록. T21 폼이 붙으면 여기에 실제 입력이 쌓인다."""
     try:
         return (get_client().table("partners")
-                .select("id, name, category, wholesale_price")
+                .select("id, name, category, contact_slots")
                 .order("id").execute().data or [])
     except Exception as e:
         st.error(f"협력사 조회 실패: {e}")
@@ -462,6 +462,13 @@ labels = {p["id"]: f"{p['name']} ({p['category']})" for p in partners}
 c_in, _ = st.columns([2, 3])
 with c_in:
     pid = st.selectbox("협력사", list(labels), format_func=labels.get)
+
+    # 협의 가능한 때를 여기서 보인다. 매입가와 납품 수량은 결국 통화로
+    # 정해야 하는데, 그 값이 DB 에만 있으면 찾아볼 생각을 못 한다.
+    when = next((p.get("contact_slots") for p in partners
+                 if p["id"] == pid), None)
+    if when:
+        st.caption(f"협의 가능 — {when}")
 
     # 명세서 4-2 는 「날짜 지정 / 희망 기간」 두 방식을 둔다.
     # 희망 기간은 (1)을 요일 수만큼 반복 호출해야 해 T45(W4)로 미뤘다.

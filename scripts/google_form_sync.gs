@@ -29,7 +29,8 @@ var FIELDS = {
   name:      '가게 이름',
   category:  '업종',
   signature: '그중 대표 메뉴',
-  slots:     '협업 가능 일정',
+  slots:     '납품 가능한 요일과 시간',
+  contact:   '협의 가능한 시간',
   sns:       'SNS 채널',
   followers: '팔로워 수',
   content:   '주로 올리시는 것',
@@ -108,6 +109,7 @@ function onFormSubmit(e) {
     signature_menu:   answer(values, FIELDS.signature, missing)
                       || (menus.length ? menus[0]['메뉴'] : null),
     available_slots:  answer(values, FIELDS.slots, missing),
+    contact_slots:    answer(values, FIELDS.contact, missing),
     sns_channel:      answer(values, FIELDS.sns, missing) || null,
     sns_followers:    toNumber(answer(values, FIELDS.followers, missing)),
     sns_content_type: answer(values, FIELDS.content, missing) || null,

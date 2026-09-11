@@ -14,7 +14,15 @@
 ALTER TABLE partners
   ADD COLUMN IF NOT EXISTS menu_prices JSONB NOT NULL DEFAULT '[]'::jsonb;
 
--- ② AI PM 을 쓰지 않은 협업도 남길 수 있게 한다
+-- ② 협의·연락이 가능한 때
+--
+-- 납품 가능 시간과 다르다. 물건을 가져다줄 수 있는 때와 전화로 이야기할
+-- 수 있는 때가 다르기 때문이다. 매입가와 납품 수량은 결국 사람이 만나
+-- 정해야 하므로(제안서 「협의가 필요한 사항」), 그 약속을 잡으려면
+-- 이 값이 필요하다.
+ALTER TABLE partners ADD COLUMN IF NOT EXISTS contact_slots TEXT;
+
+-- ③ AI PM 을 쓰지 않은 협업도 남길 수 있게 한다
 --
 -- 기획 리드타임을 10/9 협업과 비교하려면 기준선이 필요한데(기획서 7-1),
 -- 그 건에는 체인 출력이 없다. NOT NULL 이면 INSERT 단계에서 막힌다.
