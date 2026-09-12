@@ -266,6 +266,7 @@ def run(label: str, target: date, save: bool = False) -> None:
             "p3_marketer",
             p1_output=json.dumps(p1, ensure_ascii=False),
             p2_output=json.dumps(p2, ensure_ascii=False),
+            target_date=target.isoformat(),
             bottling_sns=BOTTLING_SNS,
             partner_sns=build_partner_sns(partner),
             events=build_events(target),
