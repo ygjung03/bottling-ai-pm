@@ -160,11 +160,11 @@ NO_TREND_MENU = f"{NO_DATA} (메뉴 검색 경로로 시작하지 않음)"
 #
 # 아직 받지 못했다. 자료요청서 A-4 는 협력사 SNS 만 물었고
 # 바틀링 자신의 계정 정보는 항목에 없었다.
-# 8/31 2차 방문에서 계정명·팔로워 수·주 콘텐츠 형식·반응 좋은 유형을 받는다.
+# 8/31 2차 방문에서 계정명과 주 콘텐츠 형식을 받는다.
 #
-# 그럴듯한 값을 지어넣지 않는다. 팔로워 수를 임의로 채우면
-# (3)이 그 숫자에 맞춰 도달 목표를 세우고, (4)가 그것을 근거로
-# 순위를 매긴다. 없는 근거 위에 결론이 쌓인다.
+# 그럴듯한 값을 지어넣지 않는다. 없는 계정을 있다고 해 두면 (3)이
+# 그 채널로 홍보를 짜고, (4)가 그것을 근거로 순위를 매긴다.
+# 없는 근거 위에 결론이 쌓인다.
 BOTTLING_SNS = f"{NO_DATA} (8/31 방문에서 확인 예정)"
 
 
@@ -178,7 +178,7 @@ NO_REC_REASON = f"{NO_DATA} (추천 엔진 미구현 — 협력사를 직접 지
 
 # 협력사 시드 데이터 — T21 협력사 입력 폼 전까지 쓰는 가상 값.
 #
-# 실제 협력사는 확정되었으나 보유 식재료·장비는 협력사가 폼에 직접
+# 실제 협력사는 확정되었으나 판매 메뉴와 가격은 협력사가 폼에 직접
 # 입력할 내용이라 아직 없다. 형식만 같게 지어낸 값이다.
 #
 # 상수로 두지 않고 partners 테이블에 넣는다. 폼이 붙는 순간
@@ -201,19 +201,16 @@ SEED_PARTNER = {
         {"메뉴": "슈크림 붕어빵 3개", "가격": 3500, "납품가": 2500},
         {"메뉴": "미니 붕어빵 10개", "가격": 5000, "납품가": 3500},
     ],
-    "ingredients": ["팥앙금", "슈크림", "붕어빵 반죽", "우유크림"],
-    # 붕어빵기계는 바틀링이 협력사에게서 빌려오는 장비다(자료요청서 A-3).
-    "equipment": ["붕어빵 기계 (자차 이동 가능)", "반죽 보관용 냉장고",
-                  "제과용 소도구"],
     "available_slots": "화~일 오전 중 가능. 월요일 휴무",
     # 체인에는 안 들어간다. 대표님이 연락하실 때 보는 값이다.
     "contact_slots": "평일 오전",
     "sns_channel": "인스타그램",
-    "sns_followers": 3200,
     "sns_content_type": "릴스",
-    "blockers": ["반죽은 당일 소진해야 하므로 사전 대량 준비가 불가하다",
-                 "주말은 자체 매장 운영으로 출장이 어렵다",
-                 "붕어빵 기계를 빌리려면 1주 전에 예약해야 한다"],
+    # 완제품 매입으로 좁혀지면서 성격이 바뀌었다. 출장·장비 대여는 이제
+    # 없는 개념이고, 주말 얘기는 납품 가능 요일 쪽이 받는다.
+    "blockers": ["반죽은 당일 소진해야 하므로 전날 만들어 둘 수 없다",
+                 "한 번에 50개까지만 만들 수 있다",
+                 "받아서 다시 데우면 맛이 변하므로 그대로 내야 한다"],
 }
 
 
@@ -340,7 +337,11 @@ def build_partner_resources(partner: dict | None) -> str:
 
     빈 항목은 줄째로 빼지 않고 "데이터 없음"으로 적는다.
     줄이 없으면 협력사가 안 가진 것인지 아직 입력하지 않은 것인지
-    구분되지 않아, 없는 장비를 쓰는 메뉴가 나온다.
+    구분되지 않아, 없는 것을 전제한 메뉴가 나온다.
+
+    협력사의 보유 식재료와 장비는 싣지 않는다. 완제품을 사 오므로
+    무엇으로 어떻게 만드는지는 알 필요가 없다. 바틀링이 쓸 수 있는
+    기구는 p2_chef.yaml 의 [바틀링 매장 여건] 에 적혀 있다.
 
     납품가는 메뉴마다 다르므로 「판매 중인 메뉴」 줄 안에 함께 싣는다.
     매장 전체에 하나의 단가를 두면 어떤 메뉴에서는 소매가보다 비싸게
@@ -349,19 +350,14 @@ def build_partner_resources(partner: dict | None) -> str:
     (4)에도 이 문자열을 넘긴다. 역할분담을 쓰려면 상대가 무엇을 가졌는지
     알아야 한다(명세서 1-4).
     """
-    if not partner:
+    if partner is None:
         return f"{NO_DATA} (협력사 미선택)"
-
-    def _join(key: str) -> str:
-        v = partner.get(key) or []
-        return ", ".join(str(x) for x in v) if v else NO_DATA
 
     head = f"{partner.get('name', '?')} / {partner.get('category') or NO_DATA}"
     return "\n".join([
         head,
         f"- 대표 메뉴: {partner.get('signature_menu') or NO_DATA}",
         f"- 판매 중인 메뉴: {_menus(partner)}",
-        f"- 보유 장비: {_join('equipment')}",
         f"- 납품 가능 요일·시간: {partner.get('available_slots') or NO_DATA}",
     ])
 
@@ -401,19 +397,37 @@ def build_constraints() -> dict[str, str]:
     return out
 
 
+# 협력사가 「지켜야 할 조건이 없다」고 답한 것으로 읽히는 표현.
+# 폼에서 필수로 받으면서 없을 때는 「없음」이라고 적게 안내하는데,
+# 그것을 그대로 넘기면 "없음"을 지켜야 하는 조건으로 읽는다.
+NO_BLOCKER = {"없음", "없습니다", "없어요", "해당 없음", "특별히 없음",
+              "특별히 없습니다", "-", "무"}
+
+
 def build_partner_blockers(partner: dict | None) -> str:
     """
-    협력사가 못 하는 것. 위반하면 그 안은 폐기된다(명세서 1-2).
+    협력사가 지켜 달라고 한 조건. 지키지 못하는 안은 폐기된다(명세서 1-2).
 
-    없으면 "없음"이 아니라 "데이터 없음"으로 적는다.
-    입력하지 않은 것을 제약이 없는 것으로 읽으면 안 된다.
+    세 상태를 구분한다.
+
+      비어 있음    아직 폼을 내지 않은 협력사다. 협력사 행을 먼저 만들고
+                  코드를 보내므로 첫 제출까지는 이 상태다.
+                  조건이 없는 것으로 단정하면 안 된다
+      「없음」     협력사가 조건이 없다고 확인해 준 것이다
+      실제 조건    목록으로 넘긴다
     """
-    if not partner:
+    if partner is None:
         return f"{NO_DATA} (협력사 미선택)"
-    items = partner.get("blockers") or []
+
+    items = [str(x).strip() for x in (partner.get("blockers") or [])]
+    items = [x for x in items if x]
     if not items:
-        return f"{NO_DATA} (협력사가 입력하지 않음)"
-    return "\n".join(f"- {x}" for x in items)
+        return f"{NO_DATA} (협력사가 아직 입력하지 않음)"
+
+    real = [x for x in items if x not in NO_BLOCKER]
+    if not real:
+        return "지켜야 할 조건 없음 (협력사가 확인해 준 사실)"
+    return "\n".join(f"- {x}" for x in real)
 
 
 def build_events(target: date, days: int = 30) -> str:
@@ -445,14 +459,25 @@ def build_events(target: date, days: int = 30) -> str:
 
 
 def build_partner_sns(partner: dict | None) -> str:
-    """(3) 마케터 입력. 팔로워 규모에 맞는 목표를 세우는 근거다."""
-    if not partner:
+    """
+    (3) 마케터 입력. 협력사에 무엇을 올려달라고 요청할지 정하는 근거다.
+
+    알아야 하는 것은 둘이다 — 어디에 올리는 것인지, 무엇을 올려달라고
+    요청할 수 있는지.
+
+    「SNS 없음」과 「미입력」을 구분한다. 없다고 확인된 것이면 (3)이
+    협력사에 홍보를 요청하지 않고 바틀링이 할 수 있는 것만으로 짠다.
+    아직 안 적은 것이면 계정이 있는지조차 모르므로 그 판단을 미뤄야 한다.
+    """
+    if partner is None:
         return f"{NO_DATA} (협력사 미선택)"
-    ch = partner.get("sns_channel") or NO_DATA
-    n = partner.get("sns_followers")
-    kind = partner.get("sns_content_type") or NO_DATA
-    n_txt = f"팔로워 {n:,}명" if n else f"팔로워 {NO_DATA}"
-    return f"{ch} / {n_txt} / 주 콘텐츠 {kind}"
+
+    ch = partner.get("sns_channel")
+    if not ch:
+        return f"{NO_DATA} (협력사 미입력)"
+    if ch == "안 합니다":
+        return "운영하는 SNS 없음 (협력사가 확인해 준 사실)"
+    return f"{ch} / 주 콘텐츠 {partner.get('sns_content_type') or NO_DATA}"
 
 
 if __name__ == "__main__":

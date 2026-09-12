@@ -12,8 +12,8 @@
 
   묻는다   지금 팔고 있는 메뉴와 가격 — 사 올 물건이 곧 이것이다.
            실제 판매가를 알아야 매입가 제안에 근거가 생긴다.
-  안 묻는다 보유 식재료 — 완성품을 사 오므로 무엇으로 만드는지는
-           우리 일이 아니다. 물어 두면 (2)가 신메뉴를 만들려 든다.
+  안 묻는다 보유 식재료·장비 — 완성품을 사 오므로 무엇으로 어떻게
+           만드는지는 우리 일이 아니다.
   안 묻는다 협업 가능 형태 — 매입 하나뿐이라 고를 것이 없다.
 """
 import _path  # noqa: F401  (프로젝트 루트를 sys.path 에 추가)
@@ -28,11 +28,6 @@ st.set_page_config(page_title="협력사 정보 입력", page_icon="📋")
 # 업종은 매출 데이터와 이어져 있다. INDUSTRY_MAP 에 없는 업종을 고르면
 # 상권 분석에 그 업종 매출을 실을 수 없다 (명세서 3-2).
 CATEGORIES = list(INDUSTRY_MAP)
-
-EQUIPMENT_CHOICES = [
-    "오븐", "화덕", "튀김기", "그릴", "반죽기", "냉장고", "냉동고",
-    "제빙기", "에스프레소 머신", "포장 기계", "진열장",
-]
 
 MENU_ROWS = 5        # 폼에 미리 깔아 두는 줄 수
 MENU_MIN = 3         # 이 아래로는 저장하지 않는다
@@ -89,7 +84,7 @@ st.caption(f"{partner.get('name') or '(미리보기)'} · 약 3분이면 끝납�
 if preview:
     st.info("미리보기입니다. 이 화면에서는 저장되지 않습니다.")
 
-st.markdown("**지금 팔고 계신 메뉴와 가격**, **절대 불가 조건**을 자세히 "
+st.markdown("**지금 팔고 계신 메뉴와 가격**, **제약 사항**을 자세히 "
             "적어주실수록 실행 가능한 기획이 나옵니다.")
 
 with st.form("partner"):
@@ -126,15 +121,6 @@ with st.form("partner"):
         "그중 대표 메뉴", value=partner.get("signature_menu") or "",
         placeholder="가장 많이 나가는 것 하나")
 
-    equipment = st.multiselect(
-        "보유 장비", EQUIPMENT_CHOICES,
-        default=[x for x in (partner.get("equipment") or [])
-                 if x in EQUIPMENT_CHOICES])
-    equipment_etc = st.text_input(
-        "그 밖의 장비", placeholder="쉼표로 구분해 적어주세요",
-        value=", ".join(x for x in (partner.get("equipment") or [])
-                        if x not in EQUIPMENT_CHOICES))
-
     slots = st.text_input(
         "납품 가능한 요일과 시간",
         value=partner.get("available_slots") or "",
@@ -148,23 +134,32 @@ with st.form("partner"):
     st.markdown("##### SNS")
     st.caption("바틀링과 함께 올리면 같은 노력으로 두 배가 닿습니다. "
                "적어주시면 홍보 기획에 반영됩니다.")
-    c1, c2, c3 = st.columns([2, 1, 1])
-    sns = c1.text_input("채널", value=partner.get("sns_channel") or "",
-                        placeholder="인스타그램")
-    followers = c2.number_input("팔로워", min_value=0, step=100,
-                                value=int(partner.get("sns_followers") or 0))
-    kinds = ["", "릴스", "피드", "스토리"]
+    # 「안 합니다」와 빈칸을 구분한다. 빈칸은 아직 안 적은 것이고,
+    # 「안 합니다」는 확인된 사실이다. (3)이 다르게 판단한다.
+    channels = ["", "인스타그램", "블로그", "틱톡", "유튜브", "페이스북",
+                "카카오톡 채널", "안 합니다"]
+    ch = partner.get("sns_channel")
+    c1, c2 = st.columns(2)
+    sns = c1.selectbox(
+        "주로 쓰시는 SNS", channels,
+        index=channels.index(ch) if ch in channels else 0,
+        help="여러 곳을 하시면 가장 자주 올리시는 한 곳만 골라주세요. "
+             "협업 때 그 채널에 한 번 올려주시는 것을 부탁드립니다.")
+    kinds = ["", "릴스", "피드", "스토리", "숏츠", "영상", "글"]
     kind = partner.get("sns_content_type")
-    content = c3.selectbox("주로 올리는 것", kinds,
+    content = st.selectbox("주로 올리시는 것", kinds,
                            index=kinds.index(kind) if kind in kinds else 0)
 
-    st.markdown("##### 절대 불가 조건")
+    st.markdown("##### 제약 사항")
     blockers = st.text_area(
-        "이것만은 안 된다는 것", height=120,
+        "지켜야 할 조건", height=120, label_visibility="collapsed",
         value="\n".join(partner.get("blockers") or []),
-        placeholder="주말 출장 불가\n냉장 보관 필요\n반죽은 당일 소진해야 함")
-    st.caption("한 줄에 하나씩 적어주세요. 여기 적힌 것을 어기는 기획은 "
-               "만들어지지 않습니다.")
+        placeholder="한 번에 50개까지만 만들 수 있습니다\n"
+                    "당일 만든 것만 드릴 수 있습니다\n"
+                    "저희 상호를 표기해 주셔야 합니다")
+    st.caption("한 줄에 하나씩 적어주세요. 적어주신 조건을 모두 지켜서 "
+               "기획을 만듭니다. 특별히 없으시면 「없음」이라고 "
+               "적어주세요.")
 
     submitted = st.form_submit_button("제출", use_container_width=True,
                                       disabled=preview)
@@ -189,7 +184,7 @@ if not slots.strip():
 if not contact.strip():
     missing.append("협의 가능한 시간")
 if not blocker_rows:
-    missing.append("절대 불가 조건")
+    missing.append("제약 사항")
 
 if missing:
     st.error("다음을 적어주세요 — " + " · ".join(missing))
@@ -200,12 +195,9 @@ values = {
     "category": category,
     "menu_prices": menu_rows,
     "signature_menu": signature.strip() or menu_rows[0]["메뉴"],
-    "equipment": equipment + [x.strip() for x in equipment_etc.split(",")
-                              if x.strip()],
     "available_slots": slots.strip(),
     "contact_slots": contact.strip(),
-    "sns_channel": sns.strip() or None,
-    "sns_followers": followers or None,
+    "sns_channel": sns or None,
     "sns_content_type": content or None,
     "blockers": blocker_rows,
 }

@@ -17,19 +17,13 @@ CREATE TABLE IF NOT EXISTS partners (
                     -- 협업은 완제품 매입 하나이므로(기획서 6-1) 새 메뉴를 만드는
                     -- 것이 아니라 팔던 것을 변형한다. 실제 판매가를 알아야
                     -- 매입가 제안에 근거가 생긴다
-  ingredients       TEXT[]      NOT NULL DEFAULT '{}',   -- 메뉴 변형 시 참고
+  -- [미사용] 완제품을 사 오므로 협력사 장비를 알 필요가 없다. 폼에서
+  -- 묻지 않고 프롬프트에도 싣지 않는다. 다음 정리에서 지운다.
   equipment         TEXT[]      NOT NULL DEFAULT '{}',
-  -- [미사용] 협업이 완제품 매입 하나로 정해져(기획서 6-1) 고를 것이 없다.
-  -- 폼에서도 묻지 않는다. 컬럼만 남겨 둔다.
-  collab_types      TEXT[]      NOT NULL DEFAULT '{}',
   available_slots   TEXT,                           -- 납품 가능 요일·시간
   contact_slots     TEXT,                           -- 협의·연락 가능한 때
-  sns_channel       TEXT,
-  sns_followers     INTEGER,
-  sns_content_type  TEXT,                            -- 릴스 / 피드 / 스토리
-  -- [미사용] 단가는 menu_prices 안에 메뉴마다 둔다. 메뉴마다 원가가 달라
-  -- 매장 전체에 하나만 두면 맞지 않는다. 컬럼만 남겨 둔다.
-  wholesale_price   INTEGER,
+  sns_channel       TEXT,                           -- 인스타그램 / 블로그 / 틱톡 ...
+  sns_content_type  TEXT,                           -- 릴스 / 피드 / 숏츠 / 글 ...
   blockers          TEXT[]      NOT NULL DEFAULT '{}',   -- 절대 불가 조건 (하드 제약)
   lat               DOUBLE PRECISION,
   lng               DOUBLE PRECISION,

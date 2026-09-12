@@ -28,3 +28,19 @@ ALTER TABLE partners ADD COLUMN IF NOT EXISTS contact_slots TEXT;
 -- 그 건에는 체인 출력이 없다. NOT NULL 이면 INSERT 단계에서 막힌다.
 ALTER TABLE plans ALTER COLUMN context_snapshot DROP NOT NULL;
 ALTER TABLE plans ALTER COLUMN final_output     DROP NOT NULL;
+
+-- ④ 쓰지 않게 된 컬럼을 지운다
+--
+-- 남겨 두면 나중에 읽는 사람이 채워야 하는 값으로 오해한다.
+-- 협력사 자료는 아직 들어오지 않았고 시드 한 행만 있어 잃을 것이 없다.
+--
+--   ingredients      완성품을 사 오므로 무엇으로 만드는지는 알 필요가 없다.
+--                    변형 판단에 쓰는 것은 바틀링 보유 식재료다
+--   collab_types     완제품 매입 하나로 정해져(기획서 6-1) 고를 것이 없다
+--   sns_followers    도달을 측정하지 않아 목표를 세울 수 없다
+--   wholesale_price  단가는 menu_prices 안에 메뉴마다 둔다. 메뉴마다 원가가
+--                    달라 매장 전체에 하나만 두면 맞지 않는다
+ALTER TABLE partners DROP COLUMN IF EXISTS ingredients;
+ALTER TABLE partners DROP COLUMN IF EXISTS collab_types;
+ALTER TABLE partners DROP COLUMN IF EXISTS sns_followers;
+ALTER TABLE partners DROP COLUMN IF EXISTS wholesale_price;

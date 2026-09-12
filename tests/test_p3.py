@@ -25,7 +25,9 @@ WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
 NO_FEWSHOT = "(없음 — 채택 사례가 아직 없다)"
 
 # 도달·노출 목표에 쓰이는 수치 표현.
-# 팔로워 규모를 모르는 채널에 이런 목표를 세우면 근거가 없다.
+#
+# 이런 값을 우리가 측정하지 않으므로 목표로 쓸 수 없다. 달성했는지
+# 확인할 방법이 없다. 목표는 팔린 수량으로 쓴다 (프롬프트 규칙 3).
 #
 # 어순이 양쪽으로 나타난다. "도달 10,000명"도 "10,000명 도달"도 쓰인다.
 KEYWORD = r"도달|노출|조회|좋아요|팔로워|저장|공유|유입|방문자"
@@ -49,6 +51,12 @@ STAT_TARGET = re.compile(r"\d+대\s*\d+%.*?\d+대\s*\d+%")
 # (포장재·홍보물·촬영 소품 등)이어야 한다.
 OWNED = ["냉장고", "냉동", "전자레인지", "화덕", "오븐", "그릴",
          "어묵중탕기", "착즙기", "셀프탭", "디스펜서", "소도구"]
+
+# 장비 이름이 들어 있어도 인쇄물이면 준비물로 맞다.
+# "셀프탭 맥주 제공 환경 확인용 안내물"을 장비로 잡은 적이 있다 —
+# 장비가 아니라 그 장비를 설명하는 인쇄물이다.
+PROMO_ITEM = re.compile(r"안내물|안내판|포스터|홍보물|게시물|전단|스티커"
+                        r"|배너|현수막|메뉴판|쿠폰|카드")
 
 # 홍보 일정의 "실행 전" 시점. C001·C002 의 자동 검사다 (명세서 5-1 A7).
 # 실행 기간에만 알리면 사람들이 알기 전에 끝난다 — 카페 협업이 그랬다.
@@ -104,8 +112,16 @@ def latest_weekday(dow: int) -> date:
     return today - timedelta(days=(today.weekday() - dow) % 7)
 
 
-def check(out: dict, p2: dict, sns_known: bool, target: date) -> list[str]:
-    """프롬프트가 지시한 제약을 지켰는지 본다."""
+def check(out: dict, p2: dict, target: date,
+          partner_sns: bool = True) -> list[str]:
+    """
+    프롬프트가 지시한 제약을 지켰는지 본다.
+
+    partner_sns: 협력사가 SNS 를 운영하는가.
+      없으면 협력사에 홍보를 요청하지 않는 것이 맞다 (규칙 10).
+      판매가 바틀링 매장에서 이뤄지므로 협력사 매장 게시물로 얻는 것이
+      불확실하고, 없는 채널을 대신할 것을 만들면 부담만 늘어난다.
+    """
     issues = []
 
     axis = out.get("공통_홍보축") or {}
@@ -151,8 +167,12 @@ def check(out: dict, p2: dict, sns_known: bool, target: date) -> list[str]:
         for c in channels:
             if not c.get("주체"):
                 issues.append(f"채널별 전략에 '주체' 없음: {c}")
-        if not any(c.get("주체") == "협력사" for c in channels):
-            issues.append("채널별 전략에 협력사 주체 없음 — 도달이 절반으로 준다")
+        has_partner = any(c.get("주체") == "협력사" for c in channels)
+        if partner_sns and not has_partner:
+            issues.append("채널별 전략에 협력사 주체 없음 — "
+                          "함께 올리면 같은 노력으로 두 배가 닿는다")
+        if not partner_sns and has_partner:
+            issues.append("협력사에 SNS 가 없는데 협력사 주체 항목을 넣었다")
 
     plans = out.get("안별_기획") or []
     p2_ids = [m.get("안_id") for m in (p2.get("메뉴안") or [])]
@@ -163,11 +183,9 @@ def check(out: dict, p2: dict, sns_known: bool, target: date) -> list[str]:
     if set(p3_ids) != set(p2_ids):
         issues.append(f"안_id 불일치: (2){p2_ids} vs (3){p3_ids}")
 
-    # SNS 규모를 모르면 수치 목표를 세울 수 없다
-    if not sns_known:
-        goal = str(axis.get("목표") or "")
-        if REACH.search(goal):
-            issues.append(f"근거 없는 수치 목표: {goal[:40]}")
+    goal = str(axis.get("목표") or "")
+    if REACH.search(goal):
+        issues.append(f"측정하지 않는 값을 목표로 삼음: {goal[:40]}")
 
     for p in plans:
         pid = p.get("안_id", "?")
@@ -218,6 +236,8 @@ def check(out: dict, p2: dict, sns_known: bool, target: date) -> list[str]:
 
         # 준비물은 홍보·이벤트용이어야 한다. 조리 장비는 (2)의 몫이다.
         for item in p.get("준비물") or []:
+            if PROMO_ITEM.search(str(item)):
+                continue
             hit = next((o for o in OWNED if o in str(item)), None)
             if hit:
                 issues.append(f"{pid}: 조리 장비를 준비물로 적음 — '{item}'")
@@ -323,7 +343,7 @@ def run(label: str, target: date) -> None:
         print(f"      \"{p.get('홍보_문구')}\"")
         print(f"      {' '.join(p.get('해시태그') or [])}")
 
-    issues = check(out, p2, sns_known, target)
+    issues = check(out, p2, target)
     print("-" * 64)
     if issues:
         for i in issues:

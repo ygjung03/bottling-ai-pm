@@ -35,8 +35,12 @@ OUT_DIR = Path("tests/out")
 # 1위 안에 반드시 있어야 하는 것.
 # 대표가 이 문서만 보고 실행할 수 있어야 한다(명세서 4-2).
 REQUIRED = ["메뉴명", "구성", "협력사_제공", "바틀링_준비", "보관_조건",
-            "1회_납품_수량", "판매가_제안", "페어링_맥주", "이벤트",
-            "홍보_일정", "홍보_문구", "실행_준비물", "소요_기간", "추천_근거"]
+            "1회_납품_수량", "협력사_정가", "판매가_제안", "페어링_맥주",
+            "이벤트", "홍보_일정", "홍보_문구", "실행_준비물", "소요_기간",
+            "추천_근거"]
+
+# "정가_합" 은 여기 넣지 않는다. 세트인 안에만 있고 나머지는 null 이다.
+# 맥주는 셀프탭이라 단품에서는 별개 거래다.
 
 # 협업 제안서 4필드 (명세서 1-4, 자동 검증 A10).
 # 하나라도 없으면 협력사에 보낼 제안서를 만들 수 없다 — T44 를 직접 막는다.
@@ -158,7 +162,7 @@ def check(out: dict, p2: dict, beers: dict) -> list[str]:
 
         # 매입가는 AI 가 정할 값이 아니다. 항상 협의 대상이다 (명세서 1-4 ④)
         deal = top.get("매입") or {}
-        for k in ("제안_매입가", "근거"):
+        for k in ("바틀링_제안_매입가", "근거"):
             if not deal.get(k):
                 issues.append(f"1위 매입에 '{k}' 없음")
         if deal and deal.get("협의_필요") is not True:
@@ -170,7 +174,7 @@ def check(out: dict, p2: dict, beers: dict) -> list[str]:
         if why is not None and not isinstance(why, dict):
             issues.append(f"1위 매입 근거가 자유 문장임 — 세 갈래로 나눠야 함: {str(why)[:40]}")
         elif isinstance(why, dict):
-            for k in ("희망_단가", "판매가_대비", "소비_근거"):
+            for k in ("협력사_희망", "협력사정가_대비", "소비_근거"):
                 if not why.get(k):
                     issues.append(f"1위 매입 근거에 '{k}' 없음")
             # 협력사 제조 원가는 우리가 모른다. 모른다고 적혀야 정직하다.
@@ -312,7 +316,7 @@ def run(label: str, target: date, save: bool = False) -> None:
         deal = r.get("매입") or {}
         roles = r.get("역할분담") or {}
         gains = r.get("상호_이익") or {}
-        print(f"        매입   {deal.get('제안_매입가')} "
+        print(f"        매입   {deal.get('바틀링_제안_매입가')} "
               f"(협의 필요 {deal.get('협의_필요')})")
         print(f"        역할   바틀링 {roles.get('바틀링')}")
         print(f"               협력사 {roles.get('협력사')}")

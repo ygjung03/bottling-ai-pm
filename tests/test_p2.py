@@ -147,6 +147,31 @@ def check(out: dict, beers: dict) -> list[str]:
                     issues.append(f"{mid}: 매입가 {c:,}원 ≥ 판매가 {price:,}원"
                                   f" — 손익 역전")
 
+        # 협력사 매장에서 사는 값. 매입가를 제안할 때 이것과 견준다.
+        if not m.get("협력사_정가"):
+            issues.append(f"{mid}: 협력사 정가 없음 — 매입가를 견줄 기준이 없다")
+
+        # 맥주값을 넣는 것은 세트뿐이다.
+        #
+        # 셀프탭이라 손님이 300ml 만 마실 수도 1L 를 마실 수도 있어, 맥주를
+        # 늘 500ml 로 묶으면 그 방식이 깨진다. 예전에 이 구분이 없어서
+        # 판매가가 어떤 때는 안주 값이고 어떤 때는 맥주 포함 값이었고,
+        # 화면이 늘 안주 값으로 보고 맥주를 한 번 더 더했다.
+        listed = m.get("정가_합")
+        is_set = m.get("접근") == "세트"
+
+        if is_set and not listed:
+            issues.append(f"{mid}: 세트인데 정가 합이 없음")
+        if not is_set and listed:
+            issues.append(f"{mid}: 세트가 아닌데 정가 합이 있음 ({listed:,}원)"
+                          f" — 맥주는 별개 거래다")
+
+        # 세트는 따로 사는 것보다 싸야 한다. 값이 같으면 묶을 이유가 없다.
+        if is_set and listed and price:
+            if price >= listed:
+                issues.append(f"{mid}: 세트가 {price:,}원 ≥ 정가 합 "
+                              f"{listed:,}원 — 할인이 없다")
+
         # 이미지는 이 단계 다음에 별도로 생성된다 (명세서 1-2 ④)
         if m.get("메뉴_이미지"):
             issues.append(f"{mid}: 메뉴 이미지를 지어냄 — 별도 단계에서 생성한다")
