@@ -26,6 +26,12 @@ from chain.gemini import call
 from chain.loader import build
 
 
+# (4)가 첫 생성일 때 [직전 출력에서 발견된 문제] 자리에 들어가는 값.
+# 빈 문자열을 넣으면 그 블록이 통째로 비어 보여, 검사를 안 한 것인지
+# 통과한 것인지 구분되지 않는다.
+NO_ISSUES = "(없음 — 첫 생성이다)"
+
+
 def _j(obj) -> str:
     """
     프롬프트에 넣을 JSON 문자열.
@@ -109,7 +115,8 @@ def run(context: str, target_date: str, beer_list: str,
                                beer_list=beer_list,
                                partner_resources=partner_res,
                                rec_reason=rec_reason,
-                               constraints=constraints["p4"], fewshot=fewshot)
+                               constraints=constraints["p4"], fewshot=fewshot,
+                               issues=NO_ISSUES)
 
         # (4)를 다시 불러도 못 고치는 실패다. 세 안이 전부 실행 불가라는
         # 뜻이므로 원인은 (2)의 메뉴 3안에 있다. 되감을 곳이 (4)가 아니라

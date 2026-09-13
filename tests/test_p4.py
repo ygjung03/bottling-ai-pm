@@ -109,7 +109,8 @@ def run(label: str, target: date, save: bool = False) -> None:
         p3_output=json.dumps(p3, ensure_ascii=False),
         beer_list=beer_text, partner_resources=partner_res,
         rec_reason=NO_REC_REASON,
-        constraints=rules["p4"], fewshot=NO_FEWSHOT)
+        constraints=rules["p4"], fewshot=NO_FEWSHOT,
+        issues="(없음 — 첫 생성이다)")
     print(f"(4) 프롬프트 {len(p4_prompt)}자\n")
 
     try:
