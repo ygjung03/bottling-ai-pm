@@ -111,7 +111,11 @@ def save_plan(result: dict, meta: dict) -> int | None:
             "p2_output": result["p2"],
             "p3_output": result["p3"],
             "final_output": result["final"],
-            "auto_check": {"issues": result["issues"]},
+            # 되감기 기록도 남긴다. 몇 건이 재호출까지 갔고 그중 몇 건이
+            # 통과로 바뀌었는지를 나중에 세려면 이 값이 있어야 한다
+            # (docs/검증루프_도입안.md 8장).
+            "auto_check": {"issues": result["issues"],
+                           "rewinds": result["rewinds"]},
             "latency_ms": result["latency_ms"],
             "prompt_version": meta["prompt_version"],
         }).execute().data or []
@@ -396,9 +400,18 @@ def render_result(result: dict, meta: dict) -> None:
         st.caption(f"살아남은 단계: {', '.join(done) if done else '없음'}. "
                    f"다시 생성하면 처음부터 돌립니다.")
 
-    # runner 가 넘긴 경고. 지금 담기는 것은 재생성_필요 하나다 (검증 루프 1단계)
+    # 되돌린 뒤에도 남은 것. 대표님이 그대로 쓰실 수 없다는 뜻이다
     for w in result["issues"]:
         st.warning(w)
+
+    # 되돌려서 고친 것은 경고가 아니다. 다만 무엇이 걸렸었는지 알 수 있게
+    # 접어서 남긴다 — 프롬프트를 손볼 때 이 기록이 단서가 된다.
+    if result.get("rewinds"):
+        n = sum(len(x) for x in result["rewinds"])
+        with st.expander(f"검토 중 {n}건을 보완했습니다"):
+            for found in result["rewinds"]:
+                for x in found:
+                    st.write(f"- {x}")
 
     final = result["final"]
     if not final:

@@ -17,19 +17,33 @@
   ③ 재생성_필요 를 읽어 화면에 알린다 (issues)
   ④ 429 대기를 on_step 으로 노출한다
 
-  되감기(검증 실패 → 해당 단계 재호출)는 2단계에서 붙인다.
-  지금은 알리는 데서 멈춘다.
+[2026-09-14] 검증 루프 2단계 — (4) 되감기.
+  검사에서 걸린 것을 (4)에게 알려 주고 다시 부른다. 한 번의 호출 안에서
+  만들고 검사하므로 (4)가 자기가 놓친 것을 스스로 잡을 수는 없다.
+  코드가 밖에서 보고 되돌려 주면 고칠 기회가 생긴다.
+
+  (2)·(3) 되감기는 3단계로 미뤘다. 앞 단계를 되돌리면 그 뒤가 모두
+  다시 실행되어 비용이 크고, 대부분은 (4) 재호출로 끝난다
+  (docs/검증루프_도입안.md 3장).
 """
 import json
 
+from chain.checks import check, parse_beer_prices
 from chain.gemini import call
 from chain.loader import build
 
 
-# (4)가 첫 생성일 때 [직전 출력에서 발견된 문제] 자리에 들어가는 값.
-# 빈 문자열을 넣으면 그 블록이 통째로 비어 보여, 검사를 안 한 것인지
-# 통과한 것인지 구분되지 않는다.
+# (4)가 첫 생성일 때 [직전 출력]·[직전 출력에서 발견된 문제] 자리에
+# 들어가는 값. 빈 문자열을 넣으면 그 블록이 통째로 비어 보여, 검사를
+# 안 한 것인지 통과한 것인지 구분되지 않는다.
 NO_ISSUES = "(없음 — 첫 생성이다)"
+
+# 되감기 횟수 상한.
+#
+# 1 로 둔다. 두 번 불러 안 고쳐지면 세 번째도 대개 안 고쳐지고,
+# 한 번 되돌릴 때마다 7초쯤 늘어난다. 지금 체인이 18~30초인데
+# 명세서 목표가 19~24초다.
+MAX_REWIND = 1
 
 
 def _j(obj) -> str:
@@ -60,7 +74,8 @@ def run(context: str, target_date: str, beer_list: str,
     반환
       p1~p3, final   단계별 출력. 끊긴 뒤의 단계는 None 이다
       latency_ms     LLM 소요 합계 (429 대기는 빼고 잰다)
-      issues         화면에 경고로 띄울 것 (명세서 5-1)
+      issues         되돌린 뒤에도 남은 것. 화면에 경고로 띄운다 (명세서 5-1)
+      rewinds        되감기마다 그때 걸린 항목. 비어 있으면 한 번에 통과한 것
       error          체인이 끊긴 사유. 이때도 앞 단계 결과는 살아 있다
 
     [주의] 예외를 밖으로 던지지 않는다. 17～20초짜리 체인에서 (3)이 죽었다고
@@ -69,7 +84,7 @@ def run(context: str, target_date: str, beer_list: str,
     total_ms = 0
     result: dict = {
         "p1": None, "p2": None, "p3": None, "final": None,
-        "latency_ms": 0, "issues": [], "error": None,
+        "latency_ms": 0, "issues": [], "rewinds": [], "error": None,
     }
 
     def step(n, label, name, **kw):
@@ -108,19 +123,49 @@ def run(context: str, target_date: str, beer_list: str,
                             constraints=constraints["p3"],
                             past_cases=past_cases)
 
-        result["final"] = step(4, "최종 검토 중...", "p4_consultant",
-                               p1_output=_j(result["p1"]),
-                               p2_output=_j(result["p2"]),
-                               p3_output=_j(result["p3"]),
-                               beer_list=beer_list,
-                               partner_resources=partner_res,
-                               rec_reason=rec_reason,
-                               constraints=constraints["p4"], fewshot=fewshot,
-                               issues=NO_ISSUES)
+        def call_p4(note: str, prev: dict | None = None) -> dict:
+            # 되돌릴 때는 직전 출력을 함께 넘긴다. 걸린 곳만 고치고
+            # 나머지는 그대로 옮기게 하려면 그것을 봐야 한다.
+            return step(4, "최종 검토 중...", "p4_consultant",
+                        p1_output=_j(result["p1"]),
+                        p2_output=_j(result["p2"]),
+                        p3_output=_j(result["p3"]),
+                        beer_list=beer_list,
+                        partner_resources=partner_res,
+                        rec_reason=rec_reason,
+                        constraints=constraints["p4"], fewshot=fewshot,
+                        prev_output=_j(prev) if prev else NO_ISSUES,
+                        issues=note)
+
+        result["final"] = call_p4(NO_ISSUES)
+
+        # 검사에서 걸린 것을 (4)에게 알려 주고 다시 부른다.
+        #
+        # (4)가 자기 출력을 스스로 검사할 수는 없다. 한 번의 호출 안에서
+        # 만들고 검사하므로 놓친 것은 놓친 채로 나온다. 코드가 밖에서
+        # 보고 알려 주면 다시 만들 때 같은 실수를 피할 수 있다.
+        beers = parse_beer_prices(beer_list)
+        found = check(result["final"], result["p2"], beers)
+
+        for _ in range(MAX_REWIND):
+            if not found:
+                break
+            result["rewinds"].append(found)
+            if on_step:
+                on_step(4, f"검토 결과 보완 중... ({len(found)}건)")
+            result["final"] = call_p4("\n".join(f"- {x}" for x in found),
+                                      prev=result["final"])
+            found = check(result["final"], result["p2"], beers)
+
+        # 되돌린 뒤에도 남은 것은 경고로 넘긴다. 무한히 돌리지 않는다.
+        result["issues"] += found
 
         # (4)를 다시 불러도 못 고치는 실패다. 세 안이 전부 실행 불가라는
         # 뜻이므로 원인은 (2)의 메뉴 3안에 있다. 되감을 곳이 (4)가 아니라
-        # (2)라서 2단계로 미뤘고, 지금은 화면에 알리는 데서 멈춘다.
+        # (2)라서 3단계로 미뤘고, 지금은 화면에 알리는 데서 멈춘다.
+        #
+        # 되감기 뒤에 본다. 다시 만든 결과가 이 상태로 올 수도 있는데,
+        # 첫 출력만 보면 그 경우를 놓친다.
         if result["final"].get("재생성_필요"):
             why = result["final"].get("재생성_사유") or "사유 없음"
             result["issues"].append(

@@ -132,7 +132,12 @@ def main() -> None:
     print()
     print("-" * 56)
 
-    # runner 가 화면에 넘길 경고. 지금 담기는 것은 재생성_필요 하나다.
+    # 검사에서 걸려 (4)를 다시 부른 기록. 비어 있으면 한 번에 통과한 것이다.
+    for i, found in enumerate(r["rewinds"], 1):
+        for x in found:
+            print(f"  (되감기 {i}회차) {x}")
+
+    # 되돌린 뒤에도 남은 것. 화면에는 경고로 나간다.
     for w in r["issues"]:
         print(f"  (경고) {w}")
 

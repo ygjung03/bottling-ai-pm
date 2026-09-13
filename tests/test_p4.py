@@ -110,6 +110,7 @@ def run(label: str, target: date, save: bool = False) -> None:
         beer_list=beer_text, partner_resources=partner_res,
         rec_reason=NO_REC_REASON,
         constraints=rules["p4"], fewshot=NO_FEWSHOT,
+        prev_output="(없음 — 첫 생성이다)",
         issues="(없음 — 첫 생성이다)")
     print(f"(4) 프롬프트 {len(p4_prompt)}자\n")
 
