@@ -69,12 +69,13 @@ def main() -> None:
         events=build_events(target),
         past_cases=PAST_CASES,
         rec_reason=NO_REC_REASON,
+        partner=partner,
     )
 
     print("입력 크기")
     for k, v in args.items():
-        # constraints 만 dict 다. 단계별로 규칙이 갈린다 (명세서 1-5)
-        if isinstance(v, dict):
+        # constraints 는 단계별로 규칙이 갈려 안을 따로 센다 (명세서 1-5)
+        if k == "constraints":
             inner = " / ".join(f"{s} {len(t)}자" for s, t in v.items())
             print(f"  {k:18} {inner}")
         else:

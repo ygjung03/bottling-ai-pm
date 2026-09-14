@@ -14,7 +14,7 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from chain.checks import check, parse_beer_prices
+from chain.checks import check_final, parse_beer_prices
 from chain.gemini import call
 from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           NO_REC_REASON, NO_TREND_MENU, PAST_CASES,
@@ -154,7 +154,7 @@ def run(label: str, target: date, save: bool = False) -> None:
     for e in out.get("제외") or []:
         print(f"  제외  {e.get('안_id')} — {str(e.get('제외_사유'))[:60]}")
 
-    issues = check(out, p2, parse_beer_prices(beer_text))
+    issues = check_final(out, p2, parse_beer_prices(beer_text))
     print("-" * 64)
     if issues:
         for i in issues:

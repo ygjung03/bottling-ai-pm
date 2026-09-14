@@ -27,9 +27,12 @@
   (docs/검증루프_도입안.md 3장).
 """
 import json
+from datetime import date
 
-from chain.checks import check, parse_beer_prices
+from chain.checks import (check_final, check_menu, check_menu_sources,
+                          check_promo, parse_beer_prices, parse_beers)
 from chain.gemini import call
+from chain.inputs import NO_DATA
 from chain.loader import build
 
 
@@ -58,14 +61,32 @@ def _j(obj) -> str:
     return obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False)
 
 
+def warn(fn, *args, **kw) -> list[str]:
+    """
+    검사를 돌리되 흐름은 끊지 않는다 (작업 원칙 ⑤).
+
+    검사가 보는 것은 LLM 출력이라 형태가 어긋날 때가 있다. 목록이 올
+    자리에 문장 하나가 오면 검사가 죽는데, 그것 때문에 20초 걸려 만든
+    결과를 통째로 버리면 손해다. 검사가 죽은 것도 경고 한 줄로 남긴다.
+    """
+    try:
+        return fn(*args, **kw)
+    except Exception as e:
+        return [f"검사를 마치지 못했다 ({fn.__name__}) — {type(e).__name__}: {e}"]
+
+
 def run(context: str, target_date: str, beer_list: str,
         partner_res: str, partner_blockers: str, bottling_ingredients: str,
         margin_ref: str, weather_pref: str, trend_menu: str,
         constraints: dict, fewshot: str,
         bottling_sns: str, partner_sns: str, events: str, past_cases: str,
-        rec_reason: str, on_step=None) -> dict:
+        rec_reason: str, partner: dict | None = None,
+        on_step=None) -> dict:
     """
     on_step: 진행 상황 콜백 (Streamlit st.status 연동용)
+
+    partner 는 (2) 검사에 쓴다. 메뉴명에 나온 것이 협력사가 파는 것인지
+    보려면 필요하다. None 이면 그 검사만 건너뛴다.
 
     constraints 만 문자열이 아니라 dict 다. 규칙이 단계별로 갈려
     {"p2": ..., "p3": ..., "p4": ...} 형태로 온다 (명세서 1-5).
@@ -114,6 +135,17 @@ def run(context: str, target_date: str, beer_list: str,
                             trend_menu=trend_menu,
                             constraints=constraints["p2"], fewshot=fewshot)
 
+        # (2)·(3)은 되감지 않는다. 앞 단계를 되돌리면 그 뒤가 모두 다시
+        # 실행되어 비용이 크다 (docs/검증루프_도입안.md 3장). 다만 걸린 것은
+        # 화면에 알린다 — 명세서 5-1 도 "재생성까지 하는 것은 A1·A2뿐이며
+        # 나머지는 화면에 경고로 표시한다"고 정해 두었다.
+        beers = parse_beers(beer_list)
+        result["issues"] += warn(check_menu, result["p2"], beers)
+        if partner:
+            # 메뉴명에 나온 것이 어디서 오는지 보려면 협력사가 파는 메뉴를
+            # 알아야 한다. 안 넘겼으면 이 검사만 건너뛴다.
+            result["issues"] += warn(check_menu_sources, result["p2"], partner)
+
         result["p3"] = step(3, "홍보 기획 중...", "p3_marketer",
                             p1_output=_j(result["p1"]),
                             p2_output=_j(result["p2"]),
@@ -122,6 +154,11 @@ def run(context: str, target_date: str, beer_list: str,
                             events=events,
                             constraints=constraints["p3"],
                             past_cases=past_cases)
+
+        result["issues"] += warn(
+            check_promo, result["p3"], result["p2"],
+            date.fromisoformat(target_date),
+            partner_sns=NO_DATA not in partner_sns)
 
         def call_p4(note: str, prev: dict | None = None) -> dict:
             # 되돌릴 때는 직전 출력을 함께 넘긴다. 걸린 곳만 고치고
@@ -144,8 +181,8 @@ def run(context: str, target_date: str, beer_list: str,
         # (4)가 자기 출력을 스스로 검사할 수는 없다. 한 번의 호출 안에서
         # 만들고 검사하므로 놓친 것은 놓친 채로 나온다. 코드가 밖에서
         # 보고 알려 주면 다시 만들 때 같은 실수를 피할 수 있다.
-        beers = parse_beer_prices(beer_list)
-        found = check(result["final"], result["p2"], beers)
+        prices = parse_beer_prices(beer_list)
+        found = check_final(result["final"], result["p2"], prices)
 
         for _ in range(MAX_REWIND):
             if not found:
@@ -155,7 +192,7 @@ def run(context: str, target_date: str, beer_list: str,
                 on_step(4, f"검토 결과 보완 중... ({len(found)}건)")
             result["final"] = call_p4("\n".join(f"- {x}" for x in found),
                                       prev=result["final"])
-            found = check(result["final"], result["p2"], beers)
+            found = check_final(result["final"], result["p2"], prices)
 
         # 되돌린 뒤에도 남은 것은 경고로 넘긴다. 무한히 돌리지 않는다.
         result["issues"] += found

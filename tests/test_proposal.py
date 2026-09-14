@@ -148,6 +148,7 @@ def main() -> None:
         events=build_events(target),
         past_cases=PAST_CASES,
         rec_reason=NO_REC_REASON,
+        partner=partner,
         on_step=lambda n, label: print(f"  ({n}/4) {label}"),
     )
 
