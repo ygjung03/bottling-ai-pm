@@ -120,7 +120,8 @@ def save_plan(result: dict, meta: dict) -> int | None:
             # 통과로 바뀌었는지를 나중에 세려면 이 값이 있어야 한다
             # (docs/검증루프_도입안.md 8장).
             "auto_check": {"issues": result["issues"],
-                           "rewinds": result["rewinds"]},
+                           "rewinds": result["rewinds"],
+                           "restarts": result["restarts"]},
             "latency_ms": result["latency_ms"],
             "prompt_version": meta["prompt_version"],
         }).execute().data or []
@@ -172,7 +173,7 @@ def generate(partner: dict, target: date) -> None:
 
         sec = result["latency_ms"] / 1000
         if result["error"]:
-            box.update(label=f"체인이 중간에 멈췄습니다 ({sec:.0f}초)", state="error")
+            box.update(label="기획안을 끝까지 만들지 못했습니다", state="error")
         else:
             box.update(label=f"완료 — {sec:.0f}초", state="complete")
 
@@ -400,24 +401,13 @@ def render_rank(item: dict, is_top: bool, meta: dict) -> None:
 
 
 def render_result(result: dict, meta: dict) -> None:
+    # 자동 검사에 걸린 것과 되감기 기록은 화면에 내보내지 않는다.
+    #
+    # "1위에 '협력사_정가' 없음" 같은 말은 만든 사람이 읽을 문구다.
+    # 대표님께는 뜻이 없고, 노란 상자로 수십 개가 쌓이면 정작 봐야 할
+    # 기획안을 가린다. 기록은 plans.auto_check 에 그대로 남는다.
     if result["error"]:
-        done = [k for k in ("p1", "p2", "p3", "final") if result[k]]
-        st.error(f"체인이 끝까지 돌지 않았습니다 — {result['error']}")
-        st.caption(f"살아남은 단계: {', '.join(done) if done else '없음'}. "
-                   f"다시 생성하면 처음부터 돌립니다.")
-
-    # 되돌린 뒤에도 남은 것. 대표님이 그대로 쓰실 수 없다는 뜻이다
-    for w in result["issues"]:
-        st.warning(w)
-
-    # 되돌려서 고친 것은 경고가 아니다. 다만 무엇이 걸렸었는지 알 수 있게
-    # 접어서 남긴다 — 프롬프트를 손볼 때 이 기록이 단서가 된다.
-    if result.get("rewinds"):
-        n = sum(len(x) for x in result["rewinds"])
-        with st.expander(f"검토 중 {n}건을 보완했습니다"):
-            for found in result["rewinds"]:
-                for x in found:
-                    st.write(f"- {x}")
+        st.info("기획안을 끝까지 만들지 못했습니다. 다시 생성해 주세요.")
 
     final = result["final"]
     if not final:
