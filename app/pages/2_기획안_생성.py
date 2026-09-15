@@ -67,8 +67,13 @@ EQUAL_HEIGHT_BOXES = """
 def load_partners() -> list[dict]:
     """협력사 목록. T21 폼이 붙으면 여기에 실제 입력이 쌓인다."""
     try:
-        return (get_client().table("partners")
-                .select("id, name, category, contact_slots")
+        # 행을 통째로 가져온다.
+        #
+        # 고를 때 쓰는 것은 이름과 협의 가능 시간뿐이지만, 고른 뒤 그대로
+        # 체인에 넘어간다. 필요한 칸을 골라 적었더니 메뉴·대표메뉴·납품
+        # 요일이 빠져 기획안이 전부 "데이터 없음"으로 나왔다 (#17).
+        # partners 는 행이 작아 통째로 가져와도 된다.
+        return (get_client().table("partners").select("*")
                 .order("id").execute().data or [])
     except Exception as e:
         st.error(f"협력사 조회 실패: {e}")
