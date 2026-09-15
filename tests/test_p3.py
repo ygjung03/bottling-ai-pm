@@ -17,6 +17,7 @@ from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           build_partner_blockers, build_partner_resources,
                           build_partner_sns, fetch_partner)
 from chain.loader import build
+from chain.runner import NO_REJECTED
 from context.builder import build as build_context
 
 KST = timezone(timedelta(hours=9))
@@ -72,7 +73,8 @@ def run(label: str, target: date) -> None:
             bottling_ingredients=BOTTLING_INGREDIENTS,
             margin_ref=MARGIN_REF, weather_pref=WEATHER_PREF,
             trend_menu=NO_TREND_MENU,
-            constraints=rules["p2"], fewshot=NO_FEWSHOT))
+            constraints=rules["p2"], fewshot=NO_FEWSHOT,
+            rejected=NO_REJECTED))
     except Exception as e:
         print(f"(2) 실패: {e}\n")
         return

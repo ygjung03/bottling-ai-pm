@@ -46,6 +46,18 @@ VAGUE_EXCLUDE = re.compile(
     r"|기여도 (?:측면|면)")
 
 
+def is_rank_reason(why) -> bool:
+    """
+    안을 뺀 이유가 "만들 수 없다"가 아니라 "다른 안만 못하다"인가.
+
+    (4)는 실행이 불가능한 안만 뺀다. 매력이 떨어진다거나 단가가 낮다는
+    것은 3위를 줄 이유이지 목록에서 뺄 이유가 아니다.
+
+    이렇게 뺀 것은 메뉴가 잘못된 것이 아니라 (4)가 잘못 판단한 것이다.
+    """
+    return bool(VAGUE_EXCLUDE.search(str(why or "")))
+
+
 def parse_beers(text: str) -> dict[str, dict]:
     """
     맥주 라인업 문자열을 다시 구조로 되돌린다.
@@ -111,7 +123,8 @@ def check_final(out: dict, p2: dict, beers: dict) -> list[str]:
     for e in excluded:
         why = str(e.get("제외_사유") or "")
         if VAGUE_EXCLUDE.search(why):
-            issues.append(f"{e.get('안_id')}: 순위 사유로 제외함 — {why[:40]}")
+            issues.append(f"{e.get('안_id')}: 순위를 낮출 이유인데 안을 "
+                          f"아예 뺐다 — {why[:40]}")
 
     # 순위는 1부터 빠짐없이
     nums = sorted(r.get("순위") for r in ranks if r.get("순위"))

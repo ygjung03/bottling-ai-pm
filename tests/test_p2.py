@@ -17,6 +17,7 @@ from chain.inputs import (BOTTLING_INGREDIENTS, MARGIN_REF, NO_TREND_MENU,
                           build_partner_blockers, build_partner_resources,
                           fetch_partner)
 from chain.loader import build
+from chain.runner import NO_REJECTED
 from context.builder import build as build_context
 
 KST = timezone(timedelta(hours=9))
@@ -75,7 +76,8 @@ def run(label: str, target: date) -> None:
                       weather_pref=WEATHER_PREF,
                       trend_menu=NO_TREND_MENU,
                       constraints=build_constraints()["p2"],
-                      fewshot=NO_FEWSHOT)
+                      fewshot=NO_FEWSHOT,
+                      rejected=NO_REJECTED)
     print(f"(2) 프롬프트 {len(p2_prompt)}자\n")
 
     try:
