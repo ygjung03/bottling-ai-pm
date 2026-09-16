@@ -29,9 +29,9 @@
 import json
 from datetime import date
 
-from chain.checks import (check_final, check_menu, check_menu_sources,
-                          check_promo, is_rank_reason, parse_beer_prices,
-                          parse_beers)
+from chain.checks import (Checked, check_final, check_menu,
+                          check_menu_sources, check_promo, is_rank_reason,
+                          parse_beer_prices, parse_beers)
 from chain.gemini import call
 from chain.inputs import NO_DATA
 from chain.loader import build
@@ -45,13 +45,6 @@ NO_ISSUES = "(없음 — 첫 생성이다)"
 # (2)가 첫 생성일 때 [직전에 낸 안과 실행 불가 사유] 자리에 들어가는 값.
 NO_REJECTED = "(없음 — 첫 생성이다)"
 
-# 되감기 횟수 상한.
-#
-# 1 로 둔다. 두 번 불러 안 고쳐지면 세 번째도 대개 안 고쳐지고,
-# 한 번 되돌릴 때마다 7초쯤 늘어난다. 지금 체인이 18~30초인데
-# 명세서 목표가 19~24초다.
-MAX_REWIND = 1
-
 # (2)까지 되감는 횟수 상한.
 #
 # 되감으면 (2)(3)(4)를 다시 돌아 15초가 붙는다. 그래도 되감는 이유는
@@ -59,6 +52,12 @@ MAX_REWIND = 1
 # 안이 그만큼 줄기 때문이다. 세 안을 나란히 놓고 고르는 것이 채택률의
 # 전제다 (명세서 D4).
 MAX_RESTART = 1
+
+# 단계를 다시 부를 수 있는 횟수.
+#
+# 되감기와 몫을 나눠 쓴다. 합쳐 두었더니 사소한 재호출이 예산을 다 써서
+# 정작 되감아야 할 때 되감지 못했다.
+MAX_REDO = 2
 
 
 def _j(obj) -> str:
@@ -108,18 +107,23 @@ def rejected_note(p2: dict, excluded: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-def warn(fn, *args, **kw) -> list[str]:
+def look(fn, *args, **kw) -> Checked:
     """
     검사를 돌리되 흐름은 끊지 않는다 (작업 원칙 ⑤).
 
     검사가 보는 것은 LLM 출력이라 형태가 어긋날 때가 있다. 목록이 올
     자리에 문장 하나가 오면 검사가 죽는데, 그것 때문에 20초 걸려 만든
-    결과를 통째로 버리면 손해다. 검사가 죽은 것도 경고 한 줄로 남긴다.
+    결과를 통째로 버리면 손해다.
+
+    검사가 죽었다는 것은 출력 형태가 어긋났다는 뜻이다. 그래서 다시 부를
+    것에 넣는다 — 같은 입력이라도 LLM 은 매번 다른 출력을 내므로 다시
+    부르면 형태가 맞게 올 수 있다.
     """
     try:
         return fn(*args, **kw)
     except Exception as e:
-        return [f"검사를 마치지 못했다 ({fn.__name__}) — {type(e).__name__}: {e}"]
+        return Checked([f"출력 형태가 스키마와 맞지 않아 검사를 마치지 "
+                        f"못했다 — {type(e).__name__}: {e}"], [])
 
 
 def run(context: str, target_date: str, beer_list: str,
@@ -175,10 +179,10 @@ def run(context: str, target_date: str, beer_list: str,
         result["p1"] = step(1, "상권 분석 중...", "p1_analyst",
                             context=context, target_date=target_date)
 
-        def call_p4(note: str, prev: dict | None = None) -> dict:
-            # 되돌릴 때는 직전 출력을 함께 넘긴다. 걸린 곳만 고치고
+        def call_p4(label: str, note: str, prev: dict | None = None) -> dict:
+            # 다시 부를 때는 직전 출력을 함께 넘긴다. 걸린 곳만 고치고
             # 나머지는 그대로 옮기게 하려면 그것을 봐야 한다.
-            return step(4, "최종 검토 중...", "p4_consultant",
+            return step(4, label, "p4_consultant",
                         p1_output=_j(result["p1"]),
                         p2_output=_j(result["p2"]),
                         p3_output=_j(result["p3"]),
@@ -192,6 +196,40 @@ def run(context: str, target_date: str, beer_list: str,
         beers = parse_beers(beer_list)
         prices = parse_beer_prices(beer_list)
         rejected = NO_REJECTED
+        extra = 0                       # 4콜 위에 더 부른 횟수
+
+        def make(n, label, call, check):
+            """
+            한 단계를 만들고 검사한다. 걸리면 한 번 더 부른다.
+
+            (2)(3)(4) 가 모두 같은 방식이다. 직전 출력과 무엇이 걸렸는지를
+            함께 주고 다시 부르면, 걸린 곳만 고치고 나머지는 옮겨 적는다.
+            한 번의 호출 안에서 만들고 스스로 검사할 수는 없으니, 코드가
+            밖에서 보고 알려 주는 것이다.
+            """
+            nonlocal extra
+            out = call(label, NO_ISSUES, None)
+            found = look(check, out)
+
+            if found.redo and extra < MAX_REDO:
+                extra += 1
+                result["rewinds"].append(found.redo)
+                out = call(f"{label.rstrip('.')} — "
+                           f"{len(found.redo)}건 보완 중...",
+                           "\n".join(f"- {x}" for x in found.redo), out)
+                found = look(check, out)
+
+            result["issues"] += found.all
+            return out
+
+        def check_p2(out) -> Checked:
+            found = check_menu(out, beers)
+            if not partner:
+                # 메뉴명에 나온 것이 어디서 오는지 보려면 협력사가 파는
+                # 메뉴를 알아야 한다. 안 넘겼으면 이 검사만 건너뛴다.
+                return found
+            more = check_menu_sources(out, partner)
+            return Checked(found.redo + more.redo, found.warn + more.warn)
 
         for attempt in range(MAX_RESTART + 1):
             # 되감으면 앞 시도에서 잡은 것은 버린다. 화면에 나가는 것은
@@ -200,67 +238,46 @@ def run(context: str, target_date: str, beer_list: str,
             result["issues"] = []
             result["rewinds"] = []
 
-            result["p2"] = step(
+            def call_p2(label: str, note: str, prev: dict | None = None) -> dict:
+                return step(
+                    2, label, "p2_chef",
+                    p1_output=_j(result["p1"]), beer_list=beer_list,
+                    partner_resources=partner_res,
+                    partner_blockers=partner_blockers,
+                    bottling_ingredients=bottling_ingredients,
+                    margin_ref=margin_ref, weather_pref=weather_pref,
+                    trend_menu=trend_menu,
+                    constraints=constraints["p2"], fewshot=fewshot,
+                    rejected=rejected,
+                    prev_output=_j(prev) if prev else NO_ISSUES,
+                    issues=note)
+
+            def call_p3(label: str, note: str, prev: dict | None = None) -> dict:
+                return step(3, label, "p3_marketer",
+                            p1_output=_j(result["p1"]),
+                            p2_output=_j(result["p2"]),
+                            target_date=target_date,
+                            bottling_sns=bottling_sns,
+                            partner_sns=partner_sns,
+                            events=events,
+                            constraints=constraints["p3"],
+                            past_cases=past_cases,
+                            prev_output=_j(prev) if prev else NO_ISSUES,
+                            issues=note)
+
+            result["p2"] = make(
                 2,
                 "협업 메뉴 개발 중..." if attempt == 0
                 else "실행할 수 없는 안을 빼고 메뉴를 다시 만드는 중...",
-                "p2_chef",
-                p1_output=_j(result["p1"]), beer_list=beer_list,
-                partner_resources=partner_res,
-                partner_blockers=partner_blockers,
-                bottling_ingredients=bottling_ingredients,
-                margin_ref=margin_ref, weather_pref=weather_pref,
-                trend_menu=trend_menu,
-                constraints=constraints["p2"], fewshot=fewshot,
-                rejected=rejected)
-
-            # 여기서 걸린 것은 화면에 알리는 데서 멈춘다. 되감는 것은
-            # (4)가 실행 불가로 판정했을 때뿐이다 — 명세서 5-1 도
-            # "재생성까지 하는 것은 A1·A2뿐이며 나머지는 화면에 경고로
-            # 표시한다"고 정해 두었다.
-            result["issues"] += warn(check_menu, result["p2"], beers)
-            if partner:
-                # 메뉴명에 나온 것이 어디서 오는지 보려면 협력사가 파는
-                # 메뉴를 알아야 한다. 안 넘겼으면 이 검사만 건너뛴다.
-                result["issues"] += warn(check_menu_sources,
-                                         result["p2"], partner)
-
-            result["p3"] = step(3, "홍보 기획 중...", "p3_marketer",
-                                p1_output=_j(result["p1"]),
-                                p2_output=_j(result["p2"]),
-                                target_date=target_date,
-                                bottling_sns=bottling_sns,
-                                partner_sns=partner_sns,
-                                events=events,
-                                constraints=constraints["p3"],
-                                past_cases=past_cases)
-
-            result["issues"] += warn(
-                check_promo, result["p3"], result["p2"],
-                date.fromisoformat(target_date),
-                partner_sns=NO_DATA not in partner_sns)
-
-            result["final"] = call_p4(NO_ISSUES)
-
-            # 검사에서 걸린 것을 (4)에게 알려 주고 다시 부른다.
-            #
-            # (4)가 자기 출력을 스스로 검사할 수는 없다. 한 번의 호출 안에서
-            # 만들고 검사하므로 놓친 것은 놓친 채로 나온다. 코드가 밖에서
-            # 보고 알려 주면 다시 만들 때 같은 실수를 피할 수 있다.
-            found = check_final(result["final"], result["p2"], prices)
-
-            for _ in range(MAX_REWIND):
-                if not found:
-                    break
-                result["rewinds"].append(found)
-                if on_step:
-                    on_step(4, f"검토 결과 보완 중... ({len(found)}건)")
-                result["final"] = call_p4("\n".join(f"- {x}" for x in found),
-                                          prev=result["final"])
-                found = check_final(result["final"], result["p2"], prices)
-
-            # 되돌린 뒤에도 남은 것은 경고로 넘긴다. 무한히 돌리지 않는다.
-            result["issues"] += found
+                call_p2, check_p2)
+            result["p3"] = make(
+                3, "홍보 기획 중...", call_p3,
+                lambda out: check_promo(out, result["p2"],
+                                        date.fromisoformat(target_date),
+                                        partner_sns=NO_DATA not in partner_sns))
+            result["final"] = make(
+                4, "최종 검토 중...", call_p4,
+                lambda out: check_final(out, result["p2"], prices))
 
             # (4)가 실행 불가로 뺀 안이 있으면 (2)부터 다시 만든다.
             #
@@ -286,7 +303,6 @@ def run(context: str, target_date: str, beer_list: str,
                 break
 
             if attempt == MAX_RESTART:
-                # 다시 만들었는데 또 빠졌다. 여기서 멈추고 경고로 넘긴다.
                 for e in blocked:
                     result["issues"].append(
                         f"{e.get('안_id')}안 실행 불가 — "

@@ -2,7 +2,7 @@ name: AI 셰프
 order: 2
 inputs: [p1_output, beer_list, partner_resources, partner_blockers,
          bottling_ingredients, margin_ref, weather_pref, trend_menu,
-         constraints, fewshot, rejected]
+         constraints, fewshot, rejected, prev_output, issues]
 prompt: |
   당신은 소상공인 협업 메뉴를 개발하는 셰프다.
   협력사가 완성해 온 것을 바틀링(셀프탭 크래프트 맥주 테이크아웃 펍)이
@@ -66,6 +66,12 @@ prompt: |
 
   [직전에 낸 안과 실행 불가 사유]
   {rejected}
+
+  [직전 출력]
+  {prev_output}
+
+  [직전 출력에서 발견된 문제]
+  {issues}
 
   [데이터 읽는 법]
   - 맥주 라인업의 "원/ml"은 단가다. 500ml 기준으로 8원/ml는 4,000원,
@@ -237,6 +243,12 @@ prompt: |
      다만 실행 가능한 안을 세 개까지 만들 수 없는 경우에는 억지로 만들지
      마라. 만들 수 있는 안만 제시하고, 부족한 개수와 그 이유를
      "공통_주의사항"에 적는다.
+
+  7. [직전 출력]이 있으면 그것을 바탕으로 고친다. 새로 만들지 마라.
+     [직전 출력에서 발견된 문제]에 적힌 곳만 바꾸고 나머지는 그대로
+     옮긴다. 걸리지 않은 부분까지 다시 만들면 거기서 새 문제가 생긴다.
+
+     [직전 출력]이 "(없음 — 첫 생성이다)" 이면 평소대로 만든다.
 
   [출력 스키마]
   "메뉴_이미지"는 항상 null 로 둔다. 이미지는 이 단계 이후 별도로 생성된다.

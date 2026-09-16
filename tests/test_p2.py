@@ -17,7 +17,7 @@ from chain.inputs import (BOTTLING_INGREDIENTS, MARGIN_REF, NO_TREND_MENU,
                           build_partner_blockers, build_partner_resources,
                           fetch_partner)
 from chain.loader import build
-from chain.runner import NO_REJECTED
+from chain.runner import NO_ISSUES, NO_REJECTED
 from context.builder import build as build_context
 
 KST = timezone(timedelta(hours=9))
@@ -77,7 +77,8 @@ def run(label: str, target: date) -> None:
                       trend_menu=NO_TREND_MENU,
                       constraints=build_constraints()["p2"],
                       fewshot=NO_FEWSHOT,
-                      rejected=NO_REJECTED)
+                      rejected=NO_REJECTED,
+                      prev_output=NO_ISSUES, issues=NO_ISSUES)
     print(f"(2) 프롬프트 {len(p2_prompt)}자\n")
 
     try:
@@ -101,7 +102,7 @@ def run(label: str, target: date) -> None:
               f" / 정가합 {m.get('정가_합')} / 판매가 {m.get('판매가_제안')}")
         print(f"      보관 {m.get('보관_조건')} / 납품 {m.get('1회_납품_수량')}")
 
-    issues = check_menu(out, beers) + check_menu_sources(out, partner)
+    issues = (check_menu(out, beers).all + check_menu_sources(out, partner).all)
     print("-" * 64)
     if issues:
         for i in issues:

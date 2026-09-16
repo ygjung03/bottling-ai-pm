@@ -23,7 +23,7 @@ from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           build_partner_resources, build_partner_sns,
                           fetch_partner)
 from chain.loader import build
-from chain.runner import NO_REJECTED
+from chain.runner import NO_ISSUES, NO_REJECTED
 from context.builder import build as build_context
 
 KST = timezone(timedelta(hours=9))
@@ -81,7 +81,8 @@ def run(label: str, target: date, save: bool = False) -> None:
             margin_ref=MARGIN_REF, weather_pref=WEATHER_PREF,
             trend_menu=NO_TREND_MENU,
             constraints=rules["p2"], fewshot=NO_FEWSHOT,
-            rejected=NO_REJECTED))
+            rejected=NO_REJECTED,
+            prev_output=NO_ISSUES, issues=NO_ISSUES))
     except Exception as e:
         print(f"(2) 실패: {e}\n")
         return
@@ -97,7 +98,8 @@ def run(label: str, target: date, save: bool = False) -> None:
             bottling_sns=BOTTLING_SNS,
             partner_sns=build_partner_sns(partner),
             events=build_events(target),
-            constraints=rules["p3"], past_cases=PAST_CASES))
+            constraints=rules["p3"], past_cases=PAST_CASES,
+            prev_output=NO_ISSUES, issues=NO_ISSUES))
     except Exception as e:
         print(f"(3) 실패: {e}\n")
         return
@@ -155,7 +157,7 @@ def run(label: str, target: date, save: bool = False) -> None:
     for e in out.get("제외") or []:
         print(f"  제외  {e.get('안_id')} — {str(e.get('제외_사유'))[:60]}")
 
-    issues = check_final(out, p2, parse_beer_prices(beer_text))
+    issues = check_final(out, p2, parse_beer_prices(beer_text)).all
     print("-" * 64)
     if issues:
         for i in issues:
