@@ -45,7 +45,7 @@ NO_ISSUES = "(없음 — 첫 생성이다)"
 # (2)가 첫 생성일 때 [직전에 낸 안과 실행 불가 사유] 자리에 들어가는 값.
 NO_REJECTED = "(없음 — 첫 생성이다)"
 
-# (2)까지 되감는 횟수 상한.
+# 앞 단계로 되감는 횟수 상한. (2)로 가든 (3)으로 가든 각각 한 번까지다.
 #
 # 되감으면 (2)(3)(4)를 다시 돌아 15초가 붙는다. 그래도 되감는 이유는
 # 실행 불가 판정을 받은 안이 섞인 채로 나가면 대표님이 고를 수 있는
@@ -197,6 +197,7 @@ def run(context: str, target_date: str, beer_list: str,
         prices = parse_beer_prices(beer_list)
         rejected = NO_REJECTED
         extra = 0                       # 4콜 위에 더 부른 횟수
+        promoed = 0                     # 홍보를 다시 짠 횟수
 
         def make(n, label, call, check):
             """
@@ -278,6 +279,30 @@ def run(context: str, target_date: str, beer_list: str,
             result["final"] = make(
                 4, "최종 검토 중...", call_p4,
                 lambda out: check_final(out, result["p2"], prices))
+
+            # (4)가 홍보를 물리면 (3)부터 다시 짠다.
+            #
+            # (4)는 홍보 규칙을 받지 않아 직접 고칠 수 없다. 그리고 공통
+            # 홍보축은 세 안이 함께 쓰는 값이라 하나만 고치면 나머지와
+            # 어긋난다. 그래서 (4)가 고치는 대신 신호만 낸다.
+            #
+            # (3)(4)만 다시 돌면 되므로 (2) 되감기보다 싸다.
+            why = result["final"].get("홍보_재생성_사유") or "사유 없음"
+            if result["final"].get("홍보_재생성_필요") and promoed < MAX_RESTART:
+                promoed += 1
+                result["restarts"].append(f"홍보 다시 짜기 — {why}")
+                result["p3"] = make(
+                    3, "홍보를 다시 짜는 중...",
+                    lambda label, note, prev=None: call_p3(
+                        label, f"- 메뉴와 맞지 않는다: {why}", prev),
+                    lambda out: check_promo(
+                        out, result["p2"], date.fromisoformat(target_date),
+                        partner_sns=NO_DATA not in partner_sns))
+                result["final"] = make(
+                    4, "최종 검토 중...", call_p4,
+                    lambda out: check_final(out, result["p2"], prices))
+            elif result["final"].get("홍보_재생성_필요"):
+                result["issues"].append(f"홍보가 메뉴와 맞지 않는다 — {why}")
 
             # (4)가 실행 불가로 뺀 안이 있으면 (2)부터 다시 만든다.
             #
