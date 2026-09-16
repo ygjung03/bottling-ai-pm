@@ -471,12 +471,20 @@ c_in, _ = st.columns([2, 3])
 with c_in:
     pid = st.selectbox("협력사", list(labels), format_func=labels.get)
 
+    chosen = next(p for p in partners if p["id"] == pid)
+
     # 협의 가능한 때를 여기서 보인다. 매입가와 납품 수량은 결국 통화로
     # 정해야 하는데, 그 값이 DB 에만 있으면 찾아볼 생각을 못 한다.
-    when = next((p.get("contact_slots") for p in partners
-                 if p["id"] == pid), None)
-    if when:
-        st.caption(f"협의 가능 — {when}")
+    if chosen.get("contact_slots"):
+        st.caption(f"협의 가능 — {chosen['contact_slots']}")
+
+    # 납품 가능 요일도 함께 보인다.
+    #
+    # 실행일이 그 요일과 어긋나면 당일 만든 것을 받아야 하는 메뉴는 팔 수가
+    # 없다. 체인은 이것을 고칠 수 없다 — 실행일은 여기서 사람이 고르는
+    # 값이라 메뉴를 몇 번 다시 만들어도 같은 문제가 남는다.
+    if chosen.get("available_slots"):
+        st.caption(f"납품 가능 — {chosen['available_slots']}")
 
     # 명세서 4-2 는 「날짜 지정 / 희망 기간」 두 방식을 둔다.
     # 희망 기간은 (1)을 요일 수만큼 반복 호출해야 해 T45(W4)로 미뤘다.
@@ -497,8 +505,7 @@ with c_in:
 st.divider()
 
 if go:
-    partner = next(p for p in partners if p["id"] == pid)
-    generate(partner, target)
+    generate(chosen, target)
 
 if st.session_state.get(SS_RESULT):
     render_result(st.session_state[SS_RESULT], st.session_state[SS_META])
