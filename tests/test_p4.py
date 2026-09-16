@@ -133,8 +133,7 @@ def run(label: str, target: date, save: bool = False) -> None:
         beer = (r.get("페어링_맥주") or {}).get("메뉴명", "?")
         ev = (r.get("이벤트") or {}).get("명칭", "?")
         print(f"  {r.get('순위')}위  {r.get('메뉴명')} [{r.get('안_id')}]")
-        print(f"        페어링 {beer} / 판매가 {r.get('판매가_제안')}원"
-              f" / 준비 {r.get('소요_기간')}")
+        print(f"        페어링 {beer} / 판매가 {r.get('판매가_제안')}원")
         print(f"        이벤트 {ev}")
         print(f"        사유   {str(r.get('선정_사유'))[:60]}")
         for risk in (r.get("예상_리스크") or [])[:2]:

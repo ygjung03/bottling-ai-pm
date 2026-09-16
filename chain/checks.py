@@ -21,7 +21,7 @@ from chain.inputs import NO_DATA
 # 대표가 이 문서만 보고 실행할 수 있어야 한다(명세서 4-2).
 REQUIRED = ["메뉴명", "구성", "협력사_제공", "바틀링_준비", "보관_조건",
             "1회_납품_수량", "협력사_정가", "판매가_제안", "페어링_맥주",
-            "이벤트", "홍보_일정", "홍보_문구", "실행_준비물", "소요_기간",
+            "이벤트", "홍보_일정", "홍보_문구", "실행_준비물",
             "추천_근거"]
 
 # "정가_합" 은 여기 넣지 않는다. 세트인 안에만 있고 나머지는 null 이다.
@@ -597,7 +597,7 @@ def check_promo(out: dict, p2: dict, target: date,
         elif any(not str(t).startswith("#") for t in tags):
             issues.append(f"{pid}: '#' 없는 해시태그 {tags}")
 
-        for k in ("차별_포인트", "준비물", "소요_기간"):
+        for k in ("차별_포인트", "준비물"):
             v = p.get(k)
             if not v:
                 issues.append(f"{pid}: '{k}' 없음")

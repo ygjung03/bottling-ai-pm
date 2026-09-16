@@ -355,8 +355,7 @@ def render_rank(item: dict, is_top: bool, meta: dict) -> None:
     with st.container(border=True):
         st.markdown(f"##### 홍보 — {ev.get('명칭') or '이벤트 없음'}")
         st.write(ev.get("내용") or "")
-        st.caption(f"기간 {ev.get('기간') or '미정'} · "
-                   f"준비 {item.get('소요_기간') or '미정'}")
+        st.caption(f"기간 {ev.get('기간') or '미정'}")
 
         schedule = item.get("홍보_일정") or []
         if schedule:
