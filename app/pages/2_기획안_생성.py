@@ -67,8 +67,13 @@ EQUAL_HEIGHT_BOXES = """
 def load_partners() -> list[dict]:
     """협력사 목록. T21 폼이 붙으면 여기에 실제 입력이 쌓인다."""
     try:
-        return (get_client().table("partners")
-                .select("id, name, category, contact_slots")
+        # 행을 통째로 가져온다.
+        #
+        # 고를 때 쓰는 것은 이름과 협의 가능 시간뿐이지만, 고른 뒤 그대로
+        # 체인에 넘어간다. 필요한 칸을 골라 적었더니 메뉴·대표메뉴·납품
+        # 요일이 빠져 기획안이 전부 "데이터 없음"으로 나왔다 (#17).
+        # partners 는 행이 작아 통째로 가져와도 된다.
+        return (get_client().table("partners").select("*")
                 .order("id").execute().data or [])
     except Exception as e:
         st.error(f"협력사 조회 실패: {e}")
@@ -115,7 +120,8 @@ def save_plan(result: dict, meta: dict) -> int | None:
             # 통과로 바뀌었는지를 나중에 세려면 이 값이 있어야 한다
             # (docs/검증루프_도입안.md 8장).
             "auto_check": {"issues": result["issues"],
-                           "rewinds": result["rewinds"]},
+                           "rewinds": result["rewinds"],
+                           "restarts": result["restarts"]},
             "latency_ms": result["latency_ms"],
             "prompt_version": meta["prompt_version"],
         }).execute().data or []
@@ -167,7 +173,7 @@ def generate(partner: dict, target: date) -> None:
 
         sec = result["latency_ms"] / 1000
         if result["error"]:
-            box.update(label=f"체인이 중간에 멈췄습니다 ({sec:.0f}초)", state="error")
+            box.update(label="기획안을 끝까지 만들지 못했습니다", state="error")
         else:
             box.update(label=f"완료 — {sec:.0f}초", state="complete")
 
@@ -349,8 +355,7 @@ def render_rank(item: dict, is_top: bool, meta: dict) -> None:
     with st.container(border=True):
         st.markdown(f"##### 홍보 — {ev.get('명칭') or '이벤트 없음'}")
         st.write(ev.get("내용") or "")
-        st.caption(f"기간 {ev.get('기간') or '미정'} · "
-                   f"준비 {item.get('소요_기간') or '미정'}")
+        st.caption(f"기간 {ev.get('기간') or '미정'}")
 
         schedule = item.get("홍보_일정") or []
         if schedule:
@@ -395,24 +400,13 @@ def render_rank(item: dict, is_top: bool, meta: dict) -> None:
 
 
 def render_result(result: dict, meta: dict) -> None:
+    # 자동 검사에 걸린 것과 되감기 기록은 화면에 내보내지 않는다.
+    #
+    # "1위에 '협력사_정가' 없음" 같은 말은 만든 사람이 읽을 문구다.
+    # 대표님께는 뜻이 없고, 노란 상자로 수십 개가 쌓이면 정작 봐야 할
+    # 기획안을 가린다. 기록은 plans.auto_check 에 그대로 남는다.
     if result["error"]:
-        done = [k for k in ("p1", "p2", "p3", "final") if result[k]]
-        st.error(f"체인이 끝까지 돌지 않았습니다 — {result['error']}")
-        st.caption(f"살아남은 단계: {', '.join(done) if done else '없음'}. "
-                   f"다시 생성하면 처음부터 돌립니다.")
-
-    # 되돌린 뒤에도 남은 것. 대표님이 그대로 쓰실 수 없다는 뜻이다
-    for w in result["issues"]:
-        st.warning(w)
-
-    # 되돌려서 고친 것은 경고가 아니다. 다만 무엇이 걸렸었는지 알 수 있게
-    # 접어서 남긴다 — 프롬프트를 손볼 때 이 기록이 단서가 된다.
-    if result.get("rewinds"):
-        n = sum(len(x) for x in result["rewinds"])
-        with st.expander(f"검토 중 {n}건을 보완했습니다"):
-            for found in result["rewinds"]:
-                for x in found:
-                    st.write(f"- {x}")
+        st.info("기획안을 끝까지 만들지 못했습니다. 다시 생성해 주세요.")
 
     final = result["final"]
     if not final:
@@ -477,12 +471,20 @@ c_in, _ = st.columns([2, 3])
 with c_in:
     pid = st.selectbox("협력사", list(labels), format_func=labels.get)
 
+    chosen = next(p for p in partners if p["id"] == pid)
+
     # 협의 가능한 때를 여기서 보인다. 매입가와 납품 수량은 결국 통화로
     # 정해야 하는데, 그 값이 DB 에만 있으면 찾아볼 생각을 못 한다.
-    when = next((p.get("contact_slots") for p in partners
-                 if p["id"] == pid), None)
-    if when:
-        st.caption(f"협의 가능 — {when}")
+    if chosen.get("contact_slots"):
+        st.caption(f"협의 가능 — {chosen['contact_slots']}")
+
+    # 납품 가능 요일도 함께 보인다.
+    #
+    # 실행일이 그 요일과 어긋나면 당일 만든 것을 받아야 하는 메뉴는 팔 수가
+    # 없다. 체인은 이것을 고칠 수 없다 — 실행일은 여기서 사람이 고르는
+    # 값이라 메뉴를 몇 번 다시 만들어도 같은 문제가 남는다.
+    if chosen.get("available_slots"):
+        st.caption(f"납품 가능 — {chosen['available_slots']}")
 
     # 명세서 4-2 는 「날짜 지정 / 희망 기간」 두 방식을 둔다.
     # 희망 기간은 (1)을 요일 수만큼 반복 호출해야 해 T45(W4)로 미뤘다.
@@ -503,8 +505,7 @@ with c_in:
 st.divider()
 
 if go:
-    partner = next(p for p in partners if p["id"] == pid)
-    generate(partner, target)
+    generate(chosen, target)
 
 if st.session_state.get(SS_RESULT):
     render_result(st.session_state[SS_RESULT], st.session_state[SS_META])

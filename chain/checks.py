@@ -14,14 +14,32 @@ tests/test_p4.py 안에 있던 검사를 옮겨 왔다. 테스트는 여기서 �
 import json
 import re
 from datetime import date
+from typing import NamedTuple
 
 from chain.inputs import NO_DATA
+
+
+class Checked(NamedTuple):
+    """
+    검사 결과. 다시 부를 것과 알리기만 할 것을 갈라 둔다.
+
+    거의 모든 검사는 다시 부르면 고쳐질 수 있는 것이라 redo 로 간다.
+    warn 은 예외다 — 검사 기준에 근거가 얇거나 오탐이 난 적 있었던 것들이라,
+    걸렸다고 해서 틀렸다고 단정할 수 없다. 화면에는 어차피 둘 다
+    나가지 않고 plans.auto_check 에 함께 쌓인다.
+    """
+    redo: list[str]
+    warn: list[str]
+
+    @property
+    def all(self) -> list[str]:
+        return self.redo + self.warn
 
 # 1위 안에 반드시 있어야 하는 것.
 # 대표가 이 문서만 보고 실행할 수 있어야 한다(명세서 4-2).
 REQUIRED = ["메뉴명", "구성", "협력사_제공", "바틀링_준비", "보관_조건",
             "1회_납품_수량", "협력사_정가", "판매가_제안", "페어링_맥주",
-            "이벤트", "홍보_일정", "홍보_문구", "실행_준비물", "소요_기간",
+            "이벤트", "홍보_일정", "홍보_문구", "실행_준비물",
             "추천_근거"]
 
 # "정가_합" 은 여기 넣지 않는다. 세트인 안에만 있고 나머지는 null 이다.
@@ -44,6 +62,18 @@ VAGUE = re.compile(r"우열을? (?:가리기|판단하기) (?:어렵|힘들)"
 VAGUE_EXCLUDE = re.compile(
     r"매력(?:도|이)|다양성|우위|경쟁력|후순위|밀림|떨어[지짐]|부족"
     r"|기여도 (?:측면|면)")
+
+
+def is_rank_reason(why) -> bool:
+    """
+    안을 뺀 이유가 "만들 수 없다"가 아니라 "다른 안만 못하다"인가.
+
+    (4)는 실행이 불가능한 안만 뺀다. 매력이 떨어진다거나 단가가 낮다는
+    것은 3위를 줄 이유이지 목록에서 뺄 이유가 아니다.
+
+    이렇게 뺀 것은 메뉴가 잘못된 것이 아니라 (4)가 잘못 판단한 것이다.
+    """
+    return bool(VAGUE_EXCLUDE.search(str(why or "")))
 
 
 def parse_beers(text: str) -> dict[str, dict]:
@@ -84,9 +114,10 @@ def parse_beer_prices(text: str) -> dict[str, float]:
             if v["price"] is not None}
 
 
-def check_final(out: dict, p2: dict, beers: dict) -> list[str]:
+def check_final(out: dict, p2: dict, beers: dict) -> Checked:
     """프롬프트가 지시한 제약을 지켰는지 본다."""
-    issues = []
+    issues: list[str] = []
+    warns: list[str] = []
 
     ranks = out.get("순위") or []
     excluded = out.get("제외") or []
@@ -95,7 +126,7 @@ def check_final(out: dict, p2: dict, beers: dict) -> list[str]:
     if out.get("재생성_필요"):
         if ranks:
             issues.append("재생성 필요인데 순위가 있음")
-        return issues
+        return Checked(issues, warns)
 
     if not ranks:
         issues.append("순위 없음")
@@ -111,7 +142,8 @@ def check_final(out: dict, p2: dict, beers: dict) -> list[str]:
     for e in excluded:
         why = str(e.get("제외_사유") or "")
         if VAGUE_EXCLUDE.search(why):
-            issues.append(f"{e.get('안_id')}: 순위 사유로 제외함 — {why[:40]}")
+            issues.append(f"{e.get('안_id')}: 순위를 낮출 이유인데 안을 "
+                          f"아예 뺐다 — {why[:40]}")
 
     # 순위는 1부터 빠짐없이
     nums = sorted(r.get("순위") for r in ranks if r.get("순위"))
@@ -214,7 +246,7 @@ def check_final(out: dict, p2: dict, beers: dict) -> list[str]:
     if VAGUE.search(json.dumps(out, ensure_ascii=False)):
         issues.append("순위 판단을 회피하는 표현 사용")
 
-    return issues
+    return Checked(issues, warns)
 
 
 # ════════════════════════════════════════════════════════════
@@ -229,9 +261,10 @@ COOKING_FIELDS = ["조리_방법", "조리_주체", "조리_난이도", "필요_
 APPROACHES = {"단품", "세트", "원가 절감형"}
 
 
-def check_menu(out: dict, beers: dict) -> list[str]:
+def check_menu(out: dict, beers: dict) -> Checked:
     """프롬프트가 지시한 제약을 지켰는지 본다."""
-    issues = []
+    issues: list[str] = []
+    warns: list[str] = []
     menus = out.get("메뉴안") or []
 
     if len(menus) != 3:
@@ -271,7 +304,9 @@ def check_menu(out: dict, beers: dict) -> list[str]:
 
         reason = (m.get("페어링_맥주") or {}).get("선정_이유") or ""
         if len(reason) < 15:
-            issues.append(f"{mid}: 페어링 이유가 너무 짧음")
+            # 짧아도 근거가 들어 있을 수 있어서, 
+            # 걸렸다고 다시 부를 이유는 아니다. 
+            warns.append(f"{mid}: 페어링 이유가 너무 짧음")
 
         # 누가 무엇을 대는지 나뉘어 있는가.
         # 협력사가 완제품을 내지 않으면 매입할 것이 없어 협업이 아니다.
@@ -345,9 +380,11 @@ def check_menu(out: dict, beers: dict) -> list[str]:
     # 세 안이 모두 저가 라인에 몰리지 않아야 한다
     known = [p for p in picked_prices if p is not None]
     if len(known) == 3 and max(known) <= 14:
-        issues.append(f"페어링이 모두 저가 라인 {known}")
+        # 14원이라는 기준에 근거가 없다. 8/27 에 근거 없는 임계값을 전부
+        # 걷어냈는데 이것만 남아 있어, 걸렸다고 틀렸다고 할 수 없다.
+        warns.append(f"페어링이 모두 저가 라인 {known}")
 
-    return issues
+    return Checked(issues, warns)
 
 
 # 메뉴명·구성에 나오면 곤란한 재료.
@@ -359,7 +396,7 @@ def check_menu(out: dict, beers: dict) -> list[str]:
 GHOST = ["아이스크림", "생크림", "치즈", "베이컨", "시럽", "잼", "초콜릿"]
 
 
-def check_menu_sources(out: dict, partner: dict) -> list[str]:
+def check_menu_sources(out: dict, partner: dict) -> Checked:
     """
     메뉴명·구성에 나온 재료가 어디서 오는지 본다 (프롬프트 규칙 8).
 
@@ -379,7 +416,7 @@ def check_menu_sources(out: dict, partner: dict) -> list[str]:
             if g in text and g not in have:
                 issues.append(f"{m.get('안_id', '?')}: '{g}' 가 어디서 오는지 "
                               f"없음 — 바틀링_준비에 적혀야 한다")
-    return issues
+    return Checked(issues, [])
 
 
 # ════════════════════════════════════════════════════════════
@@ -470,7 +507,7 @@ def span_start(text: str, year: int) -> date | None:
 
 
 def check_promo(out: dict, p2: dict, target: date,
-          partner_sns: bool = True) -> list[str]:
+          partner_sns: bool = True) -> Checked:
     """
     프롬프트가 지시한 제약을 지켰는지 본다.
 
@@ -479,7 +516,8 @@ def check_promo(out: dict, p2: dict, target: date,
       판매가 바틀링 매장에서 이뤄지므로 협력사 매장 게시물로 얻는 것이
       불확실하고, 없는 채널을 대신할 것을 만들면 부담만 늘어난다.
     """
-    issues = []
+    issues: list[str] = []
+    warns: list[str] = []
 
     axis = out.get("공통_홍보축") or {}
     if not axis:
@@ -492,7 +530,9 @@ def check_promo(out: dict, p2: dict, target: date,
         # 타겟은 사람이어야 한다. 비중 나열은 홍보 대상이 아니다.
         tgt = str(axis.get("타겟") or "")
         if STAT_TARGET.search(tgt):
-            issues.append(f"타겟이 통계 나열임 — {tgt[:40]}")
+            # 비중을 괄호로 덧붙이는 것은 규칙이 허용한다. 그 경계를
+            # 정규식으로 가르다 보니 정상인 문장도 걸릴 수 있다.
+            warns.append(f"타겟이 통계 나열임 — {tgt[:40]}")
 
         # A7 — 홍보 일정에 실행 전 항목이 하나 이상 (C001·C002)
         schedule = axis.get("홍보_일정") or []
@@ -584,7 +624,7 @@ def check_promo(out: dict, p2: dict, target: date,
         elif any(not str(t).startswith("#") for t in tags):
             issues.append(f"{pid}: '#' 없는 해시태그 {tags}")
 
-        for k in ("차별_포인트", "준비물", "소요_기간"):
+        for k in ("차별_포인트", "준비물"):
             v = p.get(k)
             if not v:
                 issues.append(f"{pid}: '{k}' 없음")
@@ -597,7 +637,9 @@ def check_promo(out: dict, p2: dict, target: date,
                 continue
             hit = next((o for o in OWNED if o in str(item)), None)
             if hit:
-                issues.append(f"{pid}: 조리 장비를 준비물로 적음 — '{item}'")
+                # 준비물은 새로 챙길 것만 적는 자리다. 이미 매장에 있는
+                # 장비는 적지 않는다. 
+                warns.append(f"{pid}: 조리 장비를 준비물로 적음 — '{item}'")
 
     # 우열을 매기지 않아야 한다
     text = json.dumps(out, ensure_ascii=False)
@@ -605,4 +647,4 @@ def check_promo(out: dict, p2: dict, target: date,
         if w in text:
             issues.append(f"우열 표현 '{w}' 사용")
 
-    return issues
+    return Checked(issues, warns)

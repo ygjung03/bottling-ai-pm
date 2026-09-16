@@ -17,6 +17,7 @@ from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           build_partner_blockers, build_partner_resources,
                           build_partner_sns, fetch_partner)
 from chain.loader import build
+from chain.runner import NO_ISSUES, NO_REJECTED
 from context.builder import build as build_context
 
 KST = timezone(timedelta(hours=9))
@@ -72,7 +73,9 @@ def run(label: str, target: date) -> None:
             bottling_ingredients=BOTTLING_INGREDIENTS,
             margin_ref=MARGIN_REF, weather_pref=WEATHER_PREF,
             trend_menu=NO_TREND_MENU,
-            constraints=rules["p2"], fewshot=NO_FEWSHOT))
+            constraints=rules["p2"], fewshot=NO_FEWSHOT,
+            rejected=NO_REJECTED,
+            prev_output=NO_ISSUES, issues=NO_ISSUES))
     except Exception as e:
         print(f"(2) 실패: {e}\n")
         return
@@ -88,7 +91,8 @@ def run(label: str, target: date) -> None:
         bottling_sns=BOTTLING_SNS,
         partner_sns=build_partner_sns(partner),
         events=build_events(target),
-        constraints=rules["p3"], past_cases=PAST_CASES)
+        constraints=rules["p3"], past_cases=PAST_CASES,
+        prev_output=NO_ISSUES, issues=NO_ISSUES)
     print(f"(3) 프롬프트 {len(p3_prompt)}자\n")
 
     try:
@@ -121,7 +125,7 @@ def run(label: str, target: date) -> None:
         print(f"      \"{p.get('홍보_문구')}\"")
         print(f"      {' '.join(p.get('해시태그') or [])}")
 
-    issues = check_promo(out, p2, target)
+    issues = check_promo(out, p2, target).all
     print("-" * 64)
     if issues:
         for i in issues:
