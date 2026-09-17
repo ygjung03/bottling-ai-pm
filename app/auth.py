@@ -1,5 +1,11 @@
 """
-인증 — 대표님 비밀번호 + 협력사 초대 코드
+인증 — 대표님 비밀번호
+
+[2026-09-17] 협력사 초대 코드로 여는 화면을 뺐다. 앱은 대표님만 쓴다.
+       협력사 입력은 구글 폼으로 받고, 어느 협력사의 답인지는 폼의
+       「확인 코드」를 `partners.invite_code` 와 맞춰 가린다
+       (scripts/google_form_sync.gs). 코드 발급은 그대로 파트너 추천
+       화면과 scripts/new_partner.py 가 한다.
 
 [중요] Streamlit 멀티페이지는 URL 직접 접근이 가능하다.
        localhost:8501/기획안_생성 을 주소창에 치면 사이드바를 거치지 않는다.
@@ -13,10 +19,7 @@ import os
 
 import streamlit as st
 
-from db.client import get_client
-
 SS_OWNER = "auth_owner"
-SS_PARTNER = "auth_partner"      # 초대 코드로 확인된 협력사 정보
 
 
 def _password() -> str:
@@ -72,24 +75,6 @@ def require_owner() -> None:
     st.stop()
 
 
-def verify_invite(code: str) -> dict | None:
-    """
-    초대 코드로 협력사를 조회한다.
-
-    협력사는 로그인 없이 폼만 채운다. 코드가 곧 신원이므로
-    코드가 유효하지 않으면 어떤 정보도 노출하지 않는다.
-    """
-    if not code:
-        return None
-    try:
-        rows = (get_client().table("partners").select("*")
-                .eq("invite_code", code.strip()).limit(1).execute().data)
-        return rows[0] if rows else None
-    except Exception:
-        return None
-
-
 def logout() -> None:
-    for k in (SS_OWNER, SS_PARTNER):
-        st.session_state.pop(k, None)
+    st.session_state.pop(SS_OWNER, None)
     st.rerun()
