@@ -23,6 +23,15 @@ from config.settings import GEMINI_API_KEY, GEMINI_MODEL
 
 _client: genai.Client | None = None
 
+# 호출마다 토큰을 누적한다. 기획안 1건에 재호출·되감기까지 몇 번을 부르고
+# 얼마가 드는지 재는 용도다. 호출자(runner)의 반환 형식은 그대로 두고,
+# 재고 싶은 쪽이 전후로 읽는다 (tests/test_fixed.py).
+USAGE = {"calls": 0, "input_tokens": 0, "output_tokens": 0}
+
+
+def reset_usage() -> None:
+    USAGE.update(calls=0, input_tokens=0, output_tokens=0)
+
 
 def get_client() -> genai.Client:
     global _client
@@ -62,6 +71,10 @@ def call(prompt: str, retry: int = 1, model: str | None = None,
                 model=model_name, contents=prompt, config=cfg
             )
             ms = int((time.perf_counter() - t0) * 1000)
+            um = getattr(resp, "usage_metadata", None)
+            USAGE["calls"] += 1
+            USAGE["input_tokens"] += getattr(um, "prompt_token_count", 0) or 0
+            USAGE["output_tokens"] += getattr(um, "candidates_token_count", 0) or 0
             return json.loads(resp.text), ms
 
         except json.JSONDecodeError as e:
