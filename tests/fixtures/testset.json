@@ -1,0 +1,95 @@
+{
+  "_설명": [
+    "T14 고정 테스트셋. 협력사 4종 × 회차(1차/2차). 값은 전부 가상이다.",
+    "1차 = 블로그 후기에서 알 수 있는 것만 — 메뉴·판매가·근거 건수. 나머지는 비운다.",
+    "    납품가·납품 요일·제약·SNS 는 협력사가 알려주기 전이라 비어 있는 것이 정상이다.",
+    "2차 = 협력사가 구글 폼을 낸 뒤. 같은 협력사에 나머지 값이 채워진다.",
+    "대상일은 10/9(목) 실증일로 고정한다. 컨텍스트는 build_testset 이 한 번 만들어 박아 둔다.",
+    "prev_output 은 2차 재생성 구조(협의 결과 반영)가 붙으면 채운다. 지금은 null."
+  ],
+  "target_date": "2026-10-09",
+  "cases": [
+    {
+      "id": "C1",
+      "round": 1,
+      "partner": {
+        "name": "테스트용 제과점",
+        "category": "제과·디저트",
+        "signature_menu": null,
+        "menu_prices": [
+          {"메뉴": "붕어빵 3개", "가격": 3000, "납품가": null, "근거": "후기 7건, 2026-09"},
+          {"메뉴": "슈크림 붕어빵 3개", "가격": 3500, "납품가": null, "근거": "후기 4건, 2026-09"},
+          {"메뉴": "미니 붕어빵 10개", "가격": 5000, "납품가": null, "근거": "후기 2건, 2026-08"}
+        ],
+        "available_slots": null,
+        "contact_slots": null,
+        "sns_channel": null,
+        "sns_content_type": null,
+        "blockers": []
+      },
+      "prev_output": null
+    },
+    {
+      "id": "C3",
+      "round": 1,
+      "partner": {
+        "name": "테스트용 카페",
+        "category": "카페",
+        "signature_menu": null,
+        "menu_prices": [
+          {"메뉴": "아메리카노", "가격": 4500, "납품가": null, "근거": "후기 12건, 2026-09"},
+          {"메뉴": "크로플", "가격": 6500, "납품가": null, "근거": "후기 9건, 2026-09"},
+          {"메뉴": "바스크 치즈케이크 1조각", "가격": 7500, "납품가": null, "근거": "후기 5건, 2026-08"},
+          {"메뉴": "자몽에이드", "가격": 6000, "납품가": null, "근거": "후기 3건, 2026-08"}
+        ],
+        "available_slots": null,
+        "contact_slots": null,
+        "sns_channel": null,
+        "sns_content_type": null,
+        "blockers": []
+      },
+      "prev_output": null
+    },
+    {
+      "id": "C5",
+      "round": 1,
+      "partner": {
+        "name": "테스트용 분식집",
+        "category": "분식·스낵",
+        "signature_menu": null,
+        "menu_prices": [
+          {"메뉴": "떡볶이 1인분", "가격": 7000, "납품가": null, "근거": "후기 11건, 2026-09"},
+          {"메뉴": "김말이 3개", "가격": 3000, "납품가": null, "근거": "후기 6건, 2026-09"},
+          {"메뉴": "모둠튀김", "가격": 6000, "납품가": null, "근거": "후기 5건, 2026-08"},
+          {"메뉴": "순대 1인분", "가격": 5000, "납품가": null, "근거": "후기 4건, 2026-08"}
+        ],
+        "available_slots": null,
+        "contact_slots": null,
+        "sns_channel": null,
+        "sns_content_type": null,
+        "blockers": []
+      },
+      "prev_output": null
+    },
+    {
+      "id": "C7",
+      "round": 1,
+      "partner": {
+        "name": "테스트용 화덕피자",
+        "category": "피자·튀김·그릴",
+        "signature_menu": null,
+        "menu_prices": [
+          {"메뉴": "마르게리타", "가격": 16000, "납품가": null, "근거": "후기 8건, 2026-09"},
+          {"메뉴": "고르곤졸라", "가격": 18000, "납품가": null, "근거": "후기 6건, 2026-09"},
+          {"메뉴": "감자튀김", "가격": 7000, "납품가": null, "근거": "후기 3건, 2026-08"}
+        ],
+        "available_slots": null,
+        "contact_slots": null,
+        "sns_channel": null,
+        "sns_content_type": null,
+        "blockers": []
+      },
+      "prev_output": null
+    }
+  ]
+}

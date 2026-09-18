@@ -316,6 +316,11 @@ def _menus(partner: dict) -> str:
     값이 나온다.
 
     납품가는 선택 입력이라 비어 있을 수 있다. 그때는 협의로 정한다.
+
+    1차 기획안은 협력사가 입력하기 전에 블로그 후기에서 본 값으로 만든다.
+    그 값에는 「후기 5건, 2026-08」 같은 근거가 붙는다. 판매가 뒤에 그대로
+    실어 (2)가 얼마나 믿을 값인지 가늠하게 한다 — 상권 데이터에 관측
+    건수를 붙이는 것과 같다.
     """
     parts = []
     for r in partner.get("menu_prices") or []:
@@ -323,8 +328,13 @@ def _menus(partner: dict) -> str:
         if not name:
             continue
         price, wholesale = r.get("가격"), r.get("납품가")
+        basis = str(r.get("근거") or "").strip()
         bits = [name]
-        bits.append(f"판매가 {int(price):,}원" if price else "판매가 미입력")
+        if price:
+            bits.append(f"판매가 {int(price):,}원"
+                        + (f" ({basis})" if basis else ""))
+        else:
+            bits.append("판매가 미입력")
         bits.append(f"납품가 {int(wholesale):,}원" if wholesale
                     else "납품가 미정 (협의 대상)")
         parts.append(" ".join(bits))

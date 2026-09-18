@@ -14,6 +14,19 @@
   메뉴 이미지(T43)·채택 폐기(T23)는 아직 없다.
   자리표시자를 두지 않고 그 영역째 감춘다. 대표님이 보는 화면에
   개발 티켓 번호가 나오면 안 된다.
+
+[기획안은 두 회차로 나간다]
+  1차  협력사가 아무것도 입력하기 전. 파트너 추천에서 등록만 된 상태라
+       partners 행에 이름·업종뿐이고, 메뉴·판매가는 블로그 후기 수집이
+       채운다(네이버 검색 API). 그 값으로 기획안을 만들어 제안서를 먼저
+       보낸다. 납품가·납품 요일·제약은 비어 있는 것이 정상이다 — 체인이
+       「데이터 없음」으로 받는다.
+  2차  협력사가 하겠다고 해서 구글 폼을 낸 뒤. 폼 값이 partners 에
+       들어와 있으므로 그대로 다시 만든다.
+  어느 회차인지는 폼 값이 있는지로 가른다. plans.round 에 남긴다.
+  메뉴·판매가가 아직 없으면 만들지 않는다 — 완제품을 사 와 파는 협업이라
+  무엇을 파는지 모르면 기획안이 성립하지 않는다. 화면에서 손으로 받는
+  칸은 두지 않는다.
 """
 import json
 import re
@@ -80,6 +93,18 @@ def load_partners() -> list[dict]:
         return []
 
 
+def round_of(partner: dict) -> int:
+    """
+    1차인지 2차인지. 구글 폼이 채우는 값이 하나라도 있으면 2차다.
+
+    폼에서 납품 요일과 제약은 필수라 제출했으면 반드시 있다. 메뉴·가격은
+    1차에서 후기로 먼저 채우므로 회차의 근거가 되지 못한다.
+    """
+    filled = any(partner.get(k) for k in
+                 ("available_slots", "blockers", "sns_channel"))
+    return 2 if filled else 1
+
+
 def prompt_version() -> str | None:
     """
     prompts/ 디렉터리의 git 해시.
@@ -109,6 +134,10 @@ def save_plan(result: dict, meta: dict) -> int | None:
         rows = get_client().table("plans").insert({
             "partner_id": meta["partner_id"],
             "partner_source": "manual",     # 추천 엔진 미구현 — 직접 지정
+            "round": meta["round"],
+            # 2차가 어느 1차를 이어받았는지. 협의 결과를 넣어 다시 만드는
+            # 구조가 붙으면 채운다. 지금은 회차만 남긴다.
+            "prev_plan_id": None,
             "date_mode": "fixed",
             "target_date": meta["target_date"],
             "context_snapshot": meta["context"],
@@ -180,6 +209,7 @@ def generate(partner: dict, target: date) -> None:
     meta = {
         "partner_id": partner["id"],
         "partner_name": partner["name"],
+        "round": round_of(partner),
         "target_date": target.isoformat(),
         "context": ctx,
         "prompt_version": prompt_version(),
@@ -441,7 +471,7 @@ def render_result(result: dict, meta: dict) -> None:
                 st.write(f"- {f}")
 
     with st.expander("생성 조건"):
-        st.write(f"협력사 **{meta['partner_name']}** · 실행일 "
+        st.write(f"협력사 **{meta['partner_name']}** · **{meta['round']}차** · 실행일 "
                  f"**{meta['target_date']}** · {result['latency_ms']/1000:.1f}초")
         st.caption(f"프롬프트 버전 {meta.get('prompt_version') or '확인 불가'} · "
                    f"저장 id {meta.get('plan_id') or '저장 안 됨'}")
@@ -460,7 +490,7 @@ st.markdown(EQUAL_HEIGHT_BOXES, unsafe_allow_html=True)
 
 partners = load_partners()
 if not partners:
-    st.info("등록된 협력사가 없습니다. 협력사 입력 폼(T21)으로 먼저 받아 주세요.")
+    st.info("등록된 협력사가 없습니다. 파트너 추천에서 먼저 등록해 주세요.")
     st.stop()
 
 labels = {p["id"]: f"{p['name']} ({p['category']})" for p in partners}
@@ -472,6 +502,15 @@ with c_in:
     pid = st.selectbox("협력사", list(labels), format_func=labels.get)
 
     chosen = next(p for p in partners if p["id"] == pid)
+
+    rnd = round_of(chosen)
+    st.caption(f"{rnd}차 기획안 — "
+               + ("협력사 입력 전입니다. 후기에서 확인한 메뉴·판매가로 만듭니다."
+                  if rnd == 1 else "협력사가 폼으로 알려준 값으로 만듭니다."))
+
+    has_menus = bool(chosen.get("menu_prices"))
+    if not has_menus:
+        st.info("메뉴·판매가가 아직 없습니다. 들어오면 만들 수 있습니다.")
 
     # 협의 가능한 때를 여기서 보인다. 매입가와 납품 수량은 결국 통화로
     # 정해야 하는데, 그 값이 DB 에만 있으면 찾아볼 생각을 못 한다.
@@ -500,7 +539,8 @@ with c_in:
 
     st.write("")
     go = st.button("기획안 생성", type="primary",
-                   use_container_width=True, disabled=is_range)
+                   use_container_width=True,
+                   disabled=is_range or not has_menus)
 
 st.divider()
 

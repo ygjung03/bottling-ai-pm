@@ -174,6 +174,10 @@ CREATE TABLE IF NOT EXISTS plans (
   partner_source    TEXT    NOT NULL DEFAULT 'recommended',
                     -- recommended | manual | menu_search
   trend_menu        TEXT,               -- 메뉴 검색으로 시작한 경우 그 메뉴명
+  round             SMALLINT NOT NULL DEFAULT 1,
+                    -- 1 = 협력사 입력 전, 후기에서 본 메뉴·판매가만으로
+                    -- 2 = 협력사가 구글 폼을 낸 뒤
+  prev_plan_id      BIGINT REFERENCES plans(id),  -- 2차가 이어받은 1차
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
 
   date_mode         TEXT    NOT NULL DEFAULT 'fixed',  -- fixed | range
