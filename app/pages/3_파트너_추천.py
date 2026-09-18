@@ -136,6 +136,7 @@ def create_invite(name: str, category: str, lat=None, lng=None) -> dict | None:
 
     try:
         rows = client.table("partners").insert(payload).execute().data
+        load_partner_names.clear()   # 추천 표의 「등록」 열이 바로 바뀌게
         return rows[0] if rows else None
     except Exception as e:
         st.error(f"등록 실패 — {e}")
@@ -153,15 +154,24 @@ def render_next_step(candidate_name: str, guessed_category: str, lat=None, lng=N
         return
 
     st.info(f"'{candidate_name}'은(는) 아직 등록되지 않았습니다.")
-    if st.button("초대 링크 만들기", key=f"{key_prefix}_invite_btn"):
+    if st.button("협력사 등록", key=f"{key_prefix}_invite_btn"):
         row = create_invite(candidate_name, guessed_category, lat, lng)
         if row:
-            st.success("초대 링크가 생성됐습니다. 협력사에 전달해 주세요.")
-            st.code(f"?code={row.get('invite_code')}", language=None)
-            st.caption(
-                f"업종은 '{guessed_category}'(으)로 초안을 채웠습니다 — "
-                f"협력사가 입력 폼(T21)에서 직접 고칠 수 있습니다."
-            )
+            render_registered(row, guessed_category)
+
+
+def render_registered(row: dict, guessed_category: str):
+    """등록 직후 안내. 버튼 경로와 직접 입력 폼 경로가 같이 쓴다."""
+    st.success("협력사를 등록했습니다. 기획안 생성에서 고를 수 있습니다.")
+    # 협력사 입력은 구글 폼으로 받는다. 이 코드는 폼의 「확인 코드」 문항에
+    # 미리 채워 보내는 값이다 (docs/협력사_구글폼_문항.md).
+    st.code(row.get("invite_code") or "", language=None)
+    st.caption(
+        f"위 코드는 협력사가 관심을 보인 뒤 구글 폼을 보낼 때 확인 코드로 쓰입니다. "
+        f"업종은 '{guessed_category}'(으)로 초안을 채웠습니다 — "
+        f"협력사가 폼에서 직접 고칠 수 있습니다."
+    )
+    st.page_link("pages/2_기획안_생성.py", label="기획안 생성으로 이동", icon="📝")
 
 
 def render_map(df: pd.DataFrame, highlight_store_id: str | None = None, top_n: int = 60):
@@ -364,16 +374,26 @@ with tab_manual:
         with st.form("manual_entry"):
             m_name = st.text_input("가게 이름")
             m_category = st.selectbox("업종", list(INDUSTRY_MAP))
-            submitted = st.form_submit_button("등록하고 초대 링크 만들기")
+            submitted = st.form_submit_button("협력사 등록")
             # partners 테이블에 주소 컬럼이 없어(lat/lng만 있음) 여기선 안 받는다.
-            # 위치가 필요하면 초대 링크 발급 후 대표님이 직접 좌표를 채운다.
+            # 위치가 필요하면 등록 후 대표님이 직접 좌표를 채운다.
 
+        # 폼 제출 결과 안에 버튼을 또 두지 않는다. 그 버튼을 누르면 화면이
+        # 다시 실행되는데 그때는 submitted 가 False 라 이 블록이 통째로
+        # 사라지고, 등록은 되지 않는다(9/18 화면 확인). 제출 시 바로 등록한다.
         if submitted:
             if not m_name.strip():
                 st.error("가게 이름을 입력해 주세요.")
             else:
                 st.divider()
-                render_next_step(m_name, m_category, key_prefix="manual_new")
+                existing = find_existing_partner(m_name)
+                if existing:
+                    st.success(f"'{existing['name']}'은(는) 이미 등록된 협력사입니다.")
+                    st.page_link("pages/2_기획안_생성.py", label="기획안 생성으로 이동", icon="📝")
+                else:
+                    row = create_invite(m_name, m_category)
+                    if row:
+                        render_registered(row, m_category)
 
 # ── C. 메뉴로 찾기 ──
 with tab_menu:

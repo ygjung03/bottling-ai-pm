@@ -19,6 +19,12 @@ import os
 
 import streamlit as st
 
+# .env 를 읽는 것은 config.settings 다. 이 모듈은 설정값을 직접 쓰지 않지만
+# 로그인 화면이 앱에서 가장 먼저 열리므로, 여기서 import 하지 않으면
+# OWNER_PASSWORD 가 .env 에 있어도 os.getenv 에 없다. 전에는 db.client 를
+# 거쳐 우연히 읽혔는데 그 import 를 빼면서 로그인이 막힌 적이 있다(9/18).
+import config.settings  # noqa: F401
+
 SS_OWNER = "auth_owner"
 
 

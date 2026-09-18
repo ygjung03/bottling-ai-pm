@@ -82,8 +82,8 @@ def tier_label(s_complement: float | None) -> str:
 # context/builder.py 의 INDUSTRY_MAP 키로 변환 — 협력사 초대(T24) 시 category
 # 컬럼 초기값을 채우는 용도다. INDUSTRY_MAP 은 sales_profile 업종명과 연결되는
 # 값이라 이 표의 6구간과 1:1로 안 맞는다 (예: 일식·서양식은 원래 3-3에 없음).
-# 여기서 만든 값은 어디까지나 미리 채우는 추정치이고, 1_협력사_입력.py 폼에서
-# 얼마든지 고칠 수 있다.
+# 여기서 만든 값은 어디까지나 미리 채우는 추정치이고, 협력사가 구글 폼의
+# 「업종」 문항에서 고르면 그 값으로 바뀐다 (scripts/google_form_sync.gs).
 _INDUSTRY_GUESS_BY_SUB = {
     "빵/도넛": "제과·디저트",
     "떡/한과": "제과·디저트",
