@@ -49,9 +49,6 @@ PROMPTS = ROOT / "prompts"
 KST = timezone(timedelta(hours=9))
 NO_FEWSHOT = "(없음 — 채택 사례가 아직 없다)"
 
-# 채점 기준 초안 ④ — 16원/ml 이상을 고가 라인으로 본다. 저가 쏠림을 세는 기준.
-HIGH_PRICE_PER_ML = 16
-
 # 유료 등급 단가 (ai.google.dev/gemini-api/docs/pricing, 2026-09-18, gemini-3.5-flash-lite).
 # 무료 키로 돌리면 실제론 0원이지만 대표님 키(유료)로 돌리면 얼마인지를 본다.
 USD_PER_M_INPUT = 0.30
@@ -116,28 +113,33 @@ def load_snapshot() -> dict:
 # 실행
 # ══════════════════════════════════════════
 
+PROPOSAL_FIELDS = ("역할분담", "상호_이익", "배경", "매입")
+
+
 def summarize(r: dict) -> dict:
-    """결과에서 비교에 쓸 것만 뽑는다. 원문은 output 에 따로 남긴다."""
+    """체인 결과에서 비교에 쓸 숫자만 뽑는다. 원문은 output 에 따로 남긴다."""
     menus = (r["p2"] or {}).get("메뉴안") or []
     final = r["final"] or {}
-    ranks = sorted(final.get("순위") or [], key=lambda x: x.get("순위") or 99)
+    plans = final.get("안") or []
     excluded = final.get("제외") or []
 
-    beers = []
-    for rk in ranks:
-        b = rk.get("페어링_맥주") or {}
-        beers.append({"순위": rk.get("순위"), "메뉴명": rk.get("메뉴명"),
-                      "맥주": b.get("메뉴명"), "원_ml": b.get("원_ml")})
-    low = [b for b in beers if b["원_ml"] is not None
-           and b["원_ml"] < HIGH_PRICE_PER_ML]
+    items = []
+    for a in plans:
+        b = a.get("페어링_맥주") or {}
+        items.append({
+            "안_id": a.get("안_id"), "접근": a.get("접근"), "메뉴명": a.get("메뉴명"),
+            "맥주": b.get("메뉴명"), "원_ml": b.get("원_ml"),
+            # 대표가 어느 안을 골라도 제안서가 나와야 한다 — 4필드가 다 있어야 함
+            "제안서_필드": sum(bool(a.get(k)) for k in PROPOSAL_FIELDS),
+        })
 
     return {
         "error": r["error"],
         "menus": [m.get("메뉴명") for m in menus],
-        "ranks": beers,
+        "approaches": [m.get("접근") for m in menus],
+        "items": items,
         "excluded": [{"안_id": e.get("안_id"), "사유": e.get("제외_사유")}
                      for e in excluded],
-        "low_price_pairings": len(low),
         "issues": r["issues"],
         "n_rewinds": len(r["rewinds"]),
         "n_restarts": len(r["restarts"]),
@@ -215,14 +217,15 @@ def run_cases(ids: list[str] | None) -> None:
         out_path.write_text(json.dumps(results, ensure_ascii=False, indent=2),
                             encoding="utf-8")
 
-        print(f"    {sec:.0f}초 · 메뉴 {len(s['menus'])} · 순위 {len(s['ranks'])}"
-              f" · 제외 {len(s['excluded'])} · 저가 페어링 {s['low_price_pairings']}"
+        print(f"    {sec:.0f}초 · 메뉴 {len(s['menus'])} {s['approaches']}"
+              f" · 안 {len(s['items'])} · 제외 {len(s['excluded'])}"
               f" · 재호출 {s['n_rewinds']} · 되감기 {s['n_restarts']}"
               f" · 호출 {s['calls']}회 {s['tokens_in']:,}/{s['tokens_out']:,} 토큰"
               f" ≈ ${s['cost_usd']:.3f} ({s['cost_usd'] * KRW_PER_USD:.0f}원)"
               + (f" · 끊김: {s['error']}" if s["error"] else ""))
-        for b in s["ranks"]:
-            print(f"      {b['순위']}위 {b['메뉴명']} — {b['맥주']} {b['원_ml']}원/ml")
+        for it in s["items"]:
+            print(f"      {it['안_id']} [{it['접근']}] {it['메뉴명']} — {it['맥주']} "
+                  f"{it['원_ml']}원/ml · 제안서 {it['제안서_필드']}/4")
         for e in s["excluded"]:
             print(f"      제외 {e['안_id']}: {e['사유']}")
         print()
@@ -247,23 +250,24 @@ def report(path: Path | None) -> None:
     runs = data["runs"]
     print(f"{path.name} · 프롬프트 {data['prompt_version']} · {len(runs)}회 실행\n")
 
-    print(f"{'케이스':6} {'회차':3} {'실행':3} {'완주':3} {'제외':3} {'저가':6} "
-          f"{'재호출':4} {'되감기':4} {'평균초':6} {'호출':4} {'평균원':6}")
+    print(f"{'케이스':6} {'회차':3} {'실행':3} {'완주':3} {'안':3} {'제외':3} {'포장':3} "
+          f"{'제안서':6} {'재호출':4} {'되감기':4} {'평균초':6} {'호출':4} {'평균원':6}")
     by_case: dict[str, list] = {}
     for r in runs:
         by_case.setdefault(r["case_id"], []).append(r)
 
-    tot_ranks = tot_low = 0
     costs = []
+    tot_items = tot_full = 0
     for cid in sorted(by_case):
         rs = by_case[cid]
         s_list = [r["summary"] for r in rs]
         done = sum(1 for s in s_list if not s["error"])
-        n_ranks = sum(len(s["ranks"]) for s in s_list)
-        n_low = sum(s["low_price_pairings"] for s in s_list)
-        tot_ranks += n_ranks
-        tot_low += n_low
-        # 토큰을 기록하기 전 결과(기준선 첫 8건)는 비용이 없다
+        items = [it for s in s_list for it in s["items"]]
+        n_pack = sum(1 for s in s_list if "포장" in s["approaches"])
+        n_full = sum(1 for it in items if it["제안서_필드"] == 4)
+        tot_items += len(items)
+        tot_full += n_full
+        # 토큰을 기록하기 전 결과는 비용이 없다
         with_cost = [s for s in s_list if "cost_usd" in s]
         costs += [s["cost_usd"] for s in with_cost]
         calls = (f"{sum(s['calls'] for s in with_cost) / len(with_cost):>4.1f}"
@@ -271,15 +275,17 @@ def report(path: Path | None) -> None:
         krw = (f"{sum(s['cost_usd'] for s in with_cost) / len(with_cost) * KRW_PER_USD:>6.0f}"
                if with_cost else "     -")
         print(f"{cid:6} {rs[0]['round']:>3} {len(rs):>3} {done:>3} "
+              f"{len(items):>3} "
               f"{sum(len(s['excluded']) for s in s_list):>3} "
-              f"{n_low:>2}/{n_ranks:<3} "
+              f"{n_pack:>3} "
+              f"{n_full:>2}/{len(items):<3} "
               f"{sum(s['n_rewinds'] for s in s_list):>4} "
               f"{sum(s['n_restarts'] for s in s_list):>4} "
               f"{sum(s['latency_ms'] for s in s_list) / len(s_list) / 1000:>6.1f} "
               f"{calls} {krw}")
 
-    print(f"\n저가 페어링(<{HIGH_PRICE_PER_ML}원/ml) {tot_low}/{tot_ranks}"
-          + (f" = {tot_low / tot_ranks:.0%}" if tot_ranks else ""))
+    print(f"\n제안서 4필드가 다 있는 안 {tot_full}/{tot_items}"
+          + (f" = {tot_full / tot_items:.0%}" if tot_items else ""))
     if costs:
         print(f"기획안 1건 비용(유료 단가 기준) 평균 ${sum(costs) / len(costs):.3f}"
               f" ≈ {sum(costs) / len(costs) * KRW_PER_USD:.0f}원, "

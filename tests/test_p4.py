@@ -131,19 +131,17 @@ def run(label: str, target: date, save: bool = False) -> None:
 
     # 요약 — 대표에게 보이는 형태
     print("-" * 64)
-    for r in out.get("순위") or []:
+    for r in out.get("안") or []:
         beer = (r.get("페어링_맥주") or {}).get("메뉴명", "?")
         ev = (r.get("이벤트") or {}).get("명칭", "?")
-        print(f"  {r.get('순위')}위  {r.get('메뉴명')} [{r.get('안_id')}]")
+        print(f"  {r.get('안_id')} [{r.get('접근')}]  {r.get('메뉴명')}")
         print(f"        페어링 {beer} / 판매가 {r.get('판매가_제안')}원")
         print(f"        이벤트 {ev}")
         print(f"        사유   {str(r.get('선정_사유'))[:60]}")
         for risk in (r.get("예상_리스크") or [])[:2]:
             print(f"        리스크 {risk[:60]}")
 
-        # 1위는 협력사에 보낼 제안서가 된다 (명세서 4-2-1)
-        if r.get("순위") != 1:
-            continue
+        # 어느 안이든 협력사에 보낼 제안서가 될 수 있다 — 4필드가 안마다 있다
         deal = r.get("매입") or {}
         roles = r.get("역할분담") or {}
         gains = r.get("상호_이익") or {}
