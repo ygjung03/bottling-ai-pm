@@ -444,29 +444,50 @@ def build_partner_blockers(partner: dict | None) -> str:
 
 def build_events(target: date, days: int = 30) -> str:
     """
-    대상 시점 이후 N일 내 행사. (3) 마케터가 연계 여부를 판단한다.
+    협업 실행일 전후의 행사. (3) 마케터가 연계 여부를 판단한다.
 
-    A 담당 T10 이 적재 전이라 지금은 비어 있다.
-    citydata 의 CULTURALEVENTINFO 로 대체할 수 있는지 확인했으나
-    두 지점 모두 0건이었다. 8/29 광진 뮤직 페스타도 잡히지 않아
-    구청 주최 행사는 서울시 API 에서 누락되는 것으로 보인다.
+    행사가 손님을 얼마나 끌어오는지는 데이터에 없다 — 제목과 장소를 보고
+    (3)이 판단한다. 코드가 줄 수 있는 것은 시점이다. 그래서 협업 실행일과
+    행사 시작일이 가까운 순으로 정렬하고, 줄마다 "협업 실행일 당일" 같은 말을 붙인다.
+
+    시작일 순으로 자르던 때는 몇 달째 하는 전시(서울상상나라, 정원박람회)가
+    먼저 시작했다는 이유로 자리를 차지해, 그날 280m 앞에서 열리는 드론쇼가
+    밀려났다 (9/19). 거리는 참고로만 붙인다 — 어차피 반경으로 걸러진 행이다.
+
+    서울시 API 는 장기 전시 위주고 구청 게시판은 다음 주 것까지만 올라와서,
+    몇 주 뒤 행사는 사람이 넣어야 한다 (scripts/add_event.py — 임시 경로).
     """
     try:
         rows = (get_client().table("events").select("*")
                 .gte("end_date", target.isoformat())
                 .lte("start_date", (target + timedelta(days=days)).isoformat())
-                .order("start_date").limit(5).execute().data or [])
+                .limit(50).execute().data or [])
     except Exception:
         return f"{NO_DATA} (적재 전)"
 
     if not rows:
         return f"{NO_DATA} (적재 전)"
 
+    def gap(e) -> int:
+        return abs((date.fromisoformat(e["start_date"]) - target).days)
+
     lines = []
-    for e in rows:
+    for e in sorted(rows, key=gap)[:8]:
+        start = date.fromisoformat(e["start_date"])
+        end = date.fromisoformat(e["end_date"] or e["start_date"])
+        d = (start - target).days
+        # 위 조회 조건(end_date >= 협업 실행일)이 실행일 전에 끝난 행사를
+        # 이미 걸러낸다 — 10/7~10/8 행사는 10/9 실행일 목록에 오지 않는다.
+        # 그래서 남는 경우는 셋뿐이다.
+        if start == target:
+            when = "협업 실행일 당일 시작"
+        elif start < target:
+            when = f"협업 실행일 {-d}일 전 시작, 진행 중"
+        else:
+            when = f"협업 실행일 {d}일 뒤 시작"
         dist = f", 약 {e['distance_m']}m" if e.get("distance_m") else ""
         lines.append(f"- {e.get('title')} / {e.get('start_date')}～"
-                     f"{e.get('end_date')} / {e.get('place')}{dist}")
+                     f"{e.get('end_date')} ({when}) / {e.get('place')}{dist}")
     return "\n".join(lines)
 
 
