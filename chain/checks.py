@@ -94,9 +94,15 @@ def parse_beers(text: str) -> dict[str, dict]:
         if len(parts) < 2:
             continue
         m = re.match(r"([\d.]+)원/ml", parts[1])
+        # 셋째 칸이 스타일이다. 다만 DB 에 스타일이 없는 맥주는 build_beer_list 가
+        # 그 자리에 "스타일 데이터 없음" 이라고 적어 두므로, 그 글자를 스타일로
+        # 읽으면 안 된다. 그런 맥주는 스타일을 빈 값으로 둔다.
+        style = parts[2] if len(parts) > 2 else ""
+        if "데이터 없음" in style:
+            style = ""
         out[parts[0]] = {
             "price": float(m.group(1)) if m else None,
-            "style": parts[2] if len(parts) > 2 else "",
+            "style": style,
             "alcohol": "논알콜" not in body,
             "fixed": fixed,
         }

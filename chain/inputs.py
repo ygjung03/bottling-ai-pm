@@ -264,22 +264,23 @@ def build_beer_list() -> str:
     for r in rows:
         parts = [str(r["name"]), f"{_num(r['price_per_ml'])}원/ml"]
 
+        # 스타일·도수·맛이 비면 "데이터 없음"으로 적는다. 말없이 빼면 LLM 이
+        # 이름만 보고 지어낸다 (원칙 ③). 새 맥주를 단가만 알고 넣을 때 그렇다.
         style = r.get("style")
-        if style:
-            parts.append(str(style))
+        parts.append(str(style) if style else "스타일 데이터 없음")
 
         # 도수 0 은 "논알콜"로 적는다. 다만 스타일이 이미 '논알콜'이면
         # 같은 말이 두 번 나오므로 생략한다.
         abv = r.get("abv")
-        if abv is not None:
-            if float(abv) > 0:
-                parts.append(f"{_num(abv)}도")
-            elif style != "논알콜":
-                parts.append("논알콜")
+        if abv is None:
+            parts.append("도수 데이터 없음")
+        elif float(abv) > 0:
+            parts.append(f"{_num(abv)}도")
+        elif style != "논알콜":
+            parts.append("논알콜")
 
         notes = r.get("flavor_notes") or []
-        if notes:
-            parts.append(", ".join(notes))
+        parts.append(", ".join(notes) if notes else "맛 특성 데이터 없음")
 
         mark = "[고정]" if r.get("is_fixed") else "[교체 가능]"
         lines.append("- " + " / ".join(parts) + f" {mark}")
