@@ -14,8 +14,21 @@ from config.settings import PROMPT_DIR
 
 
 @lru_cache(maxsize=None)
-def load(name: str) -> dict:
+def _load(name: str, mtime: float) -> dict:
+    # mtime 은 캐시 키로만 쓴다. 파일이 바뀌면 값이 달라져 다시 읽는다.
     return yaml.safe_load((PROMPT_DIR / f"{name}.yaml").read_text(encoding="utf-8"))
+
+
+def load(name: str) -> dict:
+    """
+    프롬프트 YAML 을 읽는다. 파일이 바뀌지 않았으면 캐시를 쓴다.
+
+    전에는 이름만으로 캐시해서, Streamlit 처럼 오래 사는 프로세스에서는
+    프롬프트를 고쳐도 껐다 켜기 전까지 옛것을 썼다. 9/20 에 (3)을 고치고
+    두 번 생성했는데 둘 다 옛 프롬프트로 돌았다. 수정 시각을 키에 넣어
+    파일이 바뀌면 다시 읽게 했다. 안 바뀌면 stat 한 번뿐이라 비용은 없다.
+    """
+    return _load(name, (PROMPT_DIR / f"{name}.yaml").stat().st_mtime)
 
 
 def render(template: str, **vars_) -> str:
