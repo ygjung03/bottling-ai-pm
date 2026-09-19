@@ -122,11 +122,11 @@ def main() -> None:
     plans = (r["p3"] or {}).get("안별_기획") or []
     print(f"  (3) 안별 기획   : {len(plans)}개")
 
-    ranks = (r["final"] or {}).get("순위") or []
-    print(f"  (4) 순위        : {len(ranks)}개")
-    for rk in ranks:
-        beer = rk.get("페어링_맥주") or {}
-        print(f"        {rk.get('순위')}위 {rk.get('메뉴명')} "
+    final_plans = (r["final"] or {}).get("안") or []
+    print(f"  (4) 안          : {len(final_plans)}개")
+    for p in final_plans:
+        beer = p.get("페어링_맥주") or {}
+        print(f"        {p.get('안_id')} [{p.get('접근')}] {p.get('메뉴명')} "
               f"— {beer.get('메뉴명')} {beer.get('원_ml')}원/ml")
 
     # runner 가 입력을 빠뜨리면 나타나는 증상
@@ -145,26 +145,25 @@ def main() -> None:
     issues = []
     if r["error"]:
         issues.append(f"체인이 끝까지 돌지 않음 — {r['error']}")
-    if len(menus) != 3:
-        issues.append(f"메뉴안 {len(menus)}개 — 3개여야 함")
+    # 포장에 맞는 품목이 없으면 (2)가 두 안만 낸다 (p2 지시 1)
+    if len(menus) not in (2, 3):
+        issues.append(f"메뉴안 {len(menus)}개 — 2~3개여야 함")
     if len(plans) != len(menus):
         issues.append(f"안별 기획 {len(plans)}개 — 메뉴안과 불일치")
-    if not ranks:
-        issues.append("순위 없음")
-    for rk in ranks:
-        price = (rk.get("페어링_맥주") or {}).get("원_ml")
+    if not final_plans:
+        issues.append("(4) 안 없음")
+    for p in final_plans:
+        price = (p.get("페어링_맥주") or {}).get("원_ml")
         if not price:
-            issues.append(f"{rk.get('안_id')}: 맥주 단가가 비어 있음 "
+            issues.append(f"{p.get('안_id')}: 맥주 단가가 비어 있음 "
                           f"— runner 가 beer_list 를 넘기지 않았을 수 있다")
 
-    # 제안서 4필드는 1위에만 온다 (명세서 1-4).
-    # 비어 있으면 runner 가 partner_resources 를 (4)에 넘기지 않았을 수 있다.
-    top = next((r for r in ranks if r.get("순위") == 1), None)
-    if top:
+        # 제안서 4필드는 모든 안에 온다 — 대표가 어느 안을 골라도 제안서가 나와야 한다.
+        # 비어 있으면 runner 가 partner_resources 를 (4)에 넘기지 않았을 수 있다.
         missing = [k for k in ("역할분담", "상호_이익", "배경", "매입")
-                   if not top.get(k)]
+                   if not p.get(k)]
         if missing:
-            issues.append(f"1위에 제안서 필드 없음 {missing} "
+            issues.append(f"{p.get('안_id')}: 제안서 필드 없음 {missing} "
                           f"— T44 협업 제안서를 만들 수 없다")
 
     if issues:

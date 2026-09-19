@@ -159,38 +159,44 @@ def main() -> None:
     for i in result["issues"]:
         print(f"  [경고] {i}")
 
-    ranked = (result["final"] or {}).get("순위") or []
-    if not ranked:
-        print("\n순위 없음 — 제안서를 만들 수 없다")
+    plans = (result["final"] or {}).get("안") or []
+    if not plans:
+        print("\n안 없음 — 제안서를 만들 수 없다")
         return
-    top = ranked[0]
 
     # 저장 전에도 문서가 나와야 한다. 번호만 「초안」으로 표시된다
     meta = {"partner_name": partner["name"], "target_date": target.isoformat()}
 
-    missing = missing_fields(top)
-    if missing:
-        print(f"\n1위 안에 {', '.join(missing)} 없음 — 제안서를 만들 수 없다")
-        print(json.dumps(top, ensure_ascii=False, indent=2))
-        return
+    # 대표가 어느 안을 골라도 제안서가 나와야 한다. 안마다 만들어 본다.
+    for item in plans:
+        label = f"{item.get('안_id')} [{item.get('접근')}] {item.get('메뉴명')}"
+        print("\n" + "=" * 64)
+        print(label)
+        print("=" * 64)
 
-    text = build_proposal(top, meta)
-    print("\n" + text + "\n")
+        missing = missing_fields(item)
+        if missing:
+            print(f"  {', '.join(missing)} 없음 — 제안서를 만들 수 없다")
+            print(json.dumps(item, ensure_ascii=False, indent=2))
+            continue
 
-    try:
-        blob = build_proposal_docx(text, meta)
-        print(f"Word {len(blob):,} bytes")
-    except Exception as e:
-        print(f"Word 생성 실패: {e}")
+        text = build_proposal(item, meta)
+        print("\n" + text + "\n")
 
-    issues = check(text, top, meta, target)
-    print("-" * 64)
-    if issues:
-        for i in issues:
-            print(f"  · {i}")
-    else:
-        print("  협력사에 보낼 수 있는 상태")
-    print()
+        try:
+            blob = build_proposal_docx(text, meta)
+            print(f"Word {len(blob):,} bytes")
+        except Exception as e:
+            print(f"Word 생성 실패: {e}")
+
+        issues = check(text, item, meta, target)
+        print("-" * 64)
+        if issues:
+            for i in issues:
+                print(f"  · {i}")
+        else:
+            print("  협력사에 보낼 수 있는 상태")
+        print()
 
 
 if __name__ == "__main__":
