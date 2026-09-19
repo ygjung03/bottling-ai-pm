@@ -224,7 +224,8 @@ def run(context: str, target_date: str, beer_list: str,
             return out
 
         def check_p2(out) -> Checked:
-            found = check_menu(out, beers)
+            # (1)의 소비_수준을 같이 넘긴다 — 객단가를 판매가로 베꼈는지 보려면
+            found = check_menu(out, beers, result["p1"])
             if not partner:
                 # 메뉴명에 나온 것이 어디서 오는지 보려면 협력사가 파는
                 # 메뉴를 알아야 한다. 안 넘겼으면 이 검사만 건너뛴다.
