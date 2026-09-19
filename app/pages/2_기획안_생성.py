@@ -248,7 +248,7 @@ def render_price(item: dict, per_ml) -> None:
     price = item.get("판매가_제안")
     menu_price = item.get("협력사_정가")
 
-    # 1위는 (4)가 낸 제안 매입가가 더 정확하다. 2·3위는 (2)의 값뿐이다
+    # (4)가 낸 제안 매입가가 있으면 그것을, 없으면 (2)의 협력사 희망값을 쓴다
     deal = item.get("매입") or {}
     cost = (won(deal.get("바틀링_제안_매입가"))
             or won(item.get("협력사희망_매입가")))
@@ -287,10 +287,16 @@ def render_price(item: dict, per_ml) -> None:
 
 
 def render_proposal(item: dict, meta: dict) -> None:
-    """1위 안에만 붙는다. 실제로 협력사에 보내는 것은 채택된 한 안이다 (명세서 1-4)."""
+    """
+    안마다 붙는다. 대표가 고른 안이 그대로 제안서가 된다.
+
+    9/19 전엔 (4)가 순위를 매기고 1위에만 제안서 필드를 채웠다. 접근이
+    다른 세 안에 순위가 무의미해 순위를 없앴고, 어느 안이 골라질지 모르니
+    (4)가 모든 안에 필드를 채운다.
+    """
     missing = missing_fields(item)
     if missing:
-        st.warning(f"제안서를 만들 수 없습니다 — 1위 안에 {', '.join(missing)}이(가) 없습니다. "
+        st.warning(f"제안서를 만들 수 없습니다 — 이 안에 {', '.join(missing)}이(가) 없습니다. "
                    f"다시 생성해 주세요.")
         return
 
@@ -309,22 +315,24 @@ def render_proposal(item: dict, meta: dict) -> None:
 
         c1, c2 = st.columns(2)
         try:
+            # 탭마다 버튼이 하나씩이라 key 가 없으면 Streamlit 이 같은 버튼으로 본다
             c1.download_button(
                 "Word로 내려받기",
                 data=build_proposal_docx(text, meta),
-                file_name=f"{proposal_no(meta)}_협업제안서.docx",
+                file_name=f"{proposal_no(meta)}_{item.get('접근') or item.get('안_id')}_협업제안서.docx",
                 mime=("application/vnd.openxmlformats-officedocument"
                       ".wordprocessingml.document"),
                 use_container_width=True,
+                key=f"docx_{item.get('안_id')}",
             )
         except Exception as e:
             c1.caption(f"Word 생성 실패 — 위 본문을 복사해 쓰십시오 ({e})")
         c2.caption("본문 오른쪽 위 아이콘으로 전체 복사할 수 있습니다.")
 
 
-def render_rank(item: dict, is_top: bool, meta: dict) -> None:
+def render_plan(item: dict, meta: dict) -> None:
     """
-    순위 한 건. 대표님이 이 화면만 보고 실행 여부를 정할 수 있어야 한다.
+    안 하나. 대표님이 이 화면만 보고 실행 여부를 정할 수 있어야 한다.
 
     [읽는 순서] 명세서 4-2 — 이 문서만 보고 실행 여부를 정할 수 있어야 한다
       ① 무엇을 파는가   ② 왜 이 안인가   ③ 얼마가 남는가
@@ -425,14 +433,13 @@ def render_rank(item: dict, is_top: bool, meta: dict) -> None:
             for k, v in basis.items():
                 st.markdown(f"**{k.replace('_', ' ')}** — {v}")
 
-    if is_top:
-        render_proposal(item, meta)
+    render_proposal(item, meta)
 
 
 def render_result(result: dict, meta: dict) -> None:
     # 자동 검사에 걸린 것과 되감기 기록은 화면에 내보내지 않는다.
     #
-    # "1위에 '협력사_정가' 없음" 같은 말은 만든 사람이 읽을 문구다.
+    # "A: '협력사_정가' 없음" 같은 말은 만든 사람이 읽을 문구다.
     # 대표님께는 뜻이 없고, 노란 상자로 수십 개가 쌓이면 정작 봐야 할
     # 기획안을 가린다. 기록은 plans.auto_check 에 그대로 남는다.
     if result["error"]:
@@ -442,23 +449,25 @@ def render_result(result: dict, meta: dict) -> None:
     if not final:
         return
 
-    ranks = sorted(final.get("순위") or [], key=lambda r: r.get("순위") or 99)
+    plans = final.get("안") or []
     excluded = final.get("제외") or []
 
     for e in excluded:
         st.warning(f"{e.get('안_id')}안 제외 — {e.get('제외_사유')}")
 
-    if not ranks:
-        st.error("순위가 비어 있습니다. 다시 생성해 주세요.")
+    if not plans:
+        st.error("안이 비어 있습니다. 다시 생성해 주세요.")
         return
 
     # 고르는 자리와 결과를 확실히 끊는다
     st.divider()
 
-    tabs = st.tabs([f"{r.get('순위')}순위 · {r.get('메뉴명')}" for r in ranks])
-    for tab, item in zip(tabs, ranks):
+    # 순위가 아니라 접근으로 가른다. 단품·세트·포장은 구성이 달라 우열이 없고,
+    # 어느 것을 할지는 대표님이 정하신다. 탭마다 제안서가 붙는다.
+    tabs = st.tabs([f"{p.get('접근') or p.get('안_id')} · {p.get('메뉴명')}" for p in plans])
+    for tab, item in zip(tabs, plans):
         with tab:
-            render_rank(item, is_top=item.get("순위") == 1, meta=meta)
+            render_plan(item, meta)
 
     with st.expander("검수 결과"):
         rows = final.get("체크리스트") or []
