@@ -55,6 +55,17 @@ KST = timezone(timedelta(hours=9))
 SS_RESULT = "plan_result"      # 체인 출력
 SS_META = "plan_meta"          # 협력사·날짜 등 생성 조건
 
+# 접근마다 색을 둔다. 탭이 셋인데 내용이 비슷해 어느 안을 보고 있는지
+# 놓치기 쉽다 (9/19 화면 확인). 배지·왼쪽 띠에 쓴다.
+APPROACH_COLOR = {"단품": "#9DC3E6", "세트": "#F7C59F", "포장": "#B5D99C"}
+# 탭 버튼의 (테두리, 글자, 바탕) 색. 파스텔 테두리에 같은 계열의 진한 글자,
+# 바탕은 더 연한 불투명 파스텔 — 탭이 겹치는 자리가 비치지 않게 (9/20).
+TAB_COLOR = {
+    "단품": ("#9DC3E6", "#2F5D8A", "#E3EEF8"),
+    "세트": ("#F7C59F", "#8A5A1E", "#FCEEE0"),
+    "포장": ("#B5D99C", "#4A6B2A", "#EAF3E2"),
+}
+
 # 나란히 둔 상자의 높이를 서로 맞춘다.
 #
 # 높이를 숫자로 고정하지는 않는다. 내용이 넘치면 잘린 채로 보이는데
@@ -345,15 +356,26 @@ def render_plan(item: dict, meta: dict) -> None:
     #
     # 이미지가 없으면 그 자리를 두지 않는다. 미구현 자리표시자가 티켓 번호와
     # 함께 대표님 화면에 남아 있으면 안 된다.
+    # 접근을 색 배지로, 메뉴명과 떼어 보인다. 접근 이름이 메뉴명에 섞이면
+    # "단품 소보로빵" 처럼 읽혀 어느 쪽이 이름인지 헷갈린다.
+    approach = item.get("접근") or item.get("안_id") or ""
+    color = APPROACH_COLOR.get(approach, "#9CA3AF")
+    head = (
+        f'<div style="border-left:6px solid {color}; padding:4px 14px; margin:4px 0 10px 0;">'
+        f'<span style="background:{color}; color:#fff; padding:2px 12px; border-radius:12px; '
+        f'font-size:0.85rem; font-weight:600; vertical-align:middle;">{approach}</span>'
+        f'<span style="font-size:1.5rem; font-weight:700; margin-left:12px; vertical-align:middle;">'
+        f'{item.get("메뉴명") or "이름 없음"}</span></div>'
+    )
     img = item.get("메뉴_이미지")
     if img:
         c_txt, c_img = st.columns([2, 1])
         with c_txt:
-            st.subheader(item.get("메뉴명") or "이름 없음")
+            st.markdown(head, unsafe_allow_html=True)
             st.write(item.get("구성") or "")
         c_img.image(img, use_container_width=True)
     else:
-        st.subheader(item.get("메뉴명") or "이름 없음")
+        st.markdown(head, unsafe_allow_html=True)
         st.write(item.get("구성") or "")
 
     # ── ② 왜 이 안인가 ──
@@ -464,10 +486,56 @@ def render_result(result: dict, meta: dict) -> None:
 
     # 순위가 아니라 접근으로 가른다. 단품·세트·포장은 구성이 달라 우열이 없고,
     # 어느 것을 할지는 대표님이 정하신다. 탭마다 제안서가 붙는다.
-    tabs = st.tabs([f"{p.get('접근') or p.get('안_id')} · {p.get('메뉴명')}" for p in plans])
+    # 탭 버튼을 파일철 탭처럼 만든다. 세 탭을 간격 없이 붙이고, 테두리는
+    # 위·오른쪽만 남겨 오른쪽 위만 둥글게 — 맨 왼쪽 탭은 왼쪽이 열린 모양이다.
+    # 라벨엔 HTML 이 안 들어가 글자 일부만 꾸밀 수 없어서 버튼 전체에 색을 준다.
+    # 고른 탭은 색을 채우고, 나머지는 연한 색 바탕.
+    # 브라우저 탭 모양. 세 탭을 간격 없이 붙이고 위·오른쪽 테두리만 남겨
+    # 오른쪽 위를 둥글게 한다. 뒤 탭을 8px 왼쪽으로 당겨 앞 탭의 둥근 모서리
+    # 아래로 겹쳐 넣고(왼쪽 패딩으로 보정), z-index 를 앞에서부터 낮춰 앞 탭이
+    # 위에 그려지게 한다 — 윗선이 끊기지 않는다. 탭 아래에 가로 구분선.
+    # 배경은 선택 여부로만 가른다(회색/진회색). 카테고리 색은 테두리와 배지에만.
+    # 라벨엔 HTML 이 안 들어가서 배지는 각 탭의 p::before 로 그린다.
+    css = (
+        '[data-baseweb="tab-list"] { display: flex; gap: 0; background: transparent;'
+        '  padding: 0; border-bottom: 2px solid #9C9A94; }'
+        '[data-baseweb="tab-list"] button { flex: 1 1 0; min-width: 0; position: relative;'
+        '  justify-content: center; padding: 22px 20px; margin: 0;'
+        '  border-left: none; border-bottom: none; border-radius: 0 16px 0 0;'
+        '  background: #E1E4EB; }'
+        # 마우스를 올리면 기본 테마가 반투명 색을 덧씌운다 — 배경을 그대로 고정
+        '[data-baseweb="tab-list"] button:hover { background: #E1E4EB; }'
+        '[data-baseweb="tab-list"] button[aria-selected="true"],'
+        '[data-baseweb="tab-list"] button[aria-selected="true"]:hover { background: #FFFFFF; }'
+        '[data-baseweb="tab-list"] button p { display: block; width: 100%; text-align: center;'
+        '  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'
+        '  font-size: 14px; font-weight: 400; color: #8A8F99; margin: 0; }'
+        '[data-baseweb="tab-list"] button[aria-selected="true"] p { color: #111827; font-weight: 700; }'
+        '[data-baseweb="tab-list"] button p::before { display: inline-block; margin-right: 10px;'
+        '  font-size: 12px; padding: 3px 8px; border-radius: 6px; font-weight: 600;'
+        '  vertical-align: middle; }'
+        "[data-baseweb='tab-highlight'] { display: none; }"
+    )
+    # 테두리는 셋 다 같은 회색. 카테고리 색은 배지에만 (9/20).
+    n = len(plans)
+    for i, p in enumerate(plans, 1):
+        _, text, fill = TAB_COLOR.get(p.get("접근"), ("#9CA3AF", "#374151", "#F3F4F6"))
+        label = p.get("접근") or p.get("안_id") or ""
+        overlap = "margin-left: -16px; padding-left: 36px;" if i > 1 else ""
+        css += (
+            f'[data-baseweb="tab-list"] button:nth-child({i}) {{ z-index: {n - i + 1}; {overlap}'
+            f'  border-top: 3px solid #9C9A94; border-right: 3px solid #9C9A94; }}'
+            f'[data-baseweb="tab-list"] button:nth-child({i}) p::before {{'
+            f'  content: "{label}"; background: {fill}; color: {text}; }}'
+        )
+    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+    tabs = st.tabs([p.get("메뉴명") or p.get("안_id") for p in plans])
     for tab, item in zip(tabs, plans):
         with tab:
-            render_plan(item, meta)
+            # 탭 내용을 상자로 감싼다. Streamlit 상자는 테두리 색을 따로 못 주니
+            # 색은 안쪽 배지와 왼쪽 띠(render_plan)가 낸다.
+            with st.container(border=True):
+                render_plan(item, meta)
 
     with st.expander("검수 결과"):
         rows = final.get("체크리스트") or []
@@ -494,20 +562,22 @@ def render_result(result: dict, meta: dict) -> None:
 # 화면
 # ══════════════════════════════════════════
 
-st.title("기획안 생성")
 st.markdown(EQUAL_HEIGHT_BOXES, unsafe_allow_html=True)
 
 partners = load_partners()
 if not partners:
+    st.title("기획안 생성")
     st.info("등록된 협력사가 없습니다. 파트너 추천에서 먼저 등록해 주세요.")
     st.stop()
 
 labels = {p["id"]: f"{p['name']} ({p['category']})" for p in partners}
 
-# 고를 것이 몇 개 안 되므로 폭을 다 쓰지 않는다. 왼쪽 일부만 쓰고 비워 둔다.
-# 버튼은 입력을 다 채운 뒤 누르는 것이라 흐름의 마지막에 온다.
-c_in, _ = st.columns([2, 3])
+# 고를 것이 몇 개 안 되므로 폭을 다 쓰지 않는다. 제목부터 버튼까지 가운데 열에
+# 두고 양옆을 비운다. 열 안에서는 왼쪽 정렬 그대로다.
+_, c_in, _ = st.columns([1.5, 2, 1.5])
 with c_in:
+    st.markdown("<h1 style='text-align:center; margin-bottom:2rem'>기획안 생성</h1>",
+                unsafe_allow_html=True)
     pid = st.selectbox("협력사", list(labels), format_func=labels.get)
 
     chosen = next(p for p in partners if p["id"] == pid)
