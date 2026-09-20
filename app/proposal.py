@@ -181,8 +181,8 @@ def _sections(item: dict, meta: dict) -> list[dict]:
         ("바틀링이 얻는 것", end_dot(gains.get("바틀링")) or "데이터 없음"),
     ]
     if first:
-        offer += [("매입가", "협의해서 정합니다"),
-                  ("납품 수량·보관", "협의해서 정합니다")]
+        offer += [("매입가", "협의해서 정합니다."),
+                  ("납품 수량·보관", "협의해서 정합니다.")]
         out.append({"title": "협력사에 제안하는 내용", "items": offer})
     else:
         if deal.get("바틀링_제안_매입가"):
@@ -330,8 +330,12 @@ def build_proposal_docx(item: dict, meta: dict) -> bytes:
             if isinstance(x, tuple) and x[0] == "-":
                 doc.add_paragraph(str(x[1]), style="List Bullet")
             elif isinstance(x, tuple):
+                # "• 항목 <탭> 값" 한 문단. 값이 두 줄을 넘으면 둘째 줄부터도 값 위치
+                # (3.6cm)에서 시작해야 해서 내어쓰기로 잡는다 — 문단 전체를 3.6cm
+                # 들이고 첫 줄만 0.4cm 로 당긴다 (9/21 화면 확인).
                 pp = doc.add_paragraph()
-                pp.paragraph_format.left_indent = Cm(0.4)
+                pp.paragraph_format.left_indent = Cm(3.6)
+                pp.paragraph_format.first_line_indent = Cm(-3.2)
                 pp.paragraph_format.space_after = Pt(2)
                 k = pp.add_run(f"• {x[0]}")
                 k.font.size, k.font.bold = Pt(10), True
