@@ -37,8 +37,8 @@ import _path  # noqa: F401  (프로젝트 루트를 sys.path 에 추가)
 import streamlit as st
 
 from app.auth import require_owner
-from app.proposal import (build_proposal, build_proposal_docx, missing_fields,
-                          proposal_no, won)
+from app.proposal import (build_proposal_docx, docx_to_pdf, missing_fields,
+                          pdf_pages, preview_html, proposal_no)
 from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           NO_REC_REASON, NO_TREND_MENU, PAST_CASES,
                           WEATHER_PREF, build_beer_list, build_constraints,
@@ -228,73 +228,35 @@ def generate(partner: dict, target: date) -> None:
     meta["plan_id"] = save_plan(result, meta)
     st.session_state[SS_RESULT] = result
     st.session_state[SS_META] = meta
+    # 이전 기획안의 제안서 파일과 미리보기 페이지 위치를 버린다
+    st.session_state[SS_FILES] = {}
+    for k in [k for k in st.session_state if k.startswith("page_")]:
+        del st.session_state[k]
 
 
 # ══════════════════════════════════════════
 # 결과 표시
 # ══════════════════════════════════════════
 
-def _bullets(items) -> None:
-    for x in items or []:
-        st.write(f"- {x}")
+SS_FILES = "proposal_files"   # 안별 제안서 파일 캐시. 생성할 때마다 비운다.
 
 
-def render_price(item: dict, per_ml) -> None:
+def _proposal_files(item: dict, meta: dict) -> dict:
     """
-    가격을 역할 상자에서 떼어 따로 보인다.
+    안 하나의 제안서 파일 — docx, pdf, 페이지 이미지. 세션에 캐시한다.
 
-    판매가를 「협력사가 준비」 안에 두면 그 돈을 협력사가 받는 것처럼 읽힌다.
-    실제로 협력사가 받는 것은 매입가이고, 판매가는 손님에게 받는 돈이다.
-
-    맥주값은 「세트」 안에서만 값에 들어간다. 바틀링은 손님이 원하는 만큼
-    따라 마시는 셀프탭이라, 단품에서는 맥주가 별개 거래다.
-
-    마진은 맥주 원가를 몰라 직접 계산이 불가능하고, 이 협업 기획에 꼭
-    필요한 숫자도 아니기 때문에 따로 산출하지 않는다.
+    Word 변환이 안마다 5~8초라 화면이 다시 그려질 때마다 하면 안 된다.
+    탭을 옮기거나 페이지를 넘길 때마다 스크립트가 다시 도는데, 그때는 여기서
+    바로 꺼낸다. 캐시는 generate() 가 새 기획안을 만들 때 비운다.
     """
-    beer_name = (item.get("페어링_맥주") or {}).get("메뉴명") or "페어링 맥주"
-    beer_price = int(per_ml * 500) if per_ml else None
-
-    listed = item.get("정가_합")
-    price = item.get("판매가_제안")
-    menu_price = item.get("협력사_정가")
-
-    # (4)가 낸 제안 매입가가 있으면 그것을, 없으면 (2)의 협력사 희망값을 쓴다
-    deal = item.get("매입") or {}
-    cost = (won(deal.get("바틀링_제안_매입가"))
-            or won(item.get("협력사희망_매입가")))
-
-    st.markdown("##### 가격")
-
-    # 내역을 쌓고 합계를 아래에 둔다 (docs/ref/figma_세트구성.png).
-    # 항목이 흩어져 있으면 총액을 머릿속에서 더해야 한다.
-    with st.container(border=True):
-        rows = [(item.get("메뉴명") or "메뉴", menu_price)]
-        if listed:                      # 세트일 때만 맥주가 값에 들어간다
-            rows.append((f"{beer_name} 500ml", beer_price))
-        for label, value in rows:
-            c_l, c_r = st.columns([3, 1])
-            c_l.write(label)
-            c_r.markdown(f"<div style='text-align:right'>"
-                         f"{value:,}원</div>" if value else
-                         "<div style='text-align:right'>미정</div>",
-                         unsafe_allow_html=True)
-
-        st.divider()
-
-        if listed:
-            c1, c2, c3 = st.columns(3)
-            c1.metric("따로 사면", f"{listed:,}원")
-            c2.metric("세트로 내는 값", f"{price:,}원" if price else "미정")
-            if price and listed > price:
-                c2.caption(f"{listed - price:,}원 싸다 · 맥주 500ml 이상")
-        else:
-            c2, c3 = st.columns(2)
-            c2.metric("손님이 내는 값", f"{price:,}원" if price else "미정")
-            c2.caption(f"맥주는 따로 계산 · {beer_name} 추천")
-
-        c3.metric("협력사에 주는 값", f"{cost:,}원" if cost else "산출 불가")
-        c3.caption("협의 대상" if cost else "협력사 납품가 미확보")
+    cache = st.session_state.setdefault(SS_FILES, {})
+    key = item.get("안_id")
+    if key not in cache:
+        docx = build_proposal_docx(item, meta)
+        pdf = docx_to_pdf(docx)               # Word 없으면 None → HTML 근사로
+        pages = pdf_pages(pdf) if pdf else None
+        cache[key] = {"docx": docx, "pdf": pdf, "pages": pages}
+    return cache[key]
 
 
 def render_proposal(item: dict, meta: dict) -> None:
@@ -311,149 +273,108 @@ def render_proposal(item: dict, meta: dict) -> None:
                    f"다시 생성해 주세요.")
         return
 
-    text = build_proposal(item, meta)
+    aid = item.get("안_id") or "?"
+    st.markdown(
+        '<div style="text-align:center; color:#9CA3AF; font-size:0.75rem; letter-spacing:0.08em; '
+        'margin:18px 0 8px">DOCUMENT PREVIEW</div>', unsafe_allow_html=True)
 
+    with st.spinner("제안서를 만드는 중..."):
+        files = _proposal_files(item, meta)
+
+    # 종이 모양 미리보기. Word 가 있으면 실제 페이지를, 없으면 같은 절 목록으로
+    # 그린 HTML 근사판을 보인다 (시안 docs/ref/피그마_예시2.pdf).
     with st.container(border=True):
-        st.markdown("##### 협업 제안서")
-        st.caption(f"{proposal_no(meta)} · 협력사에 그대로 보낼 수 있는 문서입니다.")
+        pages = files["pages"]
+        if pages:
+            key = f"page_{aid}"
+            idx = st.session_state.get(key, 0)
+            idx = max(0, min(idx, len(pages) - 1))
+            c_l, c_mid, c_r = st.columns([1, 10, 1])
+            if c_l.button("‹", key=f"prev_{aid}", disabled=idx == 0, use_container_width=True):
+                st.session_state[key] = idx - 1
+                st.rerun()
+            if c_r.button("›", key=f"next_{aid}", disabled=idx >= len(pages) - 1,
+                          use_container_width=True):
+                st.session_state[key] = idx + 1
+                st.rerun()
+            with c_mid:
+                _, c_img, _ = st.columns([1, 6, 1])
+                c_img.image(pages[idx], use_container_width=True)
+            st.markdown(f'<div style="text-align:center; color:#9CA3AF; font-size:0.75rem">'
+                        f'Page {idx + 1} of {len(pages)}</div>', unsafe_allow_html=True)
+        else:
+            st.markdown(preview_html(item, meta), unsafe_allow_html=True)
+            st.caption("이 미리보기는 내용을 HTML 로 옮긴 것이라 실제 문서와 줄 나눔이 다를 수 있습니다. "
+                       "Word 가 있는 PC 에서는 실제 페이지가 보입니다.")
 
-        deal = item.get("매입") or {}
-        if deal.get("협의_필요"):
-            st.info("제안 매입가는 협의 대상입니다. 협력사의 원가를 알 수 없으므로 "
-                    "이 값은 협상의 출발점으로 쓰십시오.")
-
-        st.code(text, language=None)
-
-        c1, c2 = st.columns(2)
-        try:
-            # 탭마다 버튼이 하나씩이라 key 가 없으면 Streamlit 이 같은 버튼으로 본다
-            c1.download_button(
-                "Word로 내려받기",
-                data=build_proposal_docx(text, meta),
-                file_name=f"{proposal_no(meta)}_{item.get('접근') or item.get('안_id')}_협업제안서.docx",
-                mime=("application/vnd.openxmlformats-officedocument"
-                      ".wordprocessingml.document"),
-                use_container_width=True,
-                key=f"docx_{item.get('안_id')}",
-            )
-        except Exception as e:
-            c1.caption(f"Word 생성 실패 — 위 본문을 복사해 쓰십시오 ({e})")
-        c2.caption("본문 오른쪽 위 아이콘으로 전체 복사할 수 있습니다.")
+    # 내려받기. PDF 는 보내는 용도(미리보기와 같다), Word 는 고치는 용도.
+    # 탭마다 버튼이 있어 key 가 없으면 Streamlit 이 같은 버튼으로 본다.
+    stem = f"{proposal_no(meta)}_{item.get('접근') or aid}_협업제안서"
+    _, c1, c2, _ = st.columns([1, 2, 2, 1])
+    if files["pdf"]:
+        c1.download_button("PDF 내려받기", data=files["pdf"], file_name=f"{stem}.pdf",
+                           mime="application/pdf", type="primary",
+                           use_container_width=True, key=f"pdf_{aid}")
+    else:
+        c1.button("PDF 내려받기", disabled=True, use_container_width=True, key=f"pdf_{aid}",
+                  help="이 PC 에 Word 가 없어 PDF 를 만들 수 없습니다.")
+    c2.download_button("Word 내려받기", data=files["docx"], file_name=f"{stem}.docx",
+                       mime=("application/vnd.openxmlformats-officedocument"
+                             ".wordprocessingml.document"),
+                       use_container_width=True, key=f"docx_{aid}")
+    st.markdown('<div style="text-align:center; color:#9CA3AF; font-size:0.8rem; margin-top:4px">'
+                'PDF 는 보내는 용도, Word 는 문장을 고칠 때 씁니다.</div>', unsafe_allow_html=True)
 
 
-def render_plan(item: dict, meta: dict) -> None:
+def render_plan(item: dict, meta: dict, n: int = 1) -> None:
     """
-    안 하나. 대표님이 이 화면만 보고 실행 여부를 정할 수 있어야 한다.
-
-    [읽는 순서] 명세서 4-2 — 이 문서만 보고 실행 여부를 정할 수 있어야 한다
-      ① 무엇을 파는가   ② 왜 이 안인가   ③ 얼마가 남는가
-      ④ 누가 무엇을 하는가   ⑤ 어떻게 알리는가   ⑥ 무엇이 걸리는가
-
-    돈 이야기를 역할 상자에서 떼어 ③으로 모은다. 판매가가 「협력사가 준비」
-    안에 있으면 그 돈을 협력사가 받는 것처럼 읽힌다.
+    안 하나. 화면은 요약 카드 하나와 제안서 미리보기 하나로 끝난다
+    (시안 docs/ref/피그마_예시2.pdf). 매입가·역할·홍보 일정 같은 세부는
+    화면에 두지 않고 제안서 문서에만 둔다 — 대표님은 여기서 어느 안을
+    보낼지만 고르고, 내용은 문서로 본다.
     """
-    # ── ① 무엇을 파는가 ──
-    #
-    # 이미지가 없으면 그 자리를 두지 않는다. 미구현 자리표시자가 티켓 번호와
-    # 함께 대표님 화면에 남아 있으면 안 된다.
-    # 접근을 색 배지로, 메뉴명과 떼어 보인다. 접근 이름이 메뉴명에 섞이면
-    # "단품 소보로빵" 처럼 읽혀 어느 쪽이 이름인지 헷갈린다.
     approach = item.get("접근") or item.get("안_id") or ""
     color = APPROACH_COLOR.get(approach, "#9CA3AF")
+    beer = item.get("페어링_맥주") or {}
+
+    # 요약 카드 — 배지 / 제목 / (사진) / 선정 배경 / 메뉴 설명 / 판매가.
+    # 사진이 없으면 그 자리를 두지 않는다.
     head = (
-        f'<div style="border-left:6px solid {color}; padding:4px 14px; margin:4px 0 10px 0;">'
-        f'<span style="background:{color}; color:#fff; padding:2px 12px; border-radius:12px; '
-        f'font-size:0.85rem; font-weight:600; vertical-align:middle;">{approach}</span>'
-        f'<span style="font-size:1.5rem; font-weight:700; margin-left:12px; vertical-align:middle;">'
-        f'{item.get("메뉴명") or "이름 없음"}</span></div>'
+        f'<div style="text-align:center; margin:6px 0 4px">'
+        f'<span style="background:{color}; color:#fff; padding:2px 14px; border-radius:12px; '
+        f'font-size:0.8rem; font-weight:600;">{approach}</span></div>'
+        f'<div style="text-align:center; color:#9CA3AF; font-size:0.8rem; margin-top:8px">'
+        f'#{n} 제안안</div>'
+        f'<div style="text-align:center; font-size:1.6rem; font-weight:700; margin:2px 0 14px">'
+        f'{item.get("메뉴명") or "이름 없음"}</div>'
     )
+    st.markdown(head, unsafe_allow_html=True)
     img = item.get("메뉴_이미지")
     if img:
-        c_txt, c_img = st.columns([2, 1])
-        with c_txt:
-            st.markdown(head, unsafe_allow_html=True)
-            st.write(item.get("구성") or "")
+        _, c_img, _ = st.columns([1, 2, 1])
         c_img.image(img, use_container_width=True)
-    else:
-        st.markdown(head, unsafe_allow_html=True)
-        st.write(item.get("구성") or "")
 
-    # ── ② 왜 이 안인가 ──
+    def block(title: str, body: str) -> None:
+        st.markdown(
+            f'<div style="margin:10px 0 2px; font-size:0.8rem; color:#6B7280; font-weight:600">'
+            f'{title}</div><div style="line-height:1.6">{body}</div>',
+            unsafe_allow_html=True)
+
     if item.get("선정_사유"):
-        with st.container(border=True):
-            st.markdown("##### 선정 사유")
-            st.write(item["선정_사유"])
+        block("선정 배경", item["선정_사유"])
+    desc = item.get("구성") or ""
+    if beer.get("메뉴명"):
+        why = f" — {beer['이유']}" if beer.get("이유") else ""
+        desc += f"<br>함께 내는 맥주: {beer['메뉴명']}{why}"
+    block("메뉴 설명", desc)
 
-    # ── ③ 얼마가 남는가 ──
-    beer = item.get("페어링_맥주") or {}
-    per_ml = beer.get("원_ml")
-    render_price(item, per_ml)
-
-    # ── ④ 누가 무엇을 하는가 ──
-    #
-    # 품목과 조건만 남긴다. 금액은 ③ 이 다룬다.
-    st.markdown("##### 구성과 역할")
-    c1, c2 = st.columns(2)
-    with c1:
-        with st.container(border=True):
-            st.markdown("**협력사가 준비**")
-            _bullets(item.get("협력사_제공"))
-            st.write("")
-            st.caption(f"보관　{item.get('보관_조건') or '데이터 없음'}")
-            st.caption(f"납품　{item.get('1회_납품_수량') or '1회 수량 협의'}")
-    with c2:
-        with st.container(border=True):
-            st.markdown("**바틀링이 준비**")
-            st.write(f"- {beer.get('메뉴명') or '페어링 맥주 없음'} 500ml")
-            _bullets(item.get("바틀링_준비"))
-            if beer.get("이유"):
-                st.write("")
-                st.caption(f"페어링 이유　{beer['이유']}")
-
-    # ── ⑤ 어떻게 알리는가 ──
-    ev = item.get("이벤트") or {}
-    with st.container(border=True):
-        st.markdown(f"##### 홍보 — {ev.get('명칭') or '이벤트 없음'}")
-        st.write(ev.get("내용") or "")
-        st.caption(f"기간 {ev.get('기간') or '미정'}")
-
-        schedule = item.get("홍보_일정") or []
-        if schedule:
-            # st.dataframe 은 행이 둘뿐이어도 스크롤 영역을 만든다.
-            # st.table 은 내용만큼 늘어나므로 짧은 표에 맞다.
-            st.table(schedule)
-
-        copy = item.get("홍보_문구")
-        if copy:
-            # st.code 는 우측 상단에 복사 버튼이 붙는다.
-            #
-            # 문구의 말투까지 프롬프트로 규정하지 않는다. 어떤 문구가 먹히는지는
-            # SNS 를 다뤄 본 사람이 안다. 초안임을 밝히고 다듬어 쓰게 둔다.
-            # 루브릭 「홍보 실효성」 채점(5-2)에서 같은 지적이 반복되면
-            # 그때 constraints 로 올린다 (명세서 1-5).
-            st.code(copy, language=None)
-            st.caption("초안입니다. 다듬어 쓰세요.")
-        tags = item.get("해시태그") or []
-        if tags:
-            st.caption(" ".join(tags))
-
-    # ── ⑥ 무엇이 걸리는가 ──
-    #
-    # 준비물은 펼쳐 두고, 길이가 크게 튀는 둘만 접는다.
-    with st.container(border=True):
-        st.markdown("##### 실행 준비물")
-        _bullets(item.get("실행_준비물"))
-
-    risks = item.get("예상_리스크") or []
-    if risks:
-        with st.expander(f"예상 리스크 {len(risks)}건"):
-            _bullets(risks)
-
-    basis = item.get("추천_근거") or {}
-    if basis:
-        with st.expander("추천 근거"):
-            for k, v in basis.items():
-                st.markdown(f"**{k.replace('_', ' ')}** — {v}")
+    price = item.get("판매가_제안")
+    listed = item.get("정가_합")
+    if price and listed:
+        block("바틀링 판매가", f"<b>{price:,}원</b> <span style='color:#9CA3AF'>"
+                             f"(따로 사면 {listed:,}원)</span>")
+    elif price:
+        block("바틀링 판매가", f"<b>{price:,}원</b>")
 
     render_proposal(item, meta)
 
@@ -530,12 +451,12 @@ def render_result(result: dict, meta: dict) -> None:
         )
     st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
     tabs = st.tabs([p.get("메뉴명") or p.get("안_id") for p in plans])
-    for tab, item in zip(tabs, plans):
+    for i, (tab, item) in enumerate(zip(tabs, plans), 1):
         with tab:
             # 탭 내용을 상자로 감싼다. Streamlit 상자는 테두리 색을 따로 못 주니
-            # 색은 안쪽 배지와 왼쪽 띠(render_plan)가 낸다.
+            # 색은 안쪽 배지(render_plan)가 낸다.
             with st.container(border=True):
-                render_plan(item, meta)
+                render_plan(item, meta, i)
 
     with st.expander("검수 결과"):
         rows = final.get("체크리스트") or []

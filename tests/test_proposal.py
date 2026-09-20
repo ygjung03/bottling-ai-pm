@@ -184,7 +184,7 @@ def main() -> None:
         print("\n" + text + "\n")
 
         try:
-            blob = build_proposal_docx(text, meta)
+            blob = build_proposal_docx(item, meta)
             print(f"Word {len(blob):,} bytes")
         except Exception as e:
             print(f"Word 생성 실패: {e}")
