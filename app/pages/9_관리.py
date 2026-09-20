@@ -9,11 +9,13 @@ import _path  # noqa: F401  (프로젝트 루트를 sys.path 에 추가)
 import streamlit as st
 
 from app.auth import require_owner
+from app.ui import sidebar
 
-st.set_page_config(page_title="관리", page_icon="⚙️", layout="wide")
+st.set_page_config(page_title="환경 설정", page_icon="⚙️", layout="wide")
 require_owner()
+sidebar("환경 설정")
 
-st.title("관리")
+st.title("환경 설정")
 
 t1, t2, t3 = st.tabs(["맥주 라인업", "프롬프트", "제약조건"])
 

@@ -37,8 +37,9 @@ import _path  # noqa: F401  (프로젝트 루트를 sys.path 에 추가)
 import streamlit as st
 
 from app.auth import require_owner
-from app.proposal import (build_proposal_docx, docx_to_pdf, missing_fields,
+from app.proposal import (build_proposal_docx, docx_to_pdf, end_dot, missing_fields,
                           pdf_pages, preview_html, proposal_no)
+from app.ui import page_header, sidebar
 from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           NO_REC_REASON, NO_TREND_MENU, PAST_CASES,
                           WEATHER_PREF, build_beer_list, build_constraints,
@@ -50,15 +51,15 @@ from db.client import get_client
 
 st.set_page_config(page_title="기획안 생성", page_icon="📝", layout="wide")
 require_owner()
+sidebar("기획안 생성")
 
 KST = timezone(timedelta(hours=9))
 SS_RESULT = "plan_result"      # 체인 출력
 SS_META = "plan_meta"          # 협력사·날짜 등 생성 조건
 
 # 접근마다 색을 둔다. 탭이 셋인데 내용이 비슷해 어느 안을 보고 있는지
-# 놓치기 쉽다 (9/19 화면 확인). 배지·왼쪽 띠에 쓴다.
-APPROACH_COLOR = {"단품": "#9DC3E6", "세트": "#F7C59F", "포장": "#B5D99C"}
-# 탭 버튼의 (테두리, 글자, 바탕) 색. 파스텔 테두리에 같은 계열의 진한 글자,
+# 놓치기 쉽다 (9/19 화면 확인). 탭 배지와 카드 배지에 같은 색을 쓴다.
+# (테두리, 글자, 바탕). 파스텔 테두리에 같은 계열의 진한 글자,
 # 바탕은 더 연한 불투명 파스텔 — 탭이 겹치는 자리가 비치지 않게 (9/20).
 TAB_COLOR = {
     "단품": ("#9DC3E6", "#2F5D8A", "#E3EEF8"),
@@ -275,33 +276,48 @@ def render_proposal(item: dict, meta: dict) -> None:
 
     aid = item.get("안_id") or "?"
     st.markdown(
-        '<div style="text-align:center; color:#9CA3AF; font-size:0.75rem; letter-spacing:0.08em; '
-        'margin:18px 0 8px">DOCUMENT PREVIEW</div>', unsafe_allow_html=True)
+        '<div style="display:flex; align-items:center; gap:14px; margin:22px 0 14px; '
+        'color:#9CA3AF; font-size:0.72rem; letter-spacing:0.1em">'
+        '<span style="flex:1; border-top:1px solid #E5E7EB"></span>DOCUMENT PREVIEW'
+        '<span style="flex:1; border-top:1px solid #E5E7EB"></span></div>',
+        unsafe_allow_html=True)
 
     with st.spinner("제안서를 만드는 중..."):
         files = _proposal_files(item, meta)
 
-    # 종이 모양 미리보기. Word 가 있으면 실제 페이지를, 없으면 같은 절 목록으로
-    # 그린 HTML 근사판을 보인다 (시안 docs/ref/피그마_예시2.pdf).
-    with st.container(border=True):
+    # 종이 모양 미리보기 (시안 docs/ref/피그마_예시2.pdf). 회색 바탕 위에 흰 종이,
+    # 양옆에 종이 높이만큼 긴 ‹ › 버튼. Word 가 있으면 실제 페이지를, 없으면
+    # 같은 절 목록으로 그린 HTML 근사판을 보인다.
+    # 바탕색·버튼 높이는 key 로 붙는 st-key-* 클래스에 CSS 를 준다.
+    st.markdown(
+        f'<style>'
+        f'.st-key-paper_{aid} {{ background:#F1F5F9; border-radius:12px; padding:28px 12px; }}'
+        f'.st-key-paper_{aid} [data-testid="stImage"] img {{'
+        f'  box-shadow:0 6px 24px rgba(15,23,42,0.14); }}'
+        f'.st-key-prev_{aid} button, .st-key-next_{aid} button {{'
+        f'  height:72px; width:100%; color:#64748B; background:transparent; border:none; }}'
+        f'.st-key-prev_{aid} button p, .st-key-next_{aid} button p {{'
+        f'  font-size:2.8rem; line-height:1; font-weight:300; }}'
+        f'.st-key-prev_{aid} button:hover, .st-key-next_{aid} button:hover {{'
+        f'  background:#E2E8F0; color:#1E293B; }}'
+        f'</style>', unsafe_allow_html=True)
+    with st.container(key=f"paper_{aid}"):
         pages = files["pages"]
         if pages:
             key = f"page_{aid}"
             idx = st.session_state.get(key, 0)
             idx = max(0, min(idx, len(pages) - 1))
-            c_l, c_mid, c_r = st.columns([1, 10, 1])
-            if c_l.button("‹", key=f"prev_{aid}", disabled=idx == 0, use_container_width=True):
+            c_l, c_mid, c_r = st.columns([1, 7, 1], vertical_alignment="center")
+            if c_l.button("‹", key=f"prev_{aid}", disabled=idx == 0):
                 st.session_state[key] = idx - 1
                 st.rerun()
-            if c_r.button("›", key=f"next_{aid}", disabled=idx >= len(pages) - 1,
-                          use_container_width=True):
+            if c_r.button("›", key=f"next_{aid}", disabled=idx >= len(pages) - 1):
                 st.session_state[key] = idx + 1
                 st.rerun()
-            with c_mid:
-                _, c_img, _ = st.columns([1, 6, 1])
-                c_img.image(pages[idx], use_container_width=True)
-            st.markdown(f'<div style="text-align:center; color:#9CA3AF; font-size:0.75rem">'
-                        f'Page {idx + 1} of {len(pages)}</div>', unsafe_allow_html=True)
+            c_mid.image(pages[idx], use_container_width=True)
+            st.markdown(f'<div style="text-align:center; color:#9CA3AF; font-size:0.75rem; '
+                        f'margin-top:10px">Page {idx + 1} of {len(pages)}</div>',
+                        unsafe_allow_html=True)
         else:
             st.markdown(preview_html(item, meta), unsafe_allow_html=True)
             st.caption("이 미리보기는 내용을 HTML 로 옮긴 것이라 실제 문서와 줄 나눔이 다를 수 있습니다. "
@@ -326,7 +342,7 @@ def render_proposal(item: dict, meta: dict) -> None:
                 'PDF 는 보내는 용도, Word 는 문장을 고칠 때 씁니다.</div>', unsafe_allow_html=True)
 
 
-def render_plan(item: dict, meta: dict, n: int = 1) -> None:
+def render_plan(item: dict, meta: dict) -> None:
     """
     안 하나. 화면은 요약 카드 하나와 제안서 미리보기 하나로 끝난다
     (시안 docs/ref/피그마_예시2.pdf). 매입가·역할·홍보 일정 같은 세부는
@@ -334,47 +350,56 @@ def render_plan(item: dict, meta: dict, n: int = 1) -> None:
     보낼지만 고르고, 내용은 문서로 본다.
     """
     approach = item.get("접근") or item.get("안_id") or ""
-    color = APPROACH_COLOR.get(approach, "#9CA3AF")
+    aid = item.get("안_id") or "?"
+    _, text_c, fill = TAB_COLOR.get(approach, ("#9CA3AF", "#374151", "#F3F4F6"))
     beer = item.get("페어링_맥주") or {}
 
-    # 요약 카드 — 배지 / 제목 / (사진) / 선정 배경 / 메뉴 설명 / 판매가.
-    # 사진이 없으면 그 자리를 두지 않는다.
-    head = (
-        f'<div style="text-align:center; margin:6px 0 4px">'
-        f'<span style="background:{color}; color:#fff; padding:2px 14px; border-radius:12px; '
-        f'font-size:0.8rem; font-weight:600;">{approach}</span></div>'
-        f'<div style="text-align:center; color:#9CA3AF; font-size:0.8rem; margin-top:8px">'
-        f'#{n} 제안안</div>'
-        f'<div style="text-align:center; font-size:1.6rem; font-weight:700; margin:2px 0 14px">'
-        f'{item.get("메뉴명") or "이름 없음"}</div>'
-    )
-    st.markdown(head, unsafe_allow_html=True)
-    img = item.get("메뉴_이미지")
-    if img:
-        _, c_img, _ = st.columns([1, 2, 1])
-        c_img.image(img, use_container_width=True)
+    # 요약 카드 — 위 줄에 「제안안 #n  메뉴명」과 오른쪽 접근 배지, 아래에
+    # 사진(왼쪽)과 선정 배경·메뉴 설명·판매가(오른쪽). 사진이 없으면 글이
+    # 전체 폭을 쓴다. 바탕은 시안처럼 연한 회청색.
+    st.markdown(
+        f'<style>.st-key-card_{aid} {{ background:#F1F5F9; border-radius:12px; '
+        f'padding:22px 26px 18px; }}'
+        f'.st-key-card_{aid} [data-testid="stImage"] img {{ border-radius:10px; }}</style>',
+        unsafe_allow_html=True)
 
-    def block(title: str, body: str) -> None:
-        st.markdown(
-            f'<div style="margin:10px 0 2px; font-size:0.8rem; color:#6B7280; font-weight:600">'
-            f'{title}</div><div style="line-height:1.6">{body}</div>',
-            unsafe_allow_html=True)
+    def block(title: str, body: str) -> str:
+        return (f'<div style="margin:12px 0 3px; font-size:0.78rem; color:#64748B; '
+                f'font-weight:700">{title}</div>'
+                f'<div style="line-height:1.65; color:#1F2933">{body}</div>')
 
+    body = ""
     if item.get("선정_사유"):
-        block("선정 배경", item["선정_사유"])
+        body += block("선정 배경", end_dot(item["선정_사유"]))
     desc = item.get("구성") or ""
     if beer.get("메뉴명"):
-        why = f" — {beer['이유']}" if beer.get("이유") else ""
+        why = f" — {end_dot(beer['이유'])}" if beer.get("이유") else ""
         desc += f"<br>함께 내는 맥주: {beer['메뉴명']}{why}"
-    block("메뉴 설명", desc)
-
+    body += block("메뉴 설명", desc)
     price = item.get("판매가_제안")
     listed = item.get("정가_합")
     if price and listed:
-        block("바틀링 판매가", f"<b>{price:,}원</b> <span style='color:#9CA3AF'>"
-                             f"(따로 사면 {listed:,}원)</span>")
+        body += block("바틀링 판매가", f"<b>{price:,}원</b> <span style='color:#94A3B8'>"
+                                     f"(따로 사면 {listed:,}원)</span>")
     elif price:
-        block("바틀링 판매가", f"<b>{price:,}원</b>")
+        body += block("바틀링 판매가", f"<b>{price:,}원</b>")
+
+    # 접근 배지를 제목 왼쪽에 둔다 (9/21 — 「제안안 #n」 자리에 배지).
+    with st.container(key=f"card_{aid}"):
+        st.markdown(
+            f'<div style="display:flex; align-items:center; gap:12px">'
+            f'<span style="background:{fill}; color:{text_c}; padding:3px 12px; border-radius:8px; '
+            f'font-size:0.78rem; font-weight:700; white-space:nowrap">{approach} 제안</span>'
+            f'<span style="font-size:1.25rem; font-weight:700; flex:1">'
+            f'{item.get("메뉴명") or "이름 없음"}</span></div>',
+            unsafe_allow_html=True)
+        img = item.get("메뉴_이미지")
+        if img:
+            c_img, c_txt = st.columns([2, 3], gap="large")
+            c_img.image(img, use_container_width=True)
+            c_txt.markdown(body, unsafe_allow_html=True)
+        else:
+            st.markdown(body, unsafe_allow_html=True)
 
     render_proposal(item, meta)
 
@@ -401,9 +426,6 @@ def render_result(result: dict, meta: dict) -> None:
     if not plans:
         st.error("안이 비어 있습니다. 다시 생성해 주세요.")
         return
-
-    # 고르는 자리와 결과를 확실히 끊는다
-    st.divider()
 
     # 순위가 아니라 접근으로 가른다. 단품·세트·포장은 구성이 달라 우열이 없고,
     # 어느 것을 할지는 대표님이 정하신다. 탭마다 제안서가 붙는다.
@@ -451,12 +473,12 @@ def render_result(result: dict, meta: dict) -> None:
         )
     st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
     tabs = st.tabs([p.get("메뉴명") or p.get("안_id") for p in plans])
-    for i, (tab, item) in enumerate(zip(tabs, plans), 1):
+    for tab, item in zip(tabs, plans):
         with tab:
             # 탭 내용을 상자로 감싼다. Streamlit 상자는 테두리 색을 따로 못 주니
             # 색은 안쪽 배지(render_plan)가 낸다.
             with st.container(border=True):
-                render_plan(item, meta, i)
+                render_plan(item, meta)
 
     with st.expander("검수 결과"):
         rows = final.get("체크리스트") or []
@@ -493,61 +515,68 @@ if not partners:
 
 labels = {p["id"]: f"{p['name']} ({p['category']})" for p in partners}
 
-# 고를 것이 몇 개 안 되므로 폭을 다 쓰지 않는다. 제목부터 버튼까지 가운데 열에
-# 두고 양옆을 비운다. 열 안에서는 왼쪽 정렬 그대로다.
-_, c_in, _ = st.columns([1.5, 2, 1.5])
-with c_in:
-    st.markdown("<h1 style='text-align:center; margin-bottom:2rem'>기획안 생성</h1>",
-                unsafe_allow_html=True)
-    pid = st.selectbox("협력사", list(labels), format_func=labels.get)
-
-    chosen = next(p for p in partners if p["id"] == pid)
-
-    rnd = round_of(chosen)
-    st.caption(f"{rnd}차 기획안 — "
-               + ("협력사 입력 전입니다. 후기에서 확인한 메뉴·판매가로 만듭니다."
-                  if rnd == 1 else "협력사가 폼으로 알려준 값으로 만듭니다."))
+# 입력부는 시안(docs/ref/피그마_예시2.pdf)의 흰 카드 모양이다. 문구는 시안
+# 그대로 두었고 나중에 고친다 (9/21).
+# 명세서 4-2 의 「희망 기간」 방식은 아직 없어 고르는 칸을 두지 않는다 (T45).
+page_header("기획안 생성", "AI로 최적의 기획안을 빠르게 생성합니다.")
+st.markdown(
+    '<style>.st-key-param_card { background:#FFFFFF; border:1px solid #E5E7EB; '
+    'border-radius:14px; padding:26px 30px 22px; }'
+    '.st-key-param_card label p { font-weight:700; color:#1F2933; }'
+    '.st-key-param_card label p::after { content:" *"; color:#EF4444; }</style>',
+    unsafe_allow_html=True)
+with st.container(key="param_card"):
+    st.markdown(
+        '<div style="display:flex; align-items:center; gap:10px; margin-bottom:14px">'
+        '<span style="background:#DBEAFE; color:#2563EB; border-radius:8px; width:26px; '
+        'height:26px; display:inline-flex; align-items:center; justify-content:center">'
+        '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+        'stroke-width="2.2" stroke-linecap="round"><path d="M14 4l6 6-10 10-6-6z"/>'
+        '<path d="M4 20l3-3M14 4l2-2M20 10l2-2"/></svg></span>'
+        '<span style="font-weight:800; color:#0F172A">신규 기획안 파라미터 구성</span></div>',
+        unsafe_allow_html=True)
+    c1, c2 = st.columns(2, gap="large")
+    with c1:
+        pid = st.selectbox("협력처 (파트너사)", list(labels), format_func=labels.get)
+        chosen = next(p for p in partners if p["id"] == pid)
+        rnd = round_of(chosen)
+        st.caption(f"{rnd}차 기획안 — "
+                   + ("협력사 입력 전입니다. 후기에서 확인한 메뉴·판매가로 만듭니다."
+                      if rnd == 1 else "협력사가 폼으로 알려준 값으로 만듭니다."))
+        # 협의 가능한 때와 납품 가능 요일. 매입가·납품 수량은 결국 통화로
+        # 정하고, 실행일이 납품 요일과 어긋나면 체인이 고칠 수 없다 —
+        # 실행일은 여기서 사람이 고르는 값이다.
+        if chosen.get("contact_slots"):
+            st.caption(f"협의 가능 — {chosen['contact_slots']}")
+        if chosen.get("available_slots"):
+            st.caption(f"납품 가능 — {chosen['available_slots']}")
+    with c2:
+        target = st.date_input("협업 희망일 선택",
+                               value=datetime.now(KST).date() + timedelta(days=7))
 
     has_menus = bool(chosen.get("menu_prices"))
     if not has_menus:
         st.info("메뉴·판매가가 아직 없습니다. 들어오면 만들 수 있습니다.")
 
-    # 협의 가능한 때를 여기서 보인다. 매입가와 납품 수량은 결국 통화로
-    # 정해야 하는데, 그 값이 DB 에만 있으면 찾아볼 생각을 못 한다.
-    if chosen.get("contact_slots"):
-        st.caption(f"협의 가능 — {chosen['contact_slots']}")
-
-    # 납품 가능 요일도 함께 보인다.
-    #
-    # 실행일이 그 요일과 어긋나면 당일 만든 것을 받아야 하는 메뉴는 팔 수가
-    # 없다. 체인은 이것을 고칠 수 없다 — 실행일은 여기서 사람이 고르는
-    # 값이라 메뉴를 몇 번 다시 만들어도 같은 문제가 남는다.
-    if chosen.get("available_slots"):
-        st.caption(f"납품 가능 — {chosen['available_slots']}")
-
-    # 명세서 4-2 는 「날짜 지정 / 희망 기간」 두 방식을 둔다.
-    # 희망 기간은 (1)을 요일 수만큼 반복 호출해야 해 T45(W4)로 미뤘다.
-    mode = st.radio("실행일", ["날짜 지정", "희망 기간"], horizontal=True)
-    is_range = mode == "희망 기간"
-    target = st.date_input(
-        "실행 희망일", label_visibility="collapsed",
-        value=datetime.now(KST).date() + timedelta(days=7),
-        disabled=is_range)
-
-    if is_range:
-        st.caption("희망 기간 방식은 아직 준비 중입니다. 날짜를 지정해 주세요.")
-
-    st.write("")
-    go = st.button("기획안 생성", type="primary",
-                   use_container_width=True,
-                   disabled=is_range or not has_menus)
-
-st.divider()
+    _, c_btn = st.columns([3, 1])
+    go = c_btn.button("기획안 최적 생성 시작", type="primary", icon=":material/auto_awesome:",
+                      use_container_width=True, disabled=not has_menus)
 
 if go:
     generate(chosen, target)
 
 if st.session_state.get(SS_RESULT):
-    render_result(st.session_state[SS_RESULT], st.session_state[SS_META])
+    meta = st.session_state[SS_META]
+    n_plans = len((st.session_state[SS_RESULT].get("final") or {}).get("안") or [])
+    st.markdown(
+        f'<div style="margin:18px 0 6px; padding:14px 18px; border:1.5px solid #34D399; '
+        f'background:#ECFDF5; border-radius:10px; color:#065F46; font-weight:700; '
+        f'display:flex; align-items:center; gap:10px">'
+        f'<span style="background:#059669; color:#fff; border-radius:50%; width:20px; height:20px; '
+        f'display:inline-flex; align-items:center; justify-content:center; font-size:12px">✓</span>'
+        f'분석 완료 - AI 기반 최적 제안 {n_plans}종이 도출되었습니다. '
+        f'하단 탭을 통해 세부 제안과 문서를 검토해 보세요.</div>',
+        unsafe_allow_html=True)
+    render_result(st.session_state[SS_RESULT], meta)
 elif not go:
     st.info("협력사와 실행일을 고르고 생성을 누르면 약 20초 뒤 기획안 3안이 나옵니다.")

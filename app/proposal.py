@@ -54,6 +54,18 @@ def won(text) -> int | None:
     return int(m.group(1).replace(",", "")) if m else None
 
 
+def end_dot(text) -> str:
+    """
+    문장 끝에 마침표를 붙인다. LLM 이 "~합니다" 로 끝내면서 마침표를 자주
+    빠뜨린다 (9/21 화면 확인). "다" 로 끝날 때만 붙인다 — 명사로 끝나는
+    항목은 그대로 둔다.
+    """
+    if not text:
+        return ""
+    s = str(text).strip()
+    return s + "." if s.endswith("다") else s
+
+
 def proposal_no(meta: dict) -> str:
     """
     문서번호. 협력사가 받는 문서라 어느 건인지 가리킬 수 있어야 한다.
@@ -132,10 +144,10 @@ def _sections(item: dict, meta: dict) -> list[dict]:
 
     # Ⅲ. 이유 — (4)의 배경(상권 근거로 쓴 문장)
     if item.get("배경"):
-        out.append({"title": "이번 협업을 제안한 이유", "items": [item["배경"]]})
+        out.append({"title": "이번 협업을 제안한 이유", "items": [end_dot(item["배경"])]})
 
     # Ⅳ. 메뉴
-    why = f" — {beer['이유']}" if beer.get("이유") else ""
+    why = f" — {end_dot(beer['이유'])}" if beer.get("이유") else ""
     menu_items: list = [
         ("메뉴명", menu),
         ("구성", item.get("구성") or ""),
@@ -151,7 +163,7 @@ def _sections(item: dict, meta: dict) -> list[dict]:
     # Ⅴ. 홍보 — 실행 전 시점이 문서에 없으면 실행 전에 안 올라간다 (1-5)
     promo: list = []
     if ev.get("명칭"):
-        promo += [("이벤트", ev["명칭"]), ("내용", ev.get("내용") or ""),
+        promo += [("이벤트", ev["명칭"]), ("내용", end_dot(ev.get("내용"))),
                   ("기간", ev.get("기간") or "협의 필요")]
     for s in item.get("홍보_일정") or []:
         if s.get("시점"):
@@ -165,8 +177,8 @@ def _sections(item: dict, meta: dict) -> list[dict]:
     offer: list = [
         ("협력사가 준비", " / ".join(item.get("협력사_제공") or []) or "데이터 없음"),
         ("바틀링이 준비", " / ".join(item.get("바틀링_준비") or []) or "데이터 없음"),
-        ("협력사가 얻는 것", gains.get("협력사") or "데이터 없음"),
-        ("바틀링이 얻는 것", gains.get("바틀링") or "데이터 없음"),
+        ("협력사가 얻는 것", end_dot(gains.get("협력사")) or "데이터 없음"),
+        ("바틀링이 얻는 것", end_dot(gains.get("바틀링")) or "데이터 없음"),
     ]
     if first:
         offer += [("매입가", "협의해서 정합니다"),

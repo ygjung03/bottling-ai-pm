@@ -24,6 +24,7 @@ import pydeck as pdk
 import streamlit as st
 
 from app.auth import require_owner
+from app.ui import sidebar
 from context.builder import INDUSTRY_MAP
 from db.client import get_client
 from recommender.complement import TIER_LABEL, guess_industry_category, tier_label
@@ -31,6 +32,7 @@ from recommender.scoring import score_store
 
 st.set_page_config(page_title="파트너 추천", page_icon="🔍", layout="wide")
 require_owner()
+sidebar("파트너 추천")
 
 client = get_client()
 

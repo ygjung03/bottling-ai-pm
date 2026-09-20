@@ -7,6 +7,7 @@ import _path  # noqa: F401  (프로젝트 루트를 sys.path 에 추가)
 import streamlit as st
 
 from app.auth import is_owner, login_form, logout
+from app.ui import sidebar
 
 st.set_page_config(page_title="바틀링 AI PM", page_icon="🍺",
                    layout="wide", initial_sidebar_state="expanded")
@@ -24,11 +25,11 @@ if not is_owner():
     st.stop()
 
 # ── 로그인 후 ──
+sidebar("홈")
 st.title("바틀링 AI PM")
 st.caption("소상공인 협업 기획 자동화")
 
 with st.sidebar:
-    st.divider()
     if st.button("로그아웃", use_container_width=True):
         logout()
 
@@ -48,7 +49,7 @@ with c2:
     st.page_link("pages/4_상권_대시보드.py", label="상권 대시보드", icon="📊")
     st.caption("뚝섬 실시간 인구·결제 현황을 봅니다.")
     st.write("")
-    st.page_link("pages/9_관리.py", label="관리", icon="⚙️")
+    st.page_link("pages/9_관리.py", label="환경 설정", icon="⚙️")
     st.caption("맥주 라인업, 프롬프트, 제약조건을 수정합니다.")
 
 st.divider()

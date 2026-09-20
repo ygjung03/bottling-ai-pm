@@ -26,6 +26,7 @@ import pydeck as pdk
 import streamlit as st
 
 from app.auth import require_owner
+from app.ui import sidebar
 from db.client import get_client
 
 st.set_page_config(page_title="상권 대시보드", page_icon="📊", layout="wide")
@@ -37,6 +38,7 @@ st.set_page_config(page_title="상권 대시보드", page_icon="📊", layout="w
 # 그래서 각 페이지가 첫머리에서 매번 검사해야 한다 (명세서 4-0-1).
 # 나머지 네 페이지는 모두 하고 있다.
 require_owner()
+sidebar("상권 대시보드")
 
 # ── 팔레트 (라이트, BI 툴 톤) ─────────────────────────────────
 INK = "#1F2933"
