@@ -64,6 +64,8 @@ def load_scored_candidates() -> pd.DataFrame:
                 "lat,lng,distance_m,score,score_detail")
         .not_.is_("score", "null")
         .order("score", desc=True)
+        .limit(5000)  # PostgREST 기본 상한(1000)에 조용히 잘리는 걸 막는 명시적 상한.
+                      # 반경 1km 기준 현재 830여건 — 5000이면 당분간 여유 충분.
         .execute()
     )
     df = pd.DataFrame(res.data)
@@ -399,8 +401,10 @@ with tab_manual:
 with tab_menu:
     st.caption("메뉴 이름을 넣으면 관련 업종의 가까운 가게를 찾습니다 (2차 방문 요구사항, 명세서 3-5).")
     st.info(
-        "블로그 언급 확인(U17)은 네이버 API 계정 확보 전까지 비활성화 상태입니다. "
-        "지금은 업종 필터 + 지도 링크만 제공합니다 — 3-5의 'U17 실패 시' 대체 경로입니다."
+        "메뉴로 실제로 걸러주는 기능(T48)은 네이버 검색 API(지역검색) 키 승인 대기 중입니다 — "
+        "승인되면 '메뉴 검색 → 반경 필터 → nearby_stores 대조'로 교체될 예정입니다(9/28 이후). "
+        "지금은 업종 필터로만 후보를 추리고, 링크는 검색 결과가 뜨도록 네이버 통합검색으로 엽니다 "
+        "(지도 검색 링크는 빈 화면이 뜨는 문제가 있어 바꿨습니다)."
     )
 
     menu_name = st.text_input("메뉴 이름", placeholder="예: 두바이 초콜릿", key="menu_name")
@@ -417,7 +421,9 @@ with tab_menu:
         for _, r in matched.head(20).iterrows():
             store_name = r["name"]
             search_q = f"{store_name} {menu_name}"
-            url = f"https://map.naver.com/p/search/{quote(search_q)}"
-            st.markdown(f"- **{store_name}** ({r['tier']}, {int(r['distance_m'])}m) — [네이버 지도에서 메뉴 확인]({url})")
+            # map.naver.com/p/search 는 빈 화면이 뜨는 경우가 있어 통합검색으로 변경
+            # 메뉴로 후보를 실제로 거르는 기능은 X — T48(네이버 지역검색 API) 대기 중.
+            url = f"https://search.naver.com/search.naver?query={quote(search_q)}"
+            st.markdown(f"- **{store_name}** ({r['tier']}, {int(r['distance_m'])}m) — [네이버에서 검색]({url})")
         if matched.empty:
             st.caption("조건에 맞는 후보가 없습니다. 업종 선택을 넓혀보세요.")
