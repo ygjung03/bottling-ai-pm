@@ -24,28 +24,37 @@ import pydeck as pdk
 import streamlit as st
 
 from app.auth import require_owner
-from app.ui import sidebar
+from app.theme import apply_chrome
 from context.builder import INDUSTRY_MAP
 from db.client import get_client
-from recommender.complement import TIER_LABEL, guess_industry_category, tier_label
+from recommender.complement import TIER_LABELS, guess_industry_category, tier_label
 from recommender.scoring import score_store
 
-st.set_page_config(page_title="파트너 추천", page_icon="🔍", layout="wide")
+st.set_page_config(page_title="파트너 추천", page_icon="🔍", layout="wide",
+                   initial_sidebar_state="collapsed")
 require_owner()
-sidebar("파트너 추천")
+apply_chrome()
 
 client = get_client()
 
-BOTTLING_COORD = (37.5318919, 127.0679483)  # API검증결과 V8 실측 확정값
+BOTTLING_COORD = (37.5318919, 127.0679483)  
 RADIUS_M = 1000
 
+# [9/21] 대표님 「협업 업종 적합도 조사」로 업종 구분이 6개 → 12개로 증가
+# (recommender/complement.py TIER_LABELS 참조). 색도 그만큼 늘려 구별.
 TIER_COLOR = {
     "제과·디저트": "#F59E0B",
-    "피자·튀김·그릴": "#EF4444",
-    "분식·스낵": "#22C55E",
+    "피자·치킨": "#EF4444",
+    "수제버거": "#B91C1C",
+    "분식": "#22C55E",
+    "토스트·샌드위치·샐러드": "#84CC16",
     "카페": "#2F6FED",
-    "한식·중식류": "#9CA3AF",
-    "주류 판매점": "#6B21A8",
+    "아이스크림·빙수": "#38BDF8",
+    "한식": "#9CA3AF",
+    "중식": "#FB923C",
+    "일식": "#F472B6",
+    "양식": "#A78BFA",
+    "주점": "#6B21A8",
 }
 
 
@@ -66,12 +75,13 @@ def load_scored_candidates() -> pd.DataFrame:
                 "lat,lng,distance_m,score,score_detail")
         .not_.is_("score", "null")
         .order("score", desc=True)
+        .limit(5000)  
         .execute()
     )
     df = pd.DataFrame(res.data)
     if df.empty:
         return df
-    df["tier"] = df["score_detail"].apply(lambda d: tier_label((d or {}).get("S_complement")))
+    df["tier"] = df.apply(lambda r: tier_label(r.get("category_m"), r.get("category_s")), axis=1)
     return df
 
 
@@ -138,7 +148,7 @@ def create_invite(name: str, category: str, lat=None, lng=None) -> dict | None:
 
     try:
         rows = client.table("partners").insert(payload).execute().data
-        load_partner_names.clear()   # 추천 표의 「등록」 열이 바로 바뀌게
+        load_partner_names.clear() 
         return rows[0] if rows else None
     except Exception as e:
         st.error(f"등록 실패 — {e}")
@@ -165,8 +175,6 @@ def render_next_step(candidate_name: str, guessed_category: str, lat=None, lng=N
 def render_registered(row: dict, guessed_category: str):
     """등록 직후 안내. 버튼 경로와 직접 입력 폼 경로가 같이 쓴다."""
     st.success("협력사를 등록했습니다. 기획안 생성에서 고를 수 있습니다.")
-    # 협력사 입력은 구글 폼으로 받는다. 이 코드는 폼의 「확인 코드」 문항에
-    # 미리 채워 보내는 값이다 (docs/협력사_구글폼_문항.md).
     st.code(row.get("invite_code") or "", language=None)
     st.caption(
         f"위 코드는 협력사가 관심을 보인 뒤 구글 폼을 보낼 때 확인 코드로 쓰입니다. "
@@ -253,8 +261,8 @@ with tab_rec:
         with c1:
             radius = st.slider("반경 (m)", 200, 1000, 1000, step=100, key="rec_radius")
             tiers = st.multiselect(
-                "업종", list(TIER_LABEL.values()),
-                default=list(TIER_LABEL.values()), key="rec_tiers",
+                "업종", TIER_LABELS,
+                default=TIER_LABELS, key="rec_tiers",
             )
             hide_registered = st.checkbox(
                 "이미 등록된 협력사 숨기기", value=True, key="rec_hide_registered",
@@ -396,7 +404,7 @@ with tab_manual:
                 st.divider()
                 existing = find_existing_partner(m_name)
                 if existing:
-                    st.success(f"'{existing['name']}'은(는) 이미 등록된 협력사입니다.")
+                    st.warning(f"'{existing['name']}'은(는) 이미 등록된 협력사입니다.")
                     st.page_link("pages/2_기획안_생성.py", label="기획안 생성으로 이동", icon="📝")
                 else:
                     row = create_invite(m_name, m_category)
@@ -407,14 +415,16 @@ with tab_manual:
 with tab_menu:
     st.caption("메뉴 이름을 넣으면 관련 업종의 가까운 가게를 찾습니다 (2차 방문 요구사항, 명세서 3-5).")
     st.info(
-        "블로그 언급 확인(U17)은 네이버 API 계정 확보 전까지 비활성화 상태입니다. "
-        "지금은 업종 필터 + 지도 링크만 제공합니다 — 3-5의 'U17 실패 시' 대체 경로입니다."
+        "메뉴로 실제로 걸러주는 기능(T48)은 네이버 검색 API(지역검색) 키 승인 대기 중입니다 — "
+        "승인되면 '메뉴 검색 → 반경 필터 → nearby_stores 대조'로 교체될 예정입니다(9/28 이후). "
+        "지금은 업종 필터로만 후보를 추리고, 링크는 검색 결과가 뜨도록 네이버 통합검색으로 엽니다 "
+        "(지도 검색 링크는 빈 화면이 뜨는 문제가 있어 바꿨습니다)."
     )
 
     menu_name = st.text_input("메뉴 이름", placeholder="예: 두바이 초콜릿", key="menu_name")
     menu_tiers = st.multiselect(
         "관련 업종 (메뉴 성격에 맞게 골라주세요)",
-        list(TIER_LABEL.values()), default=list(TIER_LABEL.values()),
+        TIER_LABELS, default=TIER_LABELS,
         key="menu_tiers",
     )
 
@@ -425,7 +435,7 @@ with tab_menu:
         for _, r in matched.head(20).iterrows():
             store_name = r["name"]
             search_q = f"{store_name} {menu_name}"
-            url = f"https://map.naver.com/p/search/{quote(search_q)}"
-            st.markdown(f"- **{store_name}** ({r['tier']}, {int(r['distance_m'])}m) — [네이버 지도에서 메뉴 확인]({url})")
+            url = f"https://search.naver.com/search.naver?query={quote(search_q)}"
+            st.markdown(f"- **{store_name}** ({r['tier']}, {int(r['distance_m'])}m) — [네이버에서 검색]({url})")
         if matched.empty:
             st.caption("조건에 맞는 후보가 없습니다. 업종 선택을 넓혀보세요.")

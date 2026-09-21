@@ -1,21 +1,20 @@
 """
 관리 — 개발팀 및 이관 대비
 
-프롬프트를 코드에서 분리해 비개발자가 수정할 수 있게 한다. (설계 결정 D7)
-사업 종료 후 대표님이 직접 유지하는 것은 비현실적이나,
-최소한 프롬프트와 제약조건은 화면에서 고칠 수 있어야 한다.
+프롬프트를 코드에서 분리해 비개발자가 수정할 수 있게 한다. 
 """
-import _path  # noqa: F401  (프로젝트 루트를 sys.path 에 추가)
+import _path 
 import streamlit as st
 
 from app.auth import require_owner
-from app.ui import sidebar
+from app.theme import apply_chrome
 
-st.set_page_config(page_title="환경 설정", page_icon="⚙️", layout="wide")
+st.set_page_config(page_title="관리", page_icon="⚙️", layout="wide",
+                   initial_sidebar_state="collapsed")
 require_owner()
-sidebar("환경 설정")
+apply_chrome()
 
-st.title("환경 설정")
+st.title("관리")
 
 t1, t2, t3 = st.tabs(["맥주 라인업", "프롬프트", "제약조건"])
 

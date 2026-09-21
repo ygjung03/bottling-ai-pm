@@ -39,7 +39,8 @@ import streamlit as st
 from app.auth import require_owner
 from app.proposal import (build_proposal_docx, docx_to_pdf, end_dot, missing_fields,
                           pdf_pages, preview_html, proposal_no)
-from app.ui import page_header, sidebar
+from app.theme import apply_chrome
+from app.ui import page_header
 from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           NO_REC_REASON, NO_TREND_MENU, PAST_CASES,
                           WEATHER_PREF, build_beer_list, build_constraints,
@@ -49,9 +50,10 @@ from chain.runner import run
 from context.builder import build as build_context
 from db.client import get_client
 
-st.set_page_config(page_title="기획안 생성", page_icon="📝", layout="wide")
+st.set_page_config(page_title="기획안 생성", page_icon="📝", layout="wide",
+                   initial_sidebar_state="collapsed")
 require_owner()
-sidebar("기획안 생성")
+apply_chrome()
 
 KST = timezone(timedelta(hours=9))
 SS_RESULT = "plan_result"      # 체인 출력

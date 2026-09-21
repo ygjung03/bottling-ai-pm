@@ -8,6 +8,14 @@ from recommender.complement import score_complement
 
 RADIUS_M = 1000
 
+def _euro(word: str) -> str:
+    if not word:
+        return "로"
+    code = ord(word[-1])
+    if 0xAC00 <= code <= 0xD7A3: 
+        has_batchim = (code - 0xAC00) % 28 != 0
+        return "으로" if has_batchim else "로"
+    return "으로" 
 
 def score_distance(distance_m: int) -> float:
     return max(0.0, 1 - (distance_m / RADIUS_M))
@@ -31,7 +39,7 @@ def score_store(store: dict) -> dict | None:
 
     industry_label = store.get("category_s") or store.get("category_m") or "미상 업종"
     walk_min = round(distance_m / 67)  # 도보 약 67m/분 근사치. 필요시 조정.
-    reason = f"도보 약 {walk_min}분 거리의 {industry_label}으로 완제품 매입이 용이합니다."
+    reason = f"도보 약 {walk_min}분 거리의 {industry_label}{_euro(industry_label)} 완제품 매입이 용이합니다."
 
     naver_map_url = f"https://map.naver.com/p/search/{store.get('name', '')}"
 
