@@ -24,13 +24,16 @@ import pydeck as pdk
 import streamlit as st
 
 from app.auth import require_owner
+from app.theme import apply_chrome
 from context.builder import INDUSTRY_MAP
 from db.client import get_client
 from recommender.complement import TIER_LABELS, guess_industry_category, tier_label
 from recommender.scoring import score_store
 
-st.set_page_config(page_title="파트너 추천", page_icon="🔍", layout="wide")
+st.set_page_config(page_title="파트너 추천", page_icon="🔍", layout="wide",
+                   initial_sidebar_state="collapsed")
 require_owner()
+apply_chrome()
 
 client = get_client()
 
