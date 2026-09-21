@@ -1,0 +1,10 @@
+# 윈도우 + Microsoft Word 가 있는 PC 에서만 추가로 설치한다.
+#
+# 기획안 화면의 「제안서 미리보기」가 Word 로 docx 를 PDF 로 바꿔 실제 페이지를
+# 보여 주는 데 쓴다. 없으면 같은 내용을 HTML 로 그린 근사 미리보기가 나온다.
+# Streamlit Cloud(리눅스)에는 Word 가 없고 pywin32 가 설치되지 않으므로
+# requirements.txt 에 넣지 않는다 — 넣으면 배포가 깨진다.
+#
+#   pip install -r requirements-windows.txt
+docx2pdf==0.1.8
+pymupdf==1.28.2

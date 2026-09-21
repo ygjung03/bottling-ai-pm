@@ -80,6 +80,8 @@ def call(prompt: str, retry: int = 1, model: str | None = None,
         except json.JSONDecodeError as e:
             last_err = e
             print(f"[retry {attempt}] JSON 파싱 실패: {e}")
+            # 어디가 깨졌는지 보이게 오류 지점 앞뒤를 찍는다 (9/21 C6 에서 반복)
+            print("    …" + resp.text[max(0, e.pos - 120):e.pos + 60].replace("\n", "⏎") + "…")
 
         except Exception as e:
             last_err = e

@@ -161,7 +161,7 @@ def render_next_step(candidate_name: str, guessed_category: str, lat=None, lng=N
     """추천받기·직접 지정 공통 — 이후 처리 (명세서 4-3 공통 절차)."""
     existing = find_existing_partner(candidate_name)
     if existing:
-        st.success(f"'{existing['name']}'은(는) 이미 등록된 협력사입니다.")
+        st.warning(f"'{existing['name']}'은(는) 이미 등록된 협력사입니다.")
         st.page_link("pages/2_기획안_생성.py", label="기획안 생성으로 이동", icon="📝")
         return
 
@@ -182,6 +182,17 @@ def render_registered(row: dict, guessed_category: str):
         f"협력사가 폼에서 직접 고칠 수 있습니다."
     )
     st.page_link("pages/2_기획안_생성.py", label="기획안 생성으로 이동", icon="📝")
+
+
+@st.dialog("알림")
+def warn_one_pick():
+    """추천 표에서 둘 이상 체크했을 때 화면 가운데 띄우는 알림."""
+    st.markdown(
+        '<div style="line-height:1.8; margin:6px 0 14px">'
+        '한 곳만 선택할 수 있습니다.<br>다른 곳을 선택하려면 현재 선택을 먼저 해제해 주세요.</div>',
+        unsafe_allow_html=True)
+    if st.button("확인", type="primary", use_container_width=True):
+        st.rerun()
 
 
 def render_map(df: pd.DataFrame, highlight_store_id: str | None = None, top_n: int = 60):
@@ -284,7 +295,7 @@ with tab_rec:
         with c2:
             extra = (
                 f" (그중 이미 등록된 {registered_total}곳)" if hide_registered and registered_total
-                else f" · 이미 등록된 협력사 {registered_total}곳은 '등록' 열로 표시" if registered_total
+                else f" · 이미 등록된 협력사 {registered_total}곳 포함" if registered_total
                 else ""
             )
             st.caption(
@@ -292,19 +303,40 @@ with tab_rec:
                 f"프랜차이즈 추정·업종 미매핑으로 제외한 {unmapped}곳(3-1·3-2 원칙) · "
                 f"현재 필터로 {hidden_by_filter}곳 더 숨김{extra}"
             )
-            view = filtered[["순위", "name", "tier", "distance_m", "score", "등록됨"]].rename(
-                columns={"name": "상호", "tier": "업종", "distance_m": "거리(m)",
-                         "score": "점수", "등록됨": "등록"}
+            # 고르는 칸을 표 맨 오른쪽 열에 체크박스로 둔다. st.dataframe 의 행 선택은
+            # 표 왼쪽 끝에 숨은 체크 칸을 눌러야 해서 눈에 안 띄었다 — 셀을 눌러도
+            # 아무 일이 없어 등록이 안 되는 줄 알았다 (9/21). 등록 여부 열은 뺐다.
+            # 이미 등록된 곳을 고르면 아래에서 경고로 알린다. 다른 열은 편집 잠금.
+            #
+            # 한 곳만 고른다. 표 안의 체크박스라 두 번째 클릭 자체는 못 막으므로,
+            # 둘 이상 체크되면 먼저 고른 것만 남기고 표를 다시 그린 뒤 팝업으로
+            # 알린다 (9/22). 고른 곳은 행 번호가 아니라 store_id 로 기억한다 —
+            # 반경·업종 필터를 바꾸면 행 번호가 밀린다. 표를 다시 그리려면 key 를
+            # 바꿔야 해서 버전 번호를 key 에 붙인다.
+            if st.session_state.pop("rec_pick_warn", False):
+                warn_one_pick()
+            pick_id = st.session_state.get("rec_pick_id")
+            ver = st.session_state.get("rec_table_ver", 0)
+            view = filtered[["순위", "name", "tier", "distance_m", "score"]].rename(
+                columns={"name": "상호", "tier": "업종", "distance_m": "거리(m)", "score": "점수"}
             )
-            view["등록"] = view["등록"].map({True: "✅ 등록됨", False: ""})
-            event = st.dataframe(
-                view, use_container_width=True, hide_index=True,
-                on_select="rerun", selection_mode="single-row", key="rec_table",
+            view["선택"] = (filtered["store_id"] == pick_id).tolist()
+            edited = st.data_editor(
+                view, use_container_width=True, hide_index=True, key=f"rec_table_{ver}",
+                disabled=[c for c in view.columns if c != "선택"],
+                column_config={"선택": st.column_config.CheckboxColumn(
+                    "선택", help="체크하면 아래에 상세와 등록 버튼이 나옵니다")},
             )
 
-        selected_idx = None
-        if event and event.selection and event.selection.rows:
-            selected_idx = event.selection.rows[0]
+        picked_ids = filtered.loc[edited["선택"].tolist(), "store_id"].tolist()
+        if len(picked_ids) > 1:
+            keep = pick_id if pick_id in picked_ids else picked_ids[0]
+            st.session_state["rec_pick_id"] = keep
+            st.session_state["rec_table_ver"] = ver + 1
+            st.session_state["rec_pick_warn"] = True
+            st.rerun()
+        st.session_state["rec_pick_id"] = picked_ids[0] if picked_ids else None
+        selected_idx = filtered.index[filtered["store_id"] == picked_ids[0]][0] if picked_ids else None
 
         st.divider()
         if selected_idx is None:
@@ -398,7 +430,7 @@ with tab_manual:
                 st.divider()
                 existing = find_existing_partner(m_name)
                 if existing:
-                    st.success(f"'{existing['name']}'은(는) 이미 등록된 협력사입니다.")
+                    st.warning(f"'{existing['name']}'은(는) 이미 등록된 협력사입니다.")
                     st.page_link("pages/2_기획안_생성.py", label="기획안 생성으로 이동", icon="📝")
                 else:
                     row = create_invite(m_name, m_category)

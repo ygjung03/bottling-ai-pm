@@ -37,9 +37,10 @@ import _path  # noqa: F401  (프로젝트 루트를 sys.path 에 추가)
 import streamlit as st
 
 from app.auth import require_owner
-from app.proposal import (build_proposal, build_proposal_docx, missing_fields,
-                          proposal_no, won)
+from app.proposal import (build_proposal_docx, docx_to_pdf, end_dot, missing_fields,
+                          pdf_pages, preview_html, proposal_no)
 from app.theme import apply_chrome
+from app.ui import page_header
 from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           NO_REC_REASON, NO_TREND_MENU, PAST_CASES,
                           WEATHER_PREF, build_beer_list, build_constraints,
@@ -59,9 +60,8 @@ SS_RESULT = "plan_result"      # 체인 출력
 SS_META = "plan_meta"          # 협력사·날짜 등 생성 조건
 
 # 접근마다 색을 둔다. 탭이 셋인데 내용이 비슷해 어느 안을 보고 있는지
-# 놓치기 쉽다 (9/19 화면 확인). 배지·왼쪽 띠에 쓴다.
-APPROACH_COLOR = {"단품": "#9DC3E6", "세트": "#F7C59F", "포장": "#B5D99C"}
-# 탭 버튼의 (테두리, 글자, 바탕) 색. 파스텔 테두리에 같은 계열의 진한 글자,
+# 놓치기 쉽다 (9/19 화면 확인). 탭 배지와 카드 배지에 같은 색을 쓴다.
+# (테두리, 글자, 바탕). 파스텔 테두리에 같은 계열의 진한 글자,
 # 바탕은 더 연한 불투명 파스텔 — 탭이 겹치는 자리가 비치지 않게 (9/20).
 TAB_COLOR = {
     "단품": ("#9DC3E6", "#2F5D8A", "#E3EEF8"),
@@ -231,73 +231,35 @@ def generate(partner: dict, target: date) -> None:
     meta["plan_id"] = save_plan(result, meta)
     st.session_state[SS_RESULT] = result
     st.session_state[SS_META] = meta
+    # 이전 기획안의 제안서 파일과 미리보기 페이지 위치를 버린다
+    st.session_state[SS_FILES] = {}
+    for k in [k for k in st.session_state if k.startswith("page_")]:
+        del st.session_state[k]
 
 
 # ══════════════════════════════════════════
 # 결과 표시
 # ══════════════════════════════════════════
 
-def _bullets(items) -> None:
-    for x in items or []:
-        st.write(f"- {x}")
+SS_FILES = "proposal_files"   # 안별 제안서 파일 캐시. 생성할 때마다 비운다.
 
 
-def render_price(item: dict, per_ml) -> None:
+def _proposal_files(item: dict, meta: dict) -> dict:
     """
-    가격을 역할 상자에서 떼어 따로 보인다.
+    안 하나의 제안서 파일 — docx, pdf, 페이지 이미지. 세션에 캐시한다.
 
-    판매가를 「협력사가 준비」 안에 두면 그 돈을 협력사가 받는 것처럼 읽힌다.
-    실제로 협력사가 받는 것은 매입가이고, 판매가는 손님에게 받는 돈이다.
-
-    맥주값은 「세트」 안에서만 값에 들어간다. 바틀링은 손님이 원하는 만큼
-    따라 마시는 셀프탭이라, 단품에서는 맥주가 별개 거래다.
-
-    마진은 맥주 원가를 몰라 직접 계산이 불가능하고, 이 협업 기획에 꼭
-    필요한 숫자도 아니기 때문에 따로 산출하지 않는다.
+    Word 변환이 안마다 5~8초라 화면이 다시 그려질 때마다 하면 안 된다.
+    탭을 옮기거나 페이지를 넘길 때마다 스크립트가 다시 도는데, 그때는 여기서
+    바로 꺼낸다. 캐시는 generate() 가 새 기획안을 만들 때 비운다.
     """
-    beer_name = (item.get("페어링_맥주") or {}).get("메뉴명") or "페어링 맥주"
-    beer_price = int(per_ml * 500) if per_ml else None
-
-    listed = item.get("정가_합")
-    price = item.get("판매가_제안")
-    menu_price = item.get("협력사_정가")
-
-    # (4)가 낸 제안 매입가가 있으면 그것을, 없으면 (2)의 협력사 희망값을 쓴다
-    deal = item.get("매입") or {}
-    cost = (won(deal.get("바틀링_제안_매입가"))
-            or won(item.get("협력사희망_매입가")))
-
-    st.markdown("##### 가격")
-
-    # 내역을 쌓고 합계를 아래에 둔다 (docs/ref/figma_세트구성.png).
-    # 항목이 흩어져 있으면 총액을 머릿속에서 더해야 한다.
-    with st.container(border=True):
-        rows = [(item.get("메뉴명") or "메뉴", menu_price)]
-        if listed:                      # 세트일 때만 맥주가 값에 들어간다
-            rows.append((f"{beer_name} 500ml", beer_price))
-        for label, value in rows:
-            c_l, c_r = st.columns([3, 1])
-            c_l.write(label)
-            c_r.markdown(f"<div style='text-align:right'>"
-                         f"{value:,}원</div>" if value else
-                         "<div style='text-align:right'>미정</div>",
-                         unsafe_allow_html=True)
-
-        st.divider()
-
-        if listed:
-            c1, c2, c3 = st.columns(3)
-            c1.metric("따로 사면", f"{listed:,}원")
-            c2.metric("세트로 내는 값", f"{price:,}원" if price else "미정")
-            if price and listed > price:
-                c2.caption(f"{listed - price:,}원 싸다 · 맥주 500ml 이상")
-        else:
-            c2, c3 = st.columns(2)
-            c2.metric("손님이 내는 값", f"{price:,}원" if price else "미정")
-            c2.caption(f"맥주는 따로 계산 · {beer_name} 추천")
-
-        c3.metric("협력사에 주는 값", f"{cost:,}원" if cost else "산출 불가")
-        c3.caption("협의 대상" if cost else "협력사 납품가 미확보")
+    cache = st.session_state.setdefault(SS_FILES, {})
+    key = item.get("안_id")
+    if key not in cache:
+        docx = build_proposal_docx(item, meta)
+        pdf = docx_to_pdf(docx)               # Word 없으면 None → HTML 근사로
+        pages = pdf_pages(pdf) if pdf else None
+        cache[key] = {"docx": docx, "pdf": pdf, "pages": pages}
+    return cache[key]
 
 
 def render_proposal(item: dict, meta: dict) -> None:
@@ -314,149 +276,132 @@ def render_proposal(item: dict, meta: dict) -> None:
                    f"다시 생성해 주세요.")
         return
 
-    text = build_proposal(item, meta)
+    aid = item.get("안_id") or "?"
+    st.markdown(
+        '<div style="display:flex; align-items:center; gap:14px; margin:22px 0 14px; '
+        'color:#9CA3AF; font-size:0.72rem; letter-spacing:0.1em">'
+        '<span style="flex:1; border-top:1px solid #E5E7EB"></span>DOCUMENT PREVIEW'
+        '<span style="flex:1; border-top:1px solid #E5E7EB"></span></div>',
+        unsafe_allow_html=True)
 
-    with st.container(border=True):
-        st.markdown("##### 협업 제안서")
-        st.caption(f"{proposal_no(meta)} · 협력사에 그대로 보낼 수 있는 문서입니다.")
+    with st.spinner("제안서를 만드는 중..."):
+        files = _proposal_files(item, meta)
 
-        deal = item.get("매입") or {}
-        if deal.get("협의_필요"):
-            st.info("제안 매입가는 협의 대상입니다. 협력사의 원가를 알 수 없으므로 "
-                    "이 값은 협상의 출발점으로 쓰십시오.")
+    # 종이 모양 미리보기 (시안 docs/ref/피그마_예시2.pdf). 회색 바탕 위에 흰 종이,
+    # 양옆에 종이 높이만큼 긴 ‹ › 버튼. Word 가 있으면 실제 페이지를, 없으면
+    # 같은 절 목록으로 그린 HTML 근사판을 보인다.
+    # 바탕색·버튼 높이는 key 로 붙는 st-key-* 클래스에 CSS 를 준다.
+    st.markdown(
+        f'<style>'
+        f'.st-key-paper_{aid} {{ background:#F1F5F9; border-radius:12px; padding:28px 12px; }}'
+        f'.st-key-paper_{aid} [data-testid="stImage"] img {{'
+        f'  box-shadow:0 6px 24px rgba(15,23,42,0.14); }}'
+        f'.st-key-prev_{aid} button, .st-key-next_{aid} button {{'
+        f'  height:72px; width:100%; color:#64748B; background:transparent; border:none; }}'
+        f'.st-key-prev_{aid} button p, .st-key-next_{aid} button p {{'
+        f'  font-size:2.8rem; line-height:1; font-weight:300; }}'
+        f'.st-key-prev_{aid} button:hover, .st-key-next_{aid} button:hover {{'
+        f'  background:#E2E8F0; color:#1E293B; }}'
+        f'</style>', unsafe_allow_html=True)
+    with st.container(key=f"paper_{aid}"):
+        pages = files["pages"]
+        if pages:
+            key = f"page_{aid}"
+            idx = st.session_state.get(key, 0)
+            idx = max(0, min(idx, len(pages) - 1))
+            c_l, c_mid, c_r = st.columns([1, 7, 1], vertical_alignment="center")
+            if c_l.button("‹", key=f"prev_{aid}", disabled=idx == 0):
+                st.session_state[key] = idx - 1
+                st.rerun()
+            if c_r.button("›", key=f"next_{aid}", disabled=idx >= len(pages) - 1):
+                st.session_state[key] = idx + 1
+                st.rerun()
+            c_mid.image(pages[idx], use_container_width=True)
+            st.markdown(f'<div style="text-align:center; color:#9CA3AF; font-size:0.75rem; '
+                        f'margin-top:10px">Page {idx + 1} of {len(pages)}</div>',
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(preview_html(item, meta), unsafe_allow_html=True)
+            st.caption("이 미리보기는 내용을 HTML 로 옮긴 것이라 실제 문서와 줄 나눔이 다를 수 있습니다. "
+                       "Word 가 있는 PC 에서는 실제 페이지가 보입니다.")
 
-        st.code(text, language=None)
-
-        c1, c2 = st.columns(2)
-        try:
-            # 탭마다 버튼이 하나씩이라 key 가 없으면 Streamlit 이 같은 버튼으로 본다
-            c1.download_button(
-                "Word로 내려받기",
-                data=build_proposal_docx(text, meta),
-                file_name=f"{proposal_no(meta)}_{item.get('접근') or item.get('안_id')}_협업제안서.docx",
-                mime=("application/vnd.openxmlformats-officedocument"
-                      ".wordprocessingml.document"),
-                use_container_width=True,
-                key=f"docx_{item.get('안_id')}",
-            )
-        except Exception as e:
-            c1.caption(f"Word 생성 실패 — 위 본문을 복사해 쓰십시오 ({e})")
-        c2.caption("본문 오른쪽 위 아이콘으로 전체 복사할 수 있습니다.")
+    # 내려받기. PDF 는 보내는 용도(미리보기와 같다), Word 는 고치는 용도.
+    # 탭마다 버튼이 있어 key 가 없으면 Streamlit 이 같은 버튼으로 본다.
+    stem = f"{proposal_no(meta)}_{item.get('접근') or aid}_협업제안서"
+    _, c1, c2, _ = st.columns([1, 2, 2, 1])
+    if files["pdf"]:
+        c1.download_button("PDF 내려받기", data=files["pdf"], file_name=f"{stem}.pdf",
+                           mime="application/pdf", type="primary",
+                           use_container_width=True, key=f"pdf_{aid}")
+    else:
+        c1.button("PDF 내려받기", disabled=True, use_container_width=True, key=f"pdf_{aid}",
+                  help="이 PC 에 Word 가 없어 PDF 를 만들 수 없습니다.")
+    c2.download_button("Word 내려받기", data=files["docx"], file_name=f"{stem}.docx",
+                       mime=("application/vnd.openxmlformats-officedocument"
+                             ".wordprocessingml.document"),
+                       use_container_width=True, key=f"docx_{aid}")
+    st.markdown('<div style="text-align:center; color:#9CA3AF; font-size:0.8rem; margin-top:4px">'
+                'PDF 는 보내는 용도, Word 는 문장을 고칠 때 씁니다.</div>', unsafe_allow_html=True)
 
 
 def render_plan(item: dict, meta: dict) -> None:
     """
-    안 하나. 대표님이 이 화면만 보고 실행 여부를 정할 수 있어야 한다.
-
-    [읽는 순서] 명세서 4-2 — 이 문서만 보고 실행 여부를 정할 수 있어야 한다
-      ① 무엇을 파는가   ② 왜 이 안인가   ③ 얼마가 남는가
-      ④ 누가 무엇을 하는가   ⑤ 어떻게 알리는가   ⑥ 무엇이 걸리는가
-
-    돈 이야기를 역할 상자에서 떼어 ③으로 모은다. 판매가가 「협력사가 준비」
-    안에 있으면 그 돈을 협력사가 받는 것처럼 읽힌다.
+    안 하나. 화면은 요약 카드 하나와 제안서 미리보기 하나로 끝난다
+    (시안 docs/ref/피그마_예시2.pdf). 매입가·역할·홍보 일정 같은 세부는
+    화면에 두지 않고 제안서 문서에만 둔다 — 대표님은 여기서 어느 안을
+    보낼지만 고르고, 내용은 문서로 본다.
     """
-    # ── ① 무엇을 파는가 ──
-    #
-    # 이미지가 없으면 그 자리를 두지 않는다. 미구현 자리표시자가 티켓 번호와
-    # 함께 대표님 화면에 남아 있으면 안 된다.
-    # 접근을 색 배지로, 메뉴명과 떼어 보인다. 접근 이름이 메뉴명에 섞이면
-    # "단품 소보로빵" 처럼 읽혀 어느 쪽이 이름인지 헷갈린다.
     approach = item.get("접근") or item.get("안_id") or ""
-    color = APPROACH_COLOR.get(approach, "#9CA3AF")
-    head = (
-        f'<div style="border-left:6px solid {color}; padding:4px 14px; margin:4px 0 10px 0;">'
-        f'<span style="background:{color}; color:#fff; padding:2px 12px; border-radius:12px; '
-        f'font-size:0.85rem; font-weight:600; vertical-align:middle;">{approach}</span>'
-        f'<span style="font-size:1.5rem; font-weight:700; margin-left:12px; vertical-align:middle;">'
-        f'{item.get("메뉴명") or "이름 없음"}</span></div>'
-    )
-    img = item.get("메뉴_이미지")
-    if img:
-        c_txt, c_img = st.columns([2, 1])
-        with c_txt:
-            st.markdown(head, unsafe_allow_html=True)
-            st.write(item.get("구성") or "")
-        c_img.image(img, use_container_width=True)
-    else:
-        st.markdown(head, unsafe_allow_html=True)
-        st.write(item.get("구성") or "")
-
-    # ── ② 왜 이 안인가 ──
-    if item.get("선정_사유"):
-        with st.container(border=True):
-            st.markdown("##### 선정 사유")
-            st.write(item["선정_사유"])
-
-    # ── ③ 얼마가 남는가 ──
+    aid = item.get("안_id") or "?"
+    _, text_c, fill = TAB_COLOR.get(approach, ("#9CA3AF", "#374151", "#F3F4F6"))
     beer = item.get("페어링_맥주") or {}
-    per_ml = beer.get("원_ml")
-    render_price(item, per_ml)
 
-    # ── ④ 누가 무엇을 하는가 ──
-    #
-    # 품목과 조건만 남긴다. 금액은 ③ 이 다룬다.
-    st.markdown("##### 구성과 역할")
-    c1, c2 = st.columns(2)
-    with c1:
-        with st.container(border=True):
-            st.markdown("**협력사가 준비**")
-            _bullets(item.get("협력사_제공"))
-            st.write("")
-            st.caption(f"보관　{item.get('보관_조건') or '데이터 없음'}")
-            st.caption(f"납품　{item.get('1회_납품_수량') or '1회 수량 협의'}")
-    with c2:
-        with st.container(border=True):
-            st.markdown("**바틀링이 준비**")
-            st.write(f"- {beer.get('메뉴명') or '페어링 맥주 없음'} 500ml")
-            _bullets(item.get("바틀링_준비"))
-            if beer.get("이유"):
-                st.write("")
-                st.caption(f"페어링 이유　{beer['이유']}")
+    # 요약 카드 — 위 줄에 「제안안 #n  메뉴명」과 오른쪽 접근 배지, 아래에
+    # 사진(왼쪽)과 선정 배경·메뉴 설명·판매가(오른쪽). 사진이 없으면 글이
+    # 전체 폭을 쓴다. 바탕은 시안처럼 연한 회청색.
+    st.markdown(
+        f'<style>.st-key-card_{aid} {{ background:#F1F5F9; border-radius:12px; '
+        f'padding:22px 26px 18px; }}'
+        f'.st-key-card_{aid} [data-testid="stImage"] img {{ border-radius:10px; }}</style>',
+        unsafe_allow_html=True)
 
-    # ── ⑤ 어떻게 알리는가 ──
-    ev = item.get("이벤트") or {}
-    with st.container(border=True):
-        st.markdown(f"##### 홍보 — {ev.get('명칭') or '이벤트 없음'}")
-        st.write(ev.get("내용") or "")
-        st.caption(f"기간 {ev.get('기간') or '미정'}")
+    def block(title: str, body: str) -> str:
+        return (f'<div style="margin:12px 0 3px; font-size:0.78rem; color:#64748B; '
+                f'font-weight:700">{title}</div>'
+                f'<div style="line-height:1.65; color:#1F2933">{body}</div>')
 
-        schedule = item.get("홍보_일정") or []
-        if schedule:
-            # st.dataframe 은 행이 둘뿐이어도 스크롤 영역을 만든다.
-            # st.table 은 내용만큼 늘어나므로 짧은 표에 맞다.
-            st.table(schedule)
+    body = ""
+    if item.get("선정_사유"):
+        body += block("선정 배경", end_dot(item["선정_사유"]))
+    desc = item.get("구성") or ""
+    if beer.get("메뉴명"):
+        why = f" — {end_dot(beer['이유'])}" if beer.get("이유") else ""
+        desc += f"<br>함께 내는 맥주: {beer['메뉴명']}{why}"
+    body += block("메뉴 설명", desc)
+    price = item.get("판매가_제안")
+    listed = item.get("정가_합")
+    if price and listed:
+        body += block("바틀링 판매가", f"<b>{price:,}원</b> <span style='color:#94A3B8'>"
+                                     f"(따로 사면 {listed:,}원)</span>")
+    elif price:
+        body += block("바틀링 판매가", f"<b>{price:,}원</b>")
 
-        copy = item.get("홍보_문구")
-        if copy:
-            # st.code 는 우측 상단에 복사 버튼이 붙는다.
-            #
-            # 문구의 말투까지 프롬프트로 규정하지 않는다. 어떤 문구가 먹히는지는
-            # SNS 를 다뤄 본 사람이 안다. 초안임을 밝히고 다듬어 쓰게 둔다.
-            # 루브릭 「홍보 실효성」 채점(5-2)에서 같은 지적이 반복되면
-            # 그때 constraints 로 올린다 (명세서 1-5).
-            st.code(copy, language=None)
-            st.caption("초안입니다. 다듬어 쓰세요.")
-        tags = item.get("해시태그") or []
-        if tags:
-            st.caption(" ".join(tags))
-
-    # ── ⑥ 무엇이 걸리는가 ──
-    #
-    # 준비물은 펼쳐 두고, 길이가 크게 튀는 둘만 접는다.
-    with st.container(border=True):
-        st.markdown("##### 실행 준비물")
-        _bullets(item.get("실행_준비물"))
-
-    risks = item.get("예상_리스크") or []
-    if risks:
-        with st.expander(f"예상 리스크 {len(risks)}건"):
-            _bullets(risks)
-
-    basis = item.get("추천_근거") or {}
-    if basis:
-        with st.expander("추천 근거"):
-            for k, v in basis.items():
-                st.markdown(f"**{k.replace('_', ' ')}** — {v}")
+    # 접근 배지를 제목 왼쪽에 둔다 (9/21 — 「제안안 #n」 자리에 배지).
+    with st.container(key=f"card_{aid}"):
+        st.markdown(
+            f'<div style="display:flex; align-items:center; gap:12px">'
+            f'<span style="background:{fill}; color:{text_c}; padding:3px 12px; border-radius:8px; '
+            f'font-size:0.78rem; font-weight:700; white-space:nowrap">{approach} 제안</span>'
+            f'<span style="font-size:1.25rem; font-weight:700; flex:1">'
+            f'{item.get("메뉴명") or "이름 없음"}</span></div>',
+            unsafe_allow_html=True)
+        img = item.get("메뉴_이미지")
+        if img:
+            c_img, c_txt = st.columns([2, 3], gap="large")
+            c_img.image(img, use_container_width=True)
+            c_txt.markdown(body, unsafe_allow_html=True)
+        else:
+            st.markdown(body, unsafe_allow_html=True)
 
     render_proposal(item, meta)
 
@@ -483,9 +428,6 @@ def render_result(result: dict, meta: dict) -> None:
     if not plans:
         st.error("안이 비어 있습니다. 다시 생성해 주세요.")
         return
-
-    # 고르는 자리와 결과를 확실히 끊는다
-    st.divider()
 
     # 순위가 아니라 접근으로 가른다. 단품·세트·포장은 구성이 달라 우열이 없고,
     # 어느 것을 할지는 대표님이 정하신다. 탭마다 제안서가 붙는다.
@@ -536,7 +478,7 @@ def render_result(result: dict, meta: dict) -> None:
     for tab, item in zip(tabs, plans):
         with tab:
             # 탭 내용을 상자로 감싼다. Streamlit 상자는 테두리 색을 따로 못 주니
-            # 색은 안쪽 배지와 왼쪽 띠(render_plan)가 낸다.
+            # 색은 안쪽 배지(render_plan)가 낸다.
             with st.container(border=True):
                 render_plan(item, meta)
 
@@ -575,61 +517,71 @@ if not partners:
 
 labels = {p["id"]: f"{p['name']} ({p['category']})" for p in partners}
 
-# 고를 것이 몇 개 안 되므로 폭을 다 쓰지 않는다. 제목부터 버튼까지 가운데 열에
-# 두고 양옆을 비운다. 열 안에서는 왼쪽 정렬 그대로다.
-_, c_in, _ = st.columns([1.5, 2, 1.5])
-with c_in:
-    st.markdown("<h1 style='text-align:center; margin-bottom:2rem'>기획안 생성</h1>",
-                unsafe_allow_html=True)
-    pid = st.selectbox("협력사", list(labels), format_func=labels.get)
-
-    chosen = next(p for p in partners if p["id"] == pid)
-
-    rnd = round_of(chosen)
-    st.caption(f"{rnd}차 기획안 — "
-               + ("협력사 입력 전입니다. 후기에서 확인한 메뉴·판매가로 만듭니다."
-                  if rnd == 1 else "협력사가 폼으로 알려준 값으로 만듭니다."))
+# 입력부는 시안(docs/ref/피그마_예시2.pdf)의 흰 카드 모양이다. 문구는 시안
+# 그대로 두었고 나중에 고친다 (9/21).
+# 명세서 4-2 의 「희망 기간」 방식은 아직 없어 고르는 칸을 두지 않는다 (T45).
+page_header("기획안 생성", "AI로 최적의 기획안을 빠르게 생성합니다.")
+st.markdown(
+    '<style>.st-key-param_card { background:#FFFFFF; border:1px solid #E5E7EB; '
+    'border-radius:14px; padding:26px 30px 22px 20px; }'
+    '.st-key-param_card label p { font-weight:700; color:#1F2933; }'
+    '.st-key-param_card label p::after { content:" *"; color:#EF4444; }'
+    # 협력사 셀렉트박스만 좁힌다. 열 폭은 그대로 두고 입력 칸의 최대 폭만 잡는다 —
+    # 가장 긴 이름 「테스트용 제과점 (제과·디저트)」 이 한 줄에 들어오는 폭 (9/22).
+    '.st-key-partner_box, .st-key-partner_box [data-testid="stSelectbox"],'
+    ' .st-key-partner_box [data-baseweb="select"] { max-width: 280px !important; }'
+    # 카드 왼쪽 여백 20px 에 아이콘. 입력 칸 줄은 아이콘 폭(26px)+간격(10px)만큼
+    # 들여서 제목 글자·라벨이 같은 세로선에 서게 한다. 셀렉트박스는 안쪽 여백만큼
+    # (10px) 왼쪽으로 당겨 상자 안 글자도 그 선에 맞춘다 (9/22).
+    '.st-key-param_fields { padding-left: 36px; }'
+    '.st-key-partner_box [data-baseweb="select"],'
+    ' .st-key-param_fields [data-testid="stDateInput"] [data-baseweb="input"] { margin-left: -10px; }</style>',
+    unsafe_allow_html=True)
+with st.container(key="param_card"):
+    st.markdown(
+        '<div style="display:flex; align-items:center; gap:10px; margin:0 0 14px 0">'
+        '<span style="background:#DBEAFE; color:#2563EB; border-radius:8px; width:26px; '
+        'height:26px; display:inline-flex; align-items:center; justify-content:center">'
+        '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+        'stroke-width="2.2" stroke-linecap="round"><path d="M14 4l6 6-10 10-6-6z"/>'
+        '<path d="M4 20l3-3M14 4l2-2M20 10l2-2"/></svg></span>'
+        '<span style="font-weight:800; color:#0F172A">기획안 생성 조건 설정</span></div>',
+        unsafe_allow_html=True)
+    with st.container(key="param_fields"):
+        c1, c2 = st.columns(2, gap="large")
+        with c1:
+            with st.container(key="partner_box"):
+                pid = st.selectbox("협업 제안 대상", list(labels), format_func=labels.get)
+            chosen = next(p for p in partners if p["id"] == pid)
+            # 회차·협의 가능 시간·납품 요일 캡션은 화면에 두지 않는다 (9/22).
+            # 회차는 결과의 「생성 조건」에 있고, 납품 요일은 체인 입력에 그대로 들어간다.
+        with c2:
+            target = st.date_input("협업 시작 희망일",
+                                   value=datetime.now(KST).date() + timedelta(days=7))
 
     has_menus = bool(chosen.get("menu_prices"))
     if not has_menus:
         st.info("메뉴·판매가가 아직 없습니다. 들어오면 만들 수 있습니다.")
 
-    # 협의 가능한 때를 여기서 보인다. 매입가와 납품 수량은 결국 통화로
-    # 정해야 하는데, 그 값이 DB 에만 있으면 찾아볼 생각을 못 한다.
-    if chosen.get("contact_slots"):
-        st.caption(f"협의 가능 — {chosen['contact_slots']}")
-
-    # 납품 가능 요일도 함께 보인다.
-    #
-    # 실행일이 그 요일과 어긋나면 당일 만든 것을 받아야 하는 메뉴는 팔 수가
-    # 없다. 체인은 이것을 고칠 수 없다 — 실행일은 여기서 사람이 고르는
-    # 값이라 메뉴를 몇 번 다시 만들어도 같은 문제가 남는다.
-    if chosen.get("available_slots"):
-        st.caption(f"납품 가능 — {chosen['available_slots']}")
-
-    # 명세서 4-2 는 「날짜 지정 / 희망 기간」 두 방식을 둔다.
-    # 희망 기간은 (1)을 요일 수만큼 반복 호출해야 해 T45(W4)로 미뤘다.
-    mode = st.radio("실행일", ["날짜 지정", "희망 기간"], horizontal=True)
-    is_range = mode == "희망 기간"
-    target = st.date_input(
-        "실행 희망일", label_visibility="collapsed",
-        value=datetime.now(KST).date() + timedelta(days=7),
-        disabled=is_range)
-
-    if is_range:
-        st.caption("희망 기간 방식은 아직 준비 중입니다. 날짜를 지정해 주세요.")
-
-    st.write("")
-    go = st.button("기획안 생성", type="primary",
-                   use_container_width=True,
-                   disabled=is_range or not has_menus)
-
-st.divider()
+    _, c_btn = st.columns([3, 1])
+    go = c_btn.button("기획안 최적 생성 시작", type="primary", icon=":material/auto_awesome:",
+                      use_container_width=True, disabled=not has_menus)
 
 if go:
     generate(chosen, target)
 
 if st.session_state.get(SS_RESULT):
-    render_result(st.session_state[SS_RESULT], st.session_state[SS_META])
+    meta = st.session_state[SS_META]
+    n_plans = len((st.session_state[SS_RESULT].get("final") or {}).get("안") or [])
+    st.markdown(
+        f'<div style="margin:18px 0 6px; padding:14px 18px; border:1.5px solid #34D399; '
+        f'background:#ECFDF5; border-radius:10px; color:#065F46; font-weight:700; '
+        f'display:flex; align-items:center; gap:10px">'
+        f'<span style="background:#059669; color:#fff; border-radius:50%; width:20px; height:20px; '
+        f'display:inline-flex; align-items:center; justify-content:center; font-size:12px">✓</span>'
+        f'분석 완료 - AI 기반 최적 제안 {n_plans}종이 도출되었습니다. '
+        f'하단 탭을 통해 세부 제안과 문서를 검토해 보세요.</div>',
+        unsafe_allow_html=True)
+    render_result(st.session_state[SS_RESULT], meta)
 elif not go:
-    st.info("협력사와 실행일을 고르고 생성을 누르면 약 20초 뒤 기획안 3안이 나옵니다.")
+    st.info("협력사와 실행일을 고르고 생성을 누르면 약 30초 뒤 기획안 3안이 나옵니다.")

@@ -326,7 +326,7 @@ render_preview_card()
 st.markdown(
     '<div class="trust-row">'
     f'<span class="trust-item">{_ICON_SVG["refresh"]}데이터는 5분마다 새로고침</span>'
-    f'<span class="trust-item">{_ICON_SVG["bolt"]}기획안은 약 17초면 완성</span>'
+    f'<span class="trust-item">{_ICON_SVG["bolt"]}기획안은 약 30초면 완성</span>'
     f'<span class="trust-item">{_ICON_SVG["pin"]}반경 1km 후보를 자동 점수화</span>'
     '</div>',
     unsafe_allow_html=True,
@@ -340,7 +340,7 @@ st.markdown('<div class="section-title">4개 화면으로 협업 기획을 끝�
 
 cards = [
     ("search", "파트너 추천", "반경 1km 점포를 점수화해 협업 후보를 제시합니다.", "pages/3_파트너_추천.py"),
-    ("edit", "기획안 생성", "메뉴·이벤트·홍보안을 한 번에 만듭니다. 약 17초 소요.", "pages/2_기획안_생성.py"),
+    ("edit", "기획안 생성", "메뉴·이벤트·홍보안을 한 번에 만듭니다. 약 30초 소요.", "pages/2_기획안_생성.py"),
     ("chart", "상권 대시보드", "뚝섬 실시간 인구·결제 현황을 봅니다.", "pages/4_상권_대시보드.py"),
     ("gear", "관리", "맥주 라인업, 프롬프트, 제약조건을 수정합니다.", "pages/9_관리.py"),
 ]
