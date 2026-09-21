@@ -17,6 +17,7 @@
   9/19 부터 (4)는 순위를 매기지 않는다. 대표가 세 안 중 하나를 고르고
   그 안이 제안서가 되므로, 어느 안을 넣어도 이 함수가 동작해야 한다.
 """
+import os
 import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
@@ -90,6 +91,17 @@ BOTTLING_INTRO = [
     "별도의 조리 부담 없이 기존 메뉴를 새로운 판매 공간에서 소개할 수 있는 협업을 제안드립니다.",
 ]
 
+# 1차 제안서의 고정 문구 (9/21 검토 반영). 모르는 상대라 "작게 해 보자" 는 틀과,
+# 협력사 이름이 어디에 어떻게 나오는지를 제안 수준으로 적는다. 여기 적힌 것은
+# 바틀링이 실제로 해 줄 수 있는 것이어야 한다 — 대표 확인 대상.
+PILOT_LINE = ("먼저 짧게 시범으로 해 보고, 손님 반응을 보고 이어갈지 함께 정하는 것을 "
+              "제안드립니다.")
+EXPOSURE_OFFER = [
+    "매장 메뉴판과 현장 게시물에 협력사 상호 표기",
+    "바틀링 인스타그램 게시물에 협력사 계정 태그",
+    "판매 기간이 끝나면 판매량과 손님 반응 공유",
+]
+
 # 접근별 판매 방식. 협력사에게 "손님에게 어떻게 팔리나" 를 한 줄로.
 SALE_STYLE = {
     "단품": "안주 단품으로 판매합니다. 맥주는 손님이 셀프탭에서 따로 따릅니다.",
@@ -130,14 +142,22 @@ def _sections(item: dict, meta: dict) -> list[dict]:
     out: list[dict] = []
 
     # Ⅰ. 한눈에 보기
+    #
+    # 맥주 라벨은 접근에 따라 다르다. 단품·포장은 맥주가 값에 안 들어가는데
+    # "함께 내는 맥주" 라 쓰면 세트처럼 읽힌다 (9/21 검토).
+    # 실행일과 판매 기간을 나눠 적는다 — 실행일은 시작일이고 판매는 이벤트
+    # 기간(3일 이상, C003) 동안이라 하루짜리로 읽히면 납품 수량 판단이 틀어진다.
     beer_line = beer.get("메뉴명") or "데이터 없음"
-    out.append({"title": "협업 제안 한눈에 보기", "items": [
+    beer_label = "함께 내는 맥주" if approach == "세트" else "추천 맥주"
+    glance: list = [
         ("제안 메뉴", menu),
-        ("구성", item.get("구성") or ""),
-        ("함께 내는 맥주", beer_line),
+        (beer_label, beer_line),
         ("협업 방식", "협력사 완제품을 바틀링이 매입해 판매"),
-        ("실행 예정일", meta.get("target_date") or ""),
-    ]})
+        ("시작일", meta.get("target_date") or ""),
+    ]
+    if ev.get("기간"):
+        glance.append(("판매 기간", ev["기간"]))
+    out.append({"title": "협업 제안 한눈에 보기", "items": glance})
 
     if first:
         out.append({"title": "바틀링 소개", "items": list(BOTTLING_INTRO)})
@@ -146,12 +166,14 @@ def _sections(item: dict, meta: dict) -> list[dict]:
     if item.get("배경"):
         out.append({"title": "이번 협업을 제안한 이유", "items": [end_dot(item["배경"])]})
 
-    # Ⅳ. 메뉴
+    # Ⅳ. 메뉴 — 메뉴명은 Ⅰ에 있으니 여기선 구성부터. 단품은 구성이 메뉴명과
+    # 같아("소보로빵 1개") 두 번 나오므로 뺀다.
     why = f" — {end_dot(beer['이유'])}" if beer.get("이유") else ""
-    menu_items: list = [
-        ("메뉴명", menu),
-        ("구성", item.get("구성") or ""),
-        ("함께 내는 맥주", f"{beer_line}{why}"),
+    menu_items: list = []
+    if approach != "단품" and item.get("구성"):
+        menu_items.append(("구성", item["구성"]))
+    menu_items += [
+        (beer_label, f"{beer_line}{why}"),
         ("판매 방식", SALE_STYLE.get(approach, "")),
     ]
     if listed and set_price:
@@ -181,8 +203,14 @@ def _sections(item: dict, meta: dict) -> list[dict]:
         ("바틀링이 얻는 것", end_dot(gains.get("바틀링")) or "데이터 없음"),
     ]
     if first:
-        offer += [("매입가", "협의해서 정합니다."),
-                  ("납품 수량·보관", "협의해서 정합니다.")]
+        # 모르는 상대에게는 "작게 해 보자" 는 틀이 문턱을 낮춘다. 협력사가 얻는
+        # 것도 "홍보 효과" 가 아니라 이름이 어디에 어떻게 나오는지로 적는다
+        # (9/21 검토 — 블랙스미스 제안서와 비교). 확정이 아니라 제안이다.
+        offer = ([PILOT_LINE] + offer
+                 + [("매입가", "협의해서 정합니다."),
+                    ("납품 수량·보관", "협의해서 정합니다."),
+                    "협력사 이름은 이렇게 알리겠습니다 (제안):"]
+                 + [("-", x) for x in EXPOSURE_OFFER])
         out.append({"title": "협력사에 제안하는 내용", "items": offer})
     else:
         if deal.get("바틀링_제안_매입가"):
@@ -207,14 +235,46 @@ def _sections(item: dict, meta: dict) -> list[dict]:
         if todo:
             out.append({"title": "협의가 필요한 사항", "items": [("-", x) for x in todo]})
 
-    # Ⅶ. 다음 단계
+    # Ⅶ. 다음 단계 — 회신 → 조건 확정 → 홍보 시작 → 판매 → 결과 공유.
+    # 회신 기한이 없으면 협력사가 홍보 시작일 뒤에 연락할 수 있고, 그러면
+    # 사전 홍보를 못 한다 (9/21 검토). 기한은 홍보 시작일에서 나온다 — 며칠
+    # 전이어야 하는지는 정할 근거가 없어 "홍보 시작 전" 으로만 적는다.
     if first:
-        out.append({"title": "다음 단계", "items": [
-            "관심이 있으시면 연락 주십시오. 세부 조건은 만나서 함께 정하겠습니다.",
-            ("연락", "바틀링 대표 (연락처는 보내기 전에 적습니다)"),
-        ]})
+        promo_start = _first_date(item.get("홍보_일정") or [])
+        steps: list = [
+            ("회신", f"홍보 시작({promo_start}) 전까지 연락 주시면 일정이 맞습니다."
+                    if promo_start else "관심이 있으시면 연락 주십시오."),
+            ("조건 확정", "만나서 매입가·납품 수량·보관을 함께 정합니다."),
+        ]
+        if promo_start:
+            steps.append(("홍보 시작", promo_start))
+        if ev.get("기간"):
+            steps.append(("판매", ev["기간"]))
+        steps.append(("결과 공유", "판매 기간이 끝난 뒤"))
+        steps.append(("연락", _contact()))
+        out.append({"title": "다음 단계", "items": steps})
 
     return out
+
+
+def _first_date(schedule: list) -> str | None:
+    """홍보 일정에서 가장 이른 날짜(YYYY-MM-DD). 날짜로 적히지 않은 시점은 건너뛴다."""
+    dates = []
+    for s in schedule:
+        m = re.search(r"\d{4}-\d{2}-\d{2}", str(s.get("시점") or ""))
+        if m:
+            dates.append(m.group())
+    return min(dates) if dates else None
+
+
+def _contact() -> str:
+    """
+    연락처 줄. 공개 저장소라 코드에 적지 않고 환경변수 BOTTLING_CONTACT 로 받는다
+    (로컬 .env, 배포는 Streamlit Cloud secrets). 없으면 자리표시를 남겨
+    빈칸째 나가지 않게 한다.
+    """
+    contact = os.getenv("BOTTLING_CONTACT")
+    return f"바틀링 대표 · {contact}" if contact else "바틀링 대표 (연락처는 보내기 전에 적습니다)"
 
 
 def _head(meta: dict) -> dict:
