@@ -523,38 +523,41 @@ labels = {p["id"]: f"{p['name']} ({p['category']})" for p in partners}
 page_header("기획안 생성", "AI로 최적의 기획안을 빠르게 생성합니다.")
 st.markdown(
     '<style>.st-key-param_card { background:#FFFFFF; border:1px solid #E5E7EB; '
-    'border-radius:14px; padding:26px 30px 22px; }'
+    'border-radius:14px; padding:26px 30px 22px 20px; }'
     '.st-key-param_card label p { font-weight:700; color:#1F2933; }'
-    '.st-key-param_card label p::after { content:" *"; color:#EF4444; }</style>',
+    '.st-key-param_card label p::after { content:" *"; color:#EF4444; }'
+    # 협력사 셀렉트박스만 좁힌다. 열 폭은 그대로 두고 입력 칸의 최대 폭만 잡는다 —
+    # 가장 긴 이름 「테스트용 제과점 (제과·디저트)」 이 한 줄에 들어오는 폭 (9/22).
+    '.st-key-partner_box, .st-key-partner_box [data-testid="stSelectbox"],'
+    ' .st-key-partner_box [data-baseweb="select"] { max-width: 280px !important; }'
+    # 카드 왼쪽 여백 20px 에 아이콘. 입력 칸 줄은 아이콘 폭(26px)+간격(10px)만큼
+    # 들여서 제목 글자·라벨이 같은 세로선에 서게 한다. 셀렉트박스는 안쪽 여백만큼
+    # (10px) 왼쪽으로 당겨 상자 안 글자도 그 선에 맞춘다 (9/22).
+    '.st-key-param_fields { padding-left: 36px; }'
+    '.st-key-partner_box [data-baseweb="select"],'
+    ' .st-key-param_fields [data-testid="stDateInput"] [data-baseweb="input"] { margin-left: -10px; }</style>',
     unsafe_allow_html=True)
 with st.container(key="param_card"):
     st.markdown(
-        '<div style="display:flex; align-items:center; gap:10px; margin-bottom:14px">'
+        '<div style="display:flex; align-items:center; gap:10px; margin:0 0 14px 0">'
         '<span style="background:#DBEAFE; color:#2563EB; border-radius:8px; width:26px; '
         'height:26px; display:inline-flex; align-items:center; justify-content:center">'
         '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
         'stroke-width="2.2" stroke-linecap="round"><path d="M14 4l6 6-10 10-6-6z"/>'
         '<path d="M4 20l3-3M14 4l2-2M20 10l2-2"/></svg></span>'
-        '<span style="font-weight:800; color:#0F172A">신규 기획안 파라미터 구성</span></div>',
+        '<span style="font-weight:800; color:#0F172A">기획안 생성 조건 설정</span></div>',
         unsafe_allow_html=True)
-    c1, c2 = st.columns(2, gap="large")
-    with c1:
-        pid = st.selectbox("협력처 (파트너사)", list(labels), format_func=labels.get)
-        chosen = next(p for p in partners if p["id"] == pid)
-        rnd = round_of(chosen)
-        st.caption(f"{rnd}차 기획안 — "
-                   + ("협력사 입력 전입니다. 후기에서 확인한 메뉴·판매가로 만듭니다."
-                      if rnd == 1 else "협력사가 폼으로 알려준 값으로 만듭니다."))
-        # 협의 가능한 때와 납품 가능 요일. 매입가·납품 수량은 결국 통화로
-        # 정하고, 실행일이 납품 요일과 어긋나면 체인이 고칠 수 없다 —
-        # 실행일은 여기서 사람이 고르는 값이다.
-        if chosen.get("contact_slots"):
-            st.caption(f"협의 가능 — {chosen['contact_slots']}")
-        if chosen.get("available_slots"):
-            st.caption(f"납품 가능 — {chosen['available_slots']}")
-    with c2:
-        target = st.date_input("협업 희망일 선택",
-                               value=datetime.now(KST).date() + timedelta(days=7))
+    with st.container(key="param_fields"):
+        c1, c2 = st.columns(2, gap="large")
+        with c1:
+            with st.container(key="partner_box"):
+                pid = st.selectbox("협업 제안 대상", list(labels), format_func=labels.get)
+            chosen = next(p for p in partners if p["id"] == pid)
+            # 회차·협의 가능 시간·납품 요일 캡션은 화면에 두지 않는다 (9/22).
+            # 회차는 결과의 「생성 조건」에 있고, 납품 요일은 체인 입력에 그대로 들어간다.
+        with c2:
+            target = st.date_input("협업 시작 희망일",
+                                   value=datetime.now(KST).date() + timedelta(days=7))
 
     has_menus = bool(chosen.get("menu_prices"))
     if not has_menus:
@@ -581,4 +584,4 @@ if st.session_state.get(SS_RESULT):
         unsafe_allow_html=True)
     render_result(st.session_state[SS_RESULT], meta)
 elif not go:
-    st.info("협력사와 실행일을 고르고 생성을 누르면 약 20초 뒤 기획안 3안이 나옵니다.")
+    st.info("협력사와 실행일을 고르고 생성을 누르면 약 30초 뒤 기획안 3안이 나옵니다.")

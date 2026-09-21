@@ -184,6 +184,17 @@ def render_registered(row: dict, guessed_category: str):
     st.page_link("pages/2_기획안_생성.py", label="기획안 생성으로 이동", icon="📝")
 
 
+@st.dialog("알림")
+def warn_one_pick():
+    """추천 표에서 둘 이상 체크했을 때 화면 가운데 띄우는 알림."""
+    st.markdown(
+        '<div style="line-height:1.8; margin:6px 0 14px">'
+        '한 곳만 선택할 수 있습니다.<br>다른 곳을 선택하려면 현재 선택을 먼저 해제해 주세요.</div>',
+        unsafe_allow_html=True)
+    if st.button("확인", type="primary", use_container_width=True):
+        st.rerun()
+
+
 def render_map(df: pd.DataFrame, highlight_store_id: str | None = None, top_n: int = 60):
     if df.empty:
         st.info("지도에 표시할 후보가 없습니다.")
@@ -296,21 +307,36 @@ with tab_rec:
             # 표 왼쪽 끝에 숨은 체크 칸을 눌러야 해서 눈에 안 띄었다 — 셀을 눌러도
             # 아무 일이 없어 등록이 안 되는 줄 알았다 (9/21). 등록 여부 열은 뺐다.
             # 이미 등록된 곳을 고르면 아래에서 경고로 알린다. 다른 열은 편집 잠금.
+            #
+            # 한 곳만 고른다. 표 안의 체크박스라 두 번째 클릭 자체는 못 막으므로,
+            # 둘 이상 체크되면 먼저 고른 것만 남기고 표를 다시 그린 뒤 팝업으로
+            # 알린다 (9/22). 고른 곳은 행 번호가 아니라 store_id 로 기억한다 —
+            # 반경·업종 필터를 바꾸면 행 번호가 밀린다. 표를 다시 그리려면 key 를
+            # 바꿔야 해서 버전 번호를 key 에 붙인다.
+            if st.session_state.pop("rec_pick_warn", False):
+                warn_one_pick()
+            pick_id = st.session_state.get("rec_pick_id")
+            ver = st.session_state.get("rec_table_ver", 0)
             view = filtered[["순위", "name", "tier", "distance_m", "score"]].rename(
                 columns={"name": "상호", "tier": "업종", "distance_m": "거리(m)", "score": "점수"}
             )
-            view["선택"] = False
+            view["선택"] = (filtered["store_id"] == pick_id).tolist()
             edited = st.data_editor(
-                view, use_container_width=True, hide_index=True, key="rec_table",
+                view, use_container_width=True, hide_index=True, key=f"rec_table_{ver}",
                 disabled=[c for c in view.columns if c != "선택"],
                 column_config={"선택": st.column_config.CheckboxColumn(
                     "선택", help="체크하면 아래에 상세와 등록 버튼이 나옵니다")},
             )
 
-        picked = edited.index[edited["선택"]].tolist()
-        selected_idx = picked[0] if picked else None
-        if len(picked) > 1:
-            st.caption("한 곳씩 봅니다. 위에서부터 첫 번째로 체크한 곳을 보여줍니다.")
+        picked_ids = filtered.loc[edited["선택"].tolist(), "store_id"].tolist()
+        if len(picked_ids) > 1:
+            keep = pick_id if pick_id in picked_ids else picked_ids[0]
+            st.session_state["rec_pick_id"] = keep
+            st.session_state["rec_table_ver"] = ver + 1
+            st.session_state["rec_pick_warn"] = True
+            st.rerun()
+        st.session_state["rec_pick_id"] = picked_ids[0] if picked_ids else None
+        selected_idx = filtered.index[filtered["store_id"] == picked_ids[0]][0] if picked_ids else None
 
         st.divider()
         if selected_idx is None:
