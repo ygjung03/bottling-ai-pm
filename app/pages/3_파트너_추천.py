@@ -26,7 +26,7 @@ import streamlit as st
 from app.auth import require_owner
 from context.builder import INDUSTRY_MAP
 from db.client import get_client
-from recommender.complement import TIER_LABEL, guess_industry_category, tier_label
+from recommender.complement import TIER_LABELS, guess_industry_category, tier_label
 from recommender.scoring import score_store
 
 st.set_page_config(page_title="파트너 추천", page_icon="🔍", layout="wide")
@@ -34,16 +34,24 @@ require_owner()
 
 client = get_client()
 
-BOTTLING_COORD = (37.5318919, 127.0679483)  # API검증결과 V8 실측 확정값
+BOTTLING_COORD = (37.5318919, 127.0679483)  
 RADIUS_M = 1000
 
+# [9/21] 대표님 「협업 업종 적합도 조사」로 업종 구분이 6개 → 12개로 증가
+# (recommender/complement.py TIER_LABELS 참조). 색도 그만큼 늘려 구별.
 TIER_COLOR = {
     "제과·디저트": "#F59E0B",
-    "피자·튀김·그릴": "#EF4444",
-    "분식·스낵": "#22C55E",
+    "피자·치킨": "#EF4444",
+    "수제버거": "#B91C1C",
+    "분식": "#22C55E",
+    "토스트·샌드위치·샐러드": "#84CC16",
     "카페": "#2F6FED",
-    "한식·중식류": "#9CA3AF",
-    "주류 판매점": "#6B21A8",
+    "아이스크림·빙수": "#38BDF8",
+    "한식": "#9CA3AF",
+    "중식": "#FB923C",
+    "일식": "#F472B6",
+    "양식": "#A78BFA",
+    "주점": "#6B21A8",
 }
 
 
@@ -64,14 +72,13 @@ def load_scored_candidates() -> pd.DataFrame:
                 "lat,lng,distance_m,score,score_detail")
         .not_.is_("score", "null")
         .order("score", desc=True)
-        .limit(5000)  # PostgREST 기본 상한(1000)에 조용히 잘리는 걸 막는 명시적 상한.
-                      # 반경 1km 기준 현재 830여건 — 5000이면 당분간 여유 충분.
+        .limit(5000)  
         .execute()
     )
     df = pd.DataFrame(res.data)
     if df.empty:
         return df
-    df["tier"] = df["score_detail"].apply(lambda d: tier_label((d or {}).get("S_complement")))
+    df["tier"] = df.apply(lambda r: tier_label(r.get("category_m"), r.get("category_s")), axis=1)
     return df
 
 
@@ -138,7 +145,7 @@ def create_invite(name: str, category: str, lat=None, lng=None) -> dict | None:
 
     try:
         rows = client.table("partners").insert(payload).execute().data
-        load_partner_names.clear()   # 추천 표의 「등록」 열이 바로 바뀌게
+        load_partner_names.clear() 
         return rows[0] if rows else None
     except Exception as e:
         st.error(f"등록 실패 — {e}")
@@ -165,8 +172,6 @@ def render_next_step(candidate_name: str, guessed_category: str, lat=None, lng=N
 def render_registered(row: dict, guessed_category: str):
     """등록 직후 안내. 버튼 경로와 직접 입력 폼 경로가 같이 쓴다."""
     st.success("협력사를 등록했습니다. 기획안 생성에서 고를 수 있습니다.")
-    # 협력사 입력은 구글 폼으로 받는다. 이 코드는 폼의 「확인 코드」 문항에
-    # 미리 채워 보내는 값이다 (docs/협력사_구글폼_문항.md).
     st.code(row.get("invite_code") or "", language=None)
     st.caption(
         f"위 코드는 협력사가 관심을 보인 뒤 구글 폼을 보낼 때 확인 코드로 쓰입니다. "
@@ -253,8 +258,8 @@ with tab_rec:
         with c1:
             radius = st.slider("반경 (m)", 200, 1000, 1000, step=100, key="rec_radius")
             tiers = st.multiselect(
-                "업종", list(TIER_LABEL.values()),
-                default=list(TIER_LABEL.values()), key="rec_tiers",
+                "업종", TIER_LABELS,
+                default=TIER_LABELS, key="rec_tiers",
             )
             hide_registered = st.checkbox(
                 "이미 등록된 협력사 숨기기", value=True, key="rec_hide_registered",
@@ -410,7 +415,7 @@ with tab_menu:
     menu_name = st.text_input("메뉴 이름", placeholder="예: 두바이 초콜릿", key="menu_name")
     menu_tiers = st.multiselect(
         "관련 업종 (메뉴 성격에 맞게 골라주세요)",
-        list(TIER_LABEL.values()), default=list(TIER_LABEL.values()),
+        TIER_LABELS, default=TIER_LABELS,
         key="menu_tiers",
     )
 
@@ -421,8 +426,6 @@ with tab_menu:
         for _, r in matched.head(20).iterrows():
             store_name = r["name"]
             search_q = f"{store_name} {menu_name}"
-            # map.naver.com/p/search 는 빈 화면이 뜨는 경우가 있어 통합검색으로 변경
-            # 메뉴로 후보를 실제로 거르는 기능은 X — T48(네이버 지역검색 API) 대기 중.
             url = f"https://search.naver.com/search.naver?query={quote(search_q)}"
             st.markdown(f"- **{store_name}** ({r['tier']}, {int(r['distance_m'])}m) — [네이버에서 검색]({url})")
         if matched.empty:
