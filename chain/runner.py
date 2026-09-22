@@ -191,6 +191,9 @@ def run(context: str, target_date: str, beer_list: str,
                         p1_output=_j(result["p1"]),
                         p2_output=_j(result["p2"]),
                         p3_output=_j(result["p3"]),
+                        # 행사 원본도 준다. (3)의 이벤트에는 판매 기간만 있어
+                        # 배경에 행사 날짜를 쓸 때 그것과 섞였다 (9/22).
+                        events=events,
                         beer_list=beer_list,
                         partner_resources=partner_res,
                         rec_reason=rec_reason,
