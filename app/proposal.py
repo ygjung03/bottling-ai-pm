@@ -21,6 +21,7 @@ import os
 import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 KST = timezone(timedelta(hours=9))
 
@@ -425,6 +426,101 @@ def build_proposal_docx(item: dict, meta: dict) -> bytes:
 
     buf = BytesIO()
     doc.save(buf)
+    return buf.getvalue()
+
+
+FONT_DIR = Path(__file__).resolve().parent / "fonts"
+
+
+def _register_fonts() -> None:
+    """나눔고딕(OFL, app/fonts 동봉)을 reportlab 에 등록한다. 여러 번 불러도 된다."""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    if "Nanum" in pdfmetrics.getRegisteredFontNames():
+        return
+    pdfmetrics.registerFont(TTFont("Nanum", str(FONT_DIR / "NanumGothic-Regular.ttf")))
+    pdfmetrics.registerFont(TTFont("Nanum-Bold", str(FONT_DIR / "NanumGothic-Bold.ttf")))
+    pdfmetrics.registerFontFamily("Nanum", normal="Nanum", bold="Nanum-Bold",
+                                  italic="Nanum", boldItalic="Nanum-Bold")
+
+
+def build_proposal_pdf(item: dict, meta: dict) -> bytes:
+    """
+    제안서를 PDF 로 직접 만든다 (reportlab). Word 판과 같은 절 목록·같은 모양이다.
+
+    전에는 Word 파일을 Word 프로그램으로 바꿔 PDF 를 만들어서(docx2pdf) Word 가 있는
+    윈도우에서만 됐고 Streamlit Cloud 에서는 미리보기가 HTML 근사판이었다. 이제
+    어디서나 같은 PDF 가 나온다 (9/22). Word 파일은 문장을 고칠 때 쓰는 편집용으로 남는다.
+    """
+    from io import BytesIO
+    from xml.sax.saxutils import escape
+
+    from reportlab.lib.enums import TA_LEFT
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import (Paragraph, SimpleDocTemplate, Spacer, Table,
+                                    TableStyle)
+
+    _register_fonts()
+    h = _head(meta)
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=2.2 * cm, rightMargin=2.2 * cm,
+                            topMargin=2.0 * cm, bottomMargin=2.0 * cm,
+                            title=h["title"], author="바틀링")
+
+    body = ParagraphStyle("body", fontName="Nanum", fontSize=10, leading=15, alignment=TA_LEFT)
+    small = ParagraphStyle("small", parent=body, fontSize=8, textColor="#6B7280")
+    title = ParagraphStyle("title", parent=body, fontName="Nanum-Bold", fontSize=22, leading=28,
+                           spaceBefore=4, spaceAfter=6)
+    h2 = ParagraphStyle("h2", parent=body, fontName="Nanum-Bold", fontSize=12, leading=16,
+                        spaceBefore=10, spaceAfter=4)
+    label = ParagraphStyle("label", parent=body, fontName="Nanum-Bold")
+    bullet = ParagraphStyle("bullet", parent=body, leftIndent=0.9 * cm, bulletIndent=0.4 * cm)
+
+    flow = [Paragraph(escape(h["no"]), small), Paragraph(escape(h["title"]), title),
+            Paragraph(escape(h["sub"]), body), Spacer(1, 10)]
+
+    for no, sec in enumerate(_sections(item, meta), 1):
+        flow.append(Paragraph(escape(f"{no}. {sec['title']}"), h2))
+        rows = []           # 이어지는 「항목 | 값」 줄은 표 하나로 묶는다 — 값이 길면 줄바꿈이
+                            # 값 칸 안에서만 일어나 Word 의 내어쓰기와 같은 모양이 된다
+
+        def flush():
+            if rows:
+                t = Table(rows, colWidths=[3.2 * cm, None], hAlign="LEFT")
+                t.setStyle(TableStyle([
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 1),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ]))
+                flow.append(t)
+                rows.clear()
+
+        for x in sec["items"]:
+            if isinstance(x, tuple) and x[0] == "-":
+                flush()
+                flow.append(Paragraph(escape(str(x[1])), bullet, bulletText="•"))
+            elif isinstance(x, tuple):
+                rows.append([Paragraph(escape(f"• {x[0]}"), label),
+                             Paragraph(escape(str(x[1])), body)])
+            else:
+                flush()
+                flow.append(Paragraph(escape(str(x)), body))
+        flush()
+
+    if not h["first"]:
+        flow += [Spacer(1, 12), Paragraph("위 내용에 합의합니다.", body)]
+        sign = Table([[who, "(서명)", "날짜"] for who in ("바틀링", h["partner"])],
+                     colWidths=[4 * cm, 5 * cm, 4 * cm])
+        sign.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, "#111827"),
+                                  ("FONTNAME", (0, 0), (-1, -1), "Nanum")]))
+        flow.append(sign)
+
+    doc.build(flow)
     return buf.getvalue()
 
 

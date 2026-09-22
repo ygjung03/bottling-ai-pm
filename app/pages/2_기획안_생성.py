@@ -37,8 +37,8 @@ import _path  # noqa: F401  (프로젝트 루트를 sys.path 에 추가)
 import streamlit as st
 
 from app.auth import require_owner
-from app.proposal import (build_proposal_docx, docx_to_pdf, end_dot, missing_fields,
-                          pdf_pages, preview_html, proposal_no)
+from app.proposal import (build_proposal_docx, build_proposal_pdf, end_dot,
+                          missing_fields, pdf_pages, proposal_no)
 from app.theme import apply_chrome
 from app.ui import page_header
 from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
@@ -255,10 +255,11 @@ def _proposal_files(item: dict, meta: dict) -> dict:
     cache = st.session_state.setdefault(SS_FILES, {})
     key = item.get("안_id")
     if key not in cache:
+        # PDF 는 reportlab 으로 직접 만든다 — 어디서나 같은 문서 (9/22).
+        # 전에는 Word 로 변환해서 Word 없는 클라우드에선 HTML 근사판이었다.
         docx = build_proposal_docx(item, meta)
-        pdf = docx_to_pdf(docx)               # Word 없으면 None → HTML 근사로
-        pages = pdf_pages(pdf) if pdf else None
-        cache[key] = {"docx": docx, "pdf": pdf, "pages": pages}
+        pdf = build_proposal_pdf(item, meta)
+        cache[key] = {"docx": docx, "pdf": pdf, "pages": pdf_pages(pdf)}
     return cache[key]
 
 
@@ -288,8 +289,7 @@ def render_proposal(item: dict, meta: dict) -> None:
         files = _proposal_files(item, meta)
 
     # 종이 모양 미리보기 (시안 docs/ref/피그마_예시2.pdf). 회색 바탕 위에 흰 종이,
-    # 양옆에 종이 높이만큼 긴 ‹ › 버튼. Word 가 있으면 실제 페이지를, 없으면
-    # 같은 절 목록으로 그린 HTML 근사판을 보인다.
+    # 양옆에 ‹ › 버튼. 내려받는 PDF 의 실제 페이지를 그대로 보인다.
     # 바탕색·버튼 높이는 key 로 붙는 st-key-* 클래스에 CSS 를 준다.
     st.markdown(
         f'<style>'
@@ -305,37 +305,28 @@ def render_proposal(item: dict, meta: dict) -> None:
         f'</style>', unsafe_allow_html=True)
     with st.container(key=f"paper_{aid}"):
         pages = files["pages"]
-        if pages:
-            key = f"page_{aid}"
-            idx = st.session_state.get(key, 0)
-            idx = max(0, min(idx, len(pages) - 1))
-            c_l, c_mid, c_r = st.columns([1, 7, 1], vertical_alignment="center")
-            if c_l.button("‹", key=f"prev_{aid}", disabled=idx == 0):
-                st.session_state[key] = idx - 1
-                st.rerun()
-            if c_r.button("›", key=f"next_{aid}", disabled=idx >= len(pages) - 1):
-                st.session_state[key] = idx + 1
-                st.rerun()
-            c_mid.image(pages[idx], use_container_width=True)
-            st.markdown(f'<div style="text-align:center; color:#9CA3AF; font-size:0.75rem; '
-                        f'margin-top:10px">Page {idx + 1} of {len(pages)}</div>',
-                        unsafe_allow_html=True)
-        else:
-            st.markdown(preview_html(item, meta), unsafe_allow_html=True)
-            st.caption("이 미리보기는 내용을 HTML 로 옮긴 것이라 실제 문서와 줄 나눔이 다를 수 있습니다. "
-                       "Word 가 있는 PC 에서는 실제 페이지가 보입니다.")
+        key = f"page_{aid}"
+        idx = st.session_state.get(key, 0)
+        idx = max(0, min(idx, len(pages) - 1))
+        c_l, c_mid, c_r = st.columns([1, 7, 1], vertical_alignment="center")
+        if c_l.button("‹", key=f"prev_{aid}", disabled=idx == 0):
+            st.session_state[key] = idx - 1
+            st.rerun()
+        if c_r.button("›", key=f"next_{aid}", disabled=idx >= len(pages) - 1):
+            st.session_state[key] = idx + 1
+            st.rerun()
+        c_mid.image(pages[idx], use_container_width=True)
+        st.markdown(f'<div style="text-align:center; color:#9CA3AF; font-size:0.75rem; '
+                    f'margin-top:10px">Page {idx + 1} of {len(pages)}</div>',
+                    unsafe_allow_html=True)
 
     # 내려받기. PDF 는 보내는 용도(미리보기와 같다), Word 는 고치는 용도.
     # 탭마다 버튼이 있어 key 가 없으면 Streamlit 이 같은 버튼으로 본다.
     stem = f"{proposal_no(meta)}_{item.get('접근') or aid}_협업제안서"
     _, c1, c2, _ = st.columns([1, 2, 2, 1])
-    if files["pdf"]:
-        c1.download_button("PDF 내려받기", data=files["pdf"], file_name=f"{stem}.pdf",
-                           mime="application/pdf", type="primary",
-                           use_container_width=True, key=f"pdf_{aid}")
-    else:
-        c1.button("PDF 내려받기", disabled=True, use_container_width=True, key=f"pdf_{aid}",
-                  help="이 PC 에 Word 가 없어 PDF 를 만들 수 없습니다.")
+    c1.download_button("PDF 내려받기", data=files["pdf"], file_name=f"{stem}.pdf",
+                       mime="application/pdf", type="primary",
+                       use_container_width=True, key=f"pdf_{aid}")
     c2.download_button("Word 내려받기", data=files["docx"], file_name=f"{stem}.docx",
                        mime=("application/vnd.openxmlformats-officedocument"
                              ".wordprocessingml.document"),
