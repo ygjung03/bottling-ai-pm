@@ -57,7 +57,12 @@ MAX_RESTART = 1
 #
 # 되감기와 몫을 나눠 쓴다. 합쳐 두었더니 사소한 재호출이 예산을 다 써서
 # 정작 되감아야 할 때 되감지 못했다.
-MAX_REDO = 2
+#
+# (4)는 따로 센다 (9/22). (2)(3)이 앞에서 2회를 다 쓰면 (4) 검사가 걸려도
+# 되돌릴 수 없었다 — 고정 테스트에서 포장안을 "확인 필요"로 뺀 오판이 그대로
+# 나간 것이 세 번 중 두 번(1ec9494 3건, 4428a13 2건). 검사는 걸렸는데 예산이 0.
+MAX_REDO = 2            # (2)(3) 합쳐서
+MAX_REDO_FINAL = 1      # (4) 따로
 
 
 def _j(obj) -> str:
@@ -196,7 +201,7 @@ def run(context: str, target_date: str, beer_list: str,
         beers = parse_beers(beer_list)
         prices = parse_beer_prices(beer_list)
         rejected = NO_REJECTED
-        extra = 0                       # 4콜 위에 더 부른 횟수
+        extra = {"early": 0, "final": 0}   # 4콜 위에 더 부른 횟수 — (2)(3) / (4)
         promoed = 0                     # 홍보를 다시 짠 횟수
 
         def make(n, label, call, check):
@@ -208,12 +213,12 @@ def run(context: str, target_date: str, beer_list: str,
             한 번의 호출 안에서 만들고 스스로 검사할 수는 없으니, 코드가
             밖에서 보고 알려 주는 것이다.
             """
-            nonlocal extra
             out = call(label, NO_ISSUES, None)
             found = look(check, out)
 
-            if found.redo and extra < MAX_REDO:
-                extra += 1
+            pool, limit = ("final", MAX_REDO_FINAL) if n == 4 else ("early", MAX_REDO)
+            if found.redo and extra[pool] < limit:
+                extra[pool] += 1
                 result["rewinds"].append(found.redo)
                 out = call(f"{label.rstrip('.')} — "
                            f"{len(found.redo)}건 보완 중...",

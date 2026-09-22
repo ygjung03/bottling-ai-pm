@@ -42,7 +42,7 @@ def get_client() -> genai.Client:
     return _client
 
 
-def call(prompt: str, retry: int = 1, model: str | None = None,
+def call(prompt: str, retry: int = 2, model: str | None = None,
          on_wait=None) -> tuple[dict, int]:
     """
     JSON 응답을 강제하고 파싱해서 돌려준다.
