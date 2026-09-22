@@ -170,10 +170,39 @@ BOTTLING_SNS = f"{NO_DATA} (8/31 방문에서 확인 예정)"
 
 # 추천 사유 — (4) 컨설턴트 입력.
 #
-# T15 추천 엔진(W2)이 만드는 값이다. 아직 없다.
-# 대표님이 협력사를 직접 고른 경우에도 이 값은 비므로,
-# 미착수 상태와 직접 지정을 구분해 적는다.
-NO_REC_REASON = f"{NO_DATA} (추천 엔진 미구현 — 협력사를 직접 지정함)"
+# 추천 엔진(nearby_stores 점수)에 그 가게가 없으면 이 값이 간다 — 대표님이
+# 직접 지정한 가게이거나, 이름이 달라 못 찾은 경우다. (4)는 이때 협력사를
+# 고른 이유 문장을 쓰지 않는다.
+NO_REC_REASON = f"{NO_DATA} (추천 후보에 없음 — 협력사를 직접 지정함)"
+
+
+def build_rec_reason(partner: dict | None) -> str:
+    """
+    (4) 컨설턴트 입력 — 이 협력사를 왜 골랐는지. 제안서 3절 첫 문장의 근거다.
+
+    파트너 추천 화면이 계산해 둔 값(nearby_stores 의 거리·업종)을 문장으로 옮긴다.
+    partners 행에는 store_id 가 없어 이름으로 찾는다 (9/22). 순위는 넣지 않는다 —
+    업종 점수가 같은 가게가 많아 순위가 거리순이나 다름없고, 협력사에게 "11위"
+    는 뜻이 없다. 거리와 업종만 쓴다.
+    """
+    if not partner or not partner.get("name"):
+        return NO_REC_REASON
+    try:
+        rows = (get_client().table("nearby_stores")
+                .select("name,category_m,category_s,distance_m,score")
+                .ilike("name", partner["name"].strip()).not_.is_("score", "null")
+                .limit(3).execute().data or [])
+    except Exception as e:
+        return f"{NO_DATA} (추천 후보 조회 실패: {e})"
+    if not rows:
+        return NO_REC_REASON
+    s = rows[0]
+    dist = s.get("distance_m")
+    if dist is None:
+        return NO_REC_REASON
+    industry = s.get("category_s") or s.get("category_m") or "업종 미상"
+    return (f"바틀링에서 {int(dist)}m (도보 약 {max(1, round(dist / 67))}분). "
+            f"업종 {industry} — 반경 1km 안의 가게를 거리와 업종 상보성으로 매긴 추천 후보에 있음.")
 
 
 # 협력사 시드 데이터 — T21 협력사 입력 폼 전까지 쓰는 가상 값.

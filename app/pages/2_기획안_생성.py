@@ -42,10 +42,10 @@ from app.proposal import (build_proposal_docx, build_proposal_pdf, end_dot,
 from app.theme import apply_chrome
 from app.ui import page_header
 from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
-                          NO_REC_REASON, NO_TREND_MENU, PAST_CASES,
-                          WEATHER_PREF, build_beer_list, build_constraints,
-                          build_events, build_partner_blockers,
-                          build_partner_resources, build_partner_sns)
+                          NO_TREND_MENU, PAST_CASES, WEATHER_PREF,
+                          build_beer_list, build_constraints, build_events,
+                          build_partner_blockers, build_partner_resources,
+                          build_partner_sns, build_rec_reason)
 from chain.runner import run
 from context.builder import build as build_context
 from db.client import get_client
@@ -209,7 +209,7 @@ def generate(partner: dict, target: date) -> None:
             partner_sns=build_partner_sns(partner),
             events=build_events(target),
             past_cases=PAST_CASES,
-            rec_reason=NO_REC_REASON,
+            rec_reason=build_rec_reason(partner),
             partner=partner,
             on_step=on_step,
         )
