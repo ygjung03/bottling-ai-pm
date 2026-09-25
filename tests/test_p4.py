@@ -6,8 +6,10 @@
 8/31 방문에서 보여드릴 샘플 기획안이 여기서 나온다.
 
 실행
-  python -m tests.test_p4              화·목요일
-  python -m tests.test_p4 --save       결과를 파일로 저장
+  python -m tests.test_p4                  화·목요일 (체인 전체)
+  python -m tests.test_p4 --save           결과를 파일로 저장
+  python -m tests.test_p4 --plan 52        저장된 기획안의 (1)~(3)으로 (4)만 2회
+  python -m tests.test_p4 --plan 52 --times 3
 """
 import json
 import sys
@@ -21,7 +23,7 @@ from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           WEATHER_PREF, build_beer_list, build_constraints,
                           build_events, build_partner_blockers,
                           build_partner_resources, build_partner_sns,
-                          fetch_partner)
+                          build_rec_reason, fetch_partner)
 from chain.loader import build
 from chain.runner import NO_ISSUES, NO_REJECTED
 from context.builder import build as build_context
@@ -136,6 +138,7 @@ def run(label: str, target: date, save: bool = False) -> None:
         ev = (r.get("이벤트") or {}).get("명칭", "?")
         print(f"  {r.get('안_id')} [{r.get('접근')}]  {r.get('메뉴명')}")
         print(f"        페어링 {beer} / 판매가 {r.get('판매가_제안')}원")
+        print(f"        값근거 {str(r.get('판매가_설명'))[:60]}")
         print(f"        이벤트 {ev}")
         print(f"        사유   {str(r.get('선정_사유'))[:60]}")
         for risk in (r.get("예상_리스크") or [])[:2]:
@@ -175,7 +178,65 @@ def run(label: str, target: date, save: bool = False) -> None:
     print()
 
 
+def rerun_p4(plan_id: int, times: int = 2) -> None:
+    """
+    저장된 기획안의 (1)~(3) 출력을 그대로 넣고 (4)만 다시 돌린다.
+
+    (4) 프롬프트를 고칠 때마다 체인을 처음부터 돌리면 30초씩 들고, 앞 단계 출력이
+    매번 달라져 무엇 때문에 바뀐 것인지 알 수 없다. 입력을 고정해야 비교가 된다.
+    LLM 출력은 흔들리므로 기본 2회 — 한 번 나온 것이 재현되는지 본다.
+
+    실행  python -m tests.test_p4 --plan 52
+          python -m tests.test_p4 --plan 52 --times 3
+    """
+    from db.client import get_client
+
+    row = (get_client().table("plans")
+           .select("id,partner_id,target_date,p1_output,p2_output,p3_output")
+           .eq("id", plan_id).single().execute().data)
+    partner = (get_client().table("partners").select("*")
+               .eq("id", row["partner_id"]).single().execute().data)
+    beer_text = build_beer_list()
+    rules = build_constraints()
+
+    print("=" * 64)
+    print(f"plan {row['id']} · {partner['name']} · 실행일 {row['target_date']} · {times}회")
+    print("=" * 64)
+
+    for n in range(1, times + 1):
+        out, ms = call(build(
+            "p4_consultant",
+            p1_output=json.dumps(row["p1_output"], ensure_ascii=False),
+            p2_output=json.dumps(row["p2_output"], ensure_ascii=False),
+            p3_output=json.dumps(row["p3_output"], ensure_ascii=False),
+            events=build_events(date.fromisoformat(row["target_date"])),
+            beer_list=beer_text,
+            partner_resources=build_partner_resources(partner),
+            rec_reason=build_rec_reason(partner),
+            constraints=rules["p4"], fewshot=NO_FEWSHOT,
+            prev_output=NO_ISSUES, issues=NO_ISSUES))
+
+        print(f"\n[{n}회 · {ms/1000:.1f}초]")
+        for e in out.get("제외") or []:
+            print(f"  제외 {e.get('안_id')} — {str(e.get('제외_사유'))[:70]}")
+        for r in out.get("안") or []:
+            print(f"  {r.get('안_id')} [{r.get('접근')}] {r.get('메뉴명')} "
+                  f"— {r.get('판매가_제안')}원")
+            print(f"     값근거 {r.get('판매가_설명')}")
+            print(f"     배경   {r.get('배경')}")
+
+        issues = check_final(out, row["p2_output"], parse_beer_prices(beer_text)).all
+        for i in issues:
+            print(f"     · {i}")
+
+
 if __name__ == "__main__":
-    save = "--save" in sys.argv
-    for dow in (1, 3):
-        run(f"{WEEKDAYS[dow]}요일", latest_weekday(dow), save=save)
+    if "--plan" in sys.argv:
+        i = sys.argv.index("--plan")
+        times = (int(sys.argv[sys.argv.index("--times") + 1])
+                 if "--times" in sys.argv else 2)
+        rerun_p4(int(sys.argv[i + 1]), times)
+    else:
+        save = "--save" in sys.argv
+        for dow in (1, 3):
+            run(f"{WEEKDAYS[dow]}요일", latest_weekday(dow), save=save)

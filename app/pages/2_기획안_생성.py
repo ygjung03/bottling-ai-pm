@@ -107,16 +107,20 @@ def load_partners() -> list[dict]:
         return []
 
 
-def round_of(partner: dict) -> int:
+def has_form(partner: dict) -> bool:
     """
-    1차인지 2차인지. 구글 폼이 채우는 값이 하나라도 있으면 2차다.
+    구글 폼이 들어왔는가. 폼이 채우는 값이 하나라도 있으면 들어온 것이다.
 
     폼에서 납품 요일과 제약은 필수라 제출했으면 반드시 있다. 메뉴·가격은
-    1차에서 후기로 먼저 채우므로 회차의 근거가 되지 못한다.
+    1차에서 후기로 먼저 채우므로 근거가 되지 못한다.
     """
-    filled = any(partner.get(k) for k in
-                 ("available_slots", "blockers", "sns_channel"))
-    return 2 if filled else 1
+    return any(partner.get(k) for k in
+               ("available_slots", "blockers", "sns_channel"))
+
+
+def round_of(partner: dict) -> int:
+    """기본 회차. 폼이 있으면 2차를 먼저 보인다 — 고르는 것은 사람이다."""
+    return 2 if has_form(partner) else 1
 
 
 def prompt_version() -> str | None:
@@ -174,13 +178,95 @@ def save_plan(result: dict, meta: dict) -> int | None:
         return None
 
 
+def save_adopted(plan_id: int | None, options: list[str]) -> bool:
+    """
+    고른 안을 plans 에 남긴다. 여러 개 고를 수 있다 — 협력사에게 "둘 중 편한 걸로"
+    라고 주는 편이 하나만 들이미는 것보다 낫다 (9/25).
+
+    다시 생성해도 지난 기록은 지우지 않는다. 1차를 다시 만들면 새 plans 행이
+    생기고 옛 행의 채택은 그대로 남는다 — 그 쌓인 것이 보관함의 내용물이다.
+    """
+    if not plan_id:
+        st.warning("저장되지 않은 기획안이라 선택을 남길 수 없습니다.")
+        return False
+    try:
+        (get_client().table("plans")
+         .update({"adopted_option": ",".join(options) if options else None,
+                  "status": "adopted" if options else "generated"})
+         .eq("id", plan_id).execute())
+        load_adopted.clear()
+        return True
+    except Exception as e:
+        st.warning(f"선택을 저장하지 못했습니다 — {e}")
+        return False
+
+
+@st.cache_data(ttl=30)
+def load_adopted(partner_id: int) -> list[dict]:
+    """
+    이 협력사의 1차 중 안을 고른 것들. 최신순.
+
+    가장 최근 1차만 보지 않는다 — 여러 번 생성하며 마음에 드는 것을 모아 둘 수
+    있고, 그 목록이 곧 보관함이다 (9/25).
+    """
+    try:
+        return (get_client().table("plans")
+                .select("id,adopted_option,target_date,created_at,final_output")
+                .eq("partner_id", partner_id).eq("round", 1)
+                .not_.is_("adopted_option", "null")
+                .order("id", desc=True).limit(20).execute().data or [])
+    except Exception:
+        return []
+
+
+def save_adopted(plan_id: int | None, option: str | None) -> bool:
+    """
+    고른 안을 plans 에 남긴다. option 이 None 이면 고르지 않은 상태로 되돌린다.
+
+    2차는 이 값이 있어야 만들 수 있다 — 2차는 3안을 새로 만드는 것이 아니라
+    고른 그 안에 협의 결과를 반영하는 것이다 (9/25).
+    """
+    if not plan_id:
+        st.warning("저장되지 않은 기획안이라 선택을 남길 수 없습니다.")
+        return False
+    try:
+        (get_client().table("plans")
+         .update({"adopted_option": option,
+                  "status": "adopted" if option else "generated"})
+         .eq("id", plan_id).execute())
+        load_adopted.clear()
+        return True
+    except Exception as e:
+        st.warning(f"선택을 저장하지 못했습니다 — {e}")
+        return False
+
+
+@st.cache_data(ttl=30)
+def load_adopted(partner_id: int) -> dict | None:
+    """이 협력사의 1차 중 안을 고른 가장 최근 것. 2차 버튼을 열지 판단한다."""
+    try:
+        rows = (get_client().table("plans")
+                .select("id,adopted_option,target_date,final_output")
+                .eq("partner_id", partner_id).eq("round", 1)
+                .not_.is_("adopted_option", "null")
+                .order("id", desc=True).limit(1).execute().data or [])
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
 # ══════════════════════════════════════════
 # 생성
 # ══════════════════════════════════════════
 
-def generate(partner: dict, target: date) -> None:
-    """체인을 돌리고 결과를 세션에 남긴다."""
-    with st.status("기획안 생성 중...", expanded=True) as box:
+def generate(partner: dict, target: date, rnd: int) -> None:
+    """
+    체인을 돌리고 결과를 세션에 남긴다.
+
+    rnd 는 사람이 고른 회차다. 전에는 폼 값이 있으면 무조건 2차로 떠서 1차 과정을
+    보여줄 수 없었다 (9/24).
+    """
+    with st.status(f"{rnd}차 기획안 생성 중...", expanded=True) as box:
         step_slot = st.empty()
 
         def on_step(n: int, label: str) -> None:
@@ -216,18 +302,19 @@ def generate(partner: dict, target: date) -> None:
 
         sec = result["latency_ms"] / 1000
         if result["error"]:
-            box.update(label="기획안을 끝까지 만들지 못했습니다", state="error")
+            box.update(label=f"{rnd}차 기획안을 끝까지 만들지 못했습니다", state="error")
         else:
-            box.update(label=f"완료 — {sec:.0f}초", state="complete")
+            box.update(label=f"{rnd}차 기획안 완료 — {sec:.0f}초", state="complete")
 
     meta = {
         "partner_id": partner["id"],
         "partner_name": partner["name"],
-        "round": round_of(partner),
+        "round": rnd,
         "target_date": target.isoformat(),
         "context": ctx,
         "prompt_version": prompt_version(),
     }
+    meta["adopted"] = []            # 새로 만든 기획안이라 아직 담은 안이 없다
     meta["plan_id"] = save_plan(result, meta)
     st.session_state[SS_RESULT] = result
     st.session_state[SS_META] = meta
@@ -242,6 +329,7 @@ def generate(partner: dict, target: date) -> None:
 # ══════════════════════════════════════════
 
 SS_FILES = "proposal_files"   # 안별 제안서 파일 캐시. 생성할 때마다 비운다.
+SS_TOAST = "adopt_toast"      # 담긴 개수. rerun 뒤에 토스트로 띄우고 지운다.
 
 
 def _proposal_files(item: dict, meta: dict) -> dict:
@@ -378,14 +466,28 @@ def render_plan(item: dict, meta: dict) -> None:
         body += block("바틀링 판매가", f"<b>{price:,}원</b>")
 
     # 접근 배지를 제목 왼쪽에 둔다 (9/21 — 「제안안 #n」 자리에 배지).
+    # 오른쪽 끝에 「제안서에 담기」 체크. 여러 개 담을 수 있다 — 협력사에게
+    # "둘 중 편한 걸로" 라고 주는 편이 하나만 들이미는 것보다 낫다 (9/25).
     with st.container(key=f"card_{aid}"):
-        st.markdown(
+        c_head, c_pick = st.columns([4, 1], vertical_alignment="center")
+        c_head.markdown(
             f'<div style="display:flex; align-items:center; gap:12px">'
             f'<span style="background:{fill}; color:{text_c}; padding:3px 12px; border-radius:8px; '
             f'font-size:0.78rem; font-weight:700; white-space:nowrap">{approach} 제안</span>'
             f'<span style="font-size:1.25rem; font-weight:700; flex:1">'
             f'{item.get("메뉴명") or "이름 없음"}</span></div>',
             unsafe_allow_html=True)
+        was = aid in (meta.get("adopted") or [])
+        now = c_pick.checkbox("제안서에 담기", value=was,
+                              key=f"adopt_{meta.get('plan_id')}_{aid}")
+        if now != was:
+            ids = set(meta.get("adopted") or [])
+            ids.symmetric_difference_update({aid})
+            if save_adopted(meta.get("plan_id"), sorted(ids)):
+                meta["adopted"] = sorted(ids)
+                # 토스트는 rerun 하면 사라지므로 세션에 남겼다가 다시 그릴 때 띄운다
+                st.session_state[SS_TOAST] = len(ids)
+                st.rerun()
         img = item.get("메뉴_이미지")
         if img:
             c_img, c_txt = st.columns([2, 3], gap="large")
@@ -419,6 +521,22 @@ def render_result(result: dict, meta: dict) -> None:
     if not plans:
         st.error("안이 비어 있습니다. 다시 생성해 주세요.")
         return
+
+    # 담을 때마다 토스트로 알린다 — 여러 개 담을 수 있다는 것이 그때 보인다.
+    n_picked = st.session_state.pop(SS_TOAST, None)
+    if n_picked is not None:
+        st.toast(f"제안서에 담긴 안 {n_picked}개" if n_picked
+                 else "담긴 안을 모두 뺐습니다", icon="📄")
+
+    picked = meta.get("adopted") or []
+    if picked:
+        names = {p.get("안_id"): p.get("메뉴명") for p in plans}
+        st.markdown(
+            f'<div style="margin:10px 0 2px; padding:10px 16px; background:#EFF6FF; '
+            f'border:1px solid #BFDBFE; border-radius:8px; color:#1E40AF; font-size:0.88rem">'
+            f'제안서에 담긴 안 <b>{len(picked)}개</b> — '
+            f'{" · ".join(names.get(a) or a for a in picked)}</div>',
+            unsafe_allow_html=True)
 
     # 순위가 아니라 접근으로 가른다. 단품·세트·포장은 구성이 달라 우열이 없고,
     # 어느 것을 할지는 대표님이 정하신다. 탭마다 제안서가 붙는다.
@@ -550,16 +668,51 @@ with st.container(key="param_card"):
             target = st.date_input("협업 시작 희망일",
                                    value=datetime.now(KST).date() + timedelta(days=7))
 
+        # 회차는 사람이 고른다. 전에는 폼 값이 있으면 무조건 2차로 떠서 1차 과정을
+        # 보여줄 수 없었다 (9/24). 조건은 docs/private/쟁점_2차흐름과_폼_0925.md 1-3-1.
+        #
+        # 시연용 협력사(is_seed)는 전부 열어 둔다 — 폼 값은 있는데 채택 기록이 없어
+        # 그대로 두면 1차도 2차도 못 만들고, 시연에서 두 과정을 다 보여줘야 한다.
+        # 그 밖의 협력사는:
+        #   1차  폼이 오기 전까지만. 폼이 왔다는 것은 제안서가 나갔다는 것이고,
+        #        나갔다는 것은 이미 골랐다는 것이라 새로 만들 1차가 없다. 보기만 한다.
+        #   2차  폼이 와야 하고, 1차에서 고른 안이 있어야 한다.
+        form_in = has_form(chosen)
+        picks = load_adopted(chosen["id"])
+        seed = bool(chosen.get("is_seed"))
+        # 시연용의 예외는 「1차 생성 잠금을 푼다」 하나뿐이다. 폼 값은 있는데 채택
+        # 기록이 없어 그대로 두면 1차도 2차도 못 만든다. 한 번 만들어 안을 고르고
+        # 나면 그 뒤로는 실제 협력사와 완전히 같은 화면이 된다 — 시연에서 "실제는
+        # 다릅니다" 를 설명하지 않아도 되게 (9/25).
+        can_1st = not form_in or seed
+        can_2nd = form_in and bool(picks)
+
+        # 회차는 고르게 하지 않는다. 두 회차가 동시에 가능한 적이 없어서다 —
+        # 폼 전엔 1차만, 폼이 왔고 안까지 골랐으면 2차만이다.
+        rnd = 2 if can_2nd else 1
+
     has_menus = bool(chosen.get("menu_prices"))
     if not has_menus:
         st.info("메뉴·판매가가 아직 없습니다. 들어오면 만들 수 있습니다.")
 
+    allowed = can_1st if rnd == 1 else can_2nd
     _, c_btn = st.columns([3, 1])
     go = c_btn.button("기획안 최적 생성 시작", type="primary", icon=":material/auto_awesome:",
-                      use_container_width=True, disabled=not has_menus)
+                      use_container_width=True, disabled=not has_menus or not allowed)
 
 if go:
-    generate(chosen, target)
+    generate(chosen, target, rnd)
+
+# 생성 조건 상자와 결과 사이의 한 줄. 만드는 동안에는 이 자리를 진행 상황이
+# 쓴다 (generate 의 st.status 가 "n차 기획안 생성 중..."). 끝난 뒤에 지금 상태와
+# 다음에 할 일을 적는다. if/elif 라 맞는 것 하나만 나오므로 순서가 곧 해야 할 일의 순서다.
+if not picks:
+    st.caption("1차 기획안을 만듭니다. 안을 고르면 다음 단계로 넘어갑니다.")
+elif not form_in:
+    st.caption("협력사와 합의해 폼을 채우면 2차 기획안을 만들 수 있습니다.")
+else:
+    st.caption("폼을 받았습니다. 2차 기획안을 만듭니다. "
+               "골랐던 1차 기획안은 결과 화면에서 다시 볼 수 있습니다.")
 
 if st.session_state.get(SS_RESULT):
     meta = st.session_state[SS_META]

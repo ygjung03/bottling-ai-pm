@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS partners (
   lat               DOUBLE PRECISION,
   lng               DOUBLE PRECISION,
   invite_code       TEXT UNIQUE NOT NULL,            -- 폼 접근용
+  -- 시연용 가상 협력사 (이름이 "테스트용"으로 시작). 화면이 예시 표시를 붙이고,
+  -- 2차 생성 제약(폼 + 채택)을 푼다. 실제 협력사는 그 경로로 새면 안 된다.
+  is_seed           BOOLEAN     NOT NULL DEFAULT false,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
