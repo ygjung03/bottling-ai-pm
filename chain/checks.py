@@ -13,7 +13,7 @@ tests/test_p4.py 안에 있던 검사를 옮겨 왔다. 테스트는 여기서 �
 """
 import json
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import NamedTuple
 
 from chain.inputs import NO_DATA
@@ -34,6 +34,19 @@ class Checked(NamedTuple):
     @property
     def all(self) -> list[str]:
         return self.redo + self.warn
+
+
+def _won(text) -> int | None:
+    """
+    "1800원 — 협력사 정가 3000원 대비 60%" 처럼 설명이 붙은 값에서 앞의 금액만.
+    "산출 불가" 나 숫자가 없으면 None — 모르는 값을 0 으로 두면 검사가 헛돈다.
+    """
+    if text is None:
+        return None
+    if isinstance(text, (int, float)):
+        return int(text)
+    m = re.search(r"(\d[\d,]*)", str(text))
+    return int(m.group(1).replace(",", "")) if m else None
 
 # 모든 안에 반드시 있어야 하는 것.
 # 대표가 이 문서만 보고 실행할 수 있어야 한다(명세서 4-2).
@@ -220,6 +233,13 @@ def check_final(out: dict, p2: dict, beers: dict) -> Checked:
         if deal and deal.get("협의_필요") is not True:
             issues.append(f"{rid}: 매입의 협의_필요가 {deal.get('협의_필요')} "
                           f"— 항상 true 여야 한다")
+
+        # 매입가는 100원 단위로 끊는다. 협의 자리에서 주고받는 값이라 1원 단위는
+        # 뜻이 없고, 문서에 그대로 나간다 (9/26).
+        buy = _won(deal.get("바틀링_제안_매입가"))
+        if buy and buy % 100:
+            issues.append(f"{rid}: 제안 매입가 {buy:,}원 — 100원 단위로 끊을 것 "
+                          f"(예: {buy // 100 * 100:,}원)")
 
         # 대표님이 이 숫자를 들고 협상하신다. 어디서 나온 값인지 보여야 한다.
         why = deal.get("근거")
@@ -535,6 +555,34 @@ def duration_days(text: str) -> int | None:
     return None
 
 
+# build_events() 가 내는 줄에서 행사 제목과 기간을 뽑는다.
+#   - 2026 한강 불빛 공연 / 2026-10-09～2026-10-09 (협업 실행일 당일 시작) / 뚝섬한강공원, 약 280m
+EVENT_LINE = re.compile(r"-\s*(.+?)\s*/\s*(\d{4}-\d{2}-\d{2})\s*～\s*(\d{4}-\d{2}-\d{2})")
+
+
+def outside_events(events: str, sale_from: date, sale_to: date) -> list[tuple[str, date]]:
+    """
+    판매 기간과 겹치지 않는 행사들. (제목, 시작일) 목록을 돌려준다.
+
+    그날 우리는 팔지 않으므로 홍보에 엮을 수 없다 (p3 규칙 12).
+    """
+    out = []
+    for title, a, b in EVENT_LINE.findall(events or ""):
+        try:
+            start, end = date.fromisoformat(a), date.fromisoformat(b)
+        except ValueError:
+            continue
+        if end < sale_from or start > sale_to:
+            out.append((title, start))
+    return out
+
+
+def mentions_date(text: str, d: date) -> bool:
+    """글에 그 날짜가 나오는가. "10월 9일", "10/9", "2026-10-09" 세 표기를 본다."""
+    return bool(re.search(
+        rf"({d.month}월\s*{d.day}일|{d.month}/{d.day}(?!\d)|{d.isoformat()})", text))
+
+
 def span_start(text: str, year: int) -> date | None:
     """
     "2026-09-17(목)~2026-09-19(토) 3일간" 같은 표기에서 시작일을 뽑는다.
@@ -555,9 +603,14 @@ def span_start(text: str, year: int) -> date | None:
 
 
 def check_promo(out: dict, p2: dict, target: date,
-          partner_sns: bool = True) -> Checked:
+          partner_sns: bool = True, events: str = "") -> Checked:
     """
     프롬프트가 지시한 제약을 지켰는지 본다.
+
+    events: build_events() 가 낸 인근 행사 목록 원문. 코드는 그 목록을 거르지
+      않고 (3)에게 그대로 준다 — 어느 행사가 쓸 만한지는 제목을 읽어야 안다.
+      (3)이 판매 기간 밖 행사를 엮었는지는 코드가 잡을 수 있으므로 여기서 본다.
+      안 넘기면 그 검사만 건너뛴다.
 
     partner_sns: 협력사가 SNS 를 운영하는가.
       없으면 협력사에 홍보를 요청하지 않는 것이 맞다 (규칙 10).
@@ -657,6 +710,22 @@ def check_promo(out: dict, p2: dict, target: date,
         if start and start != target:
             issues.append(f"{pid}: 실행 기간이 대상일부터 시작하지 않음 "
                           f"— 대상 {target} / 기간 '{span}'")
+
+        # 판매 기간 밖 행사를 엮었는가 (p3 규칙 12).
+        #
+        # 10/2 실행인데 10/9 드론쇼를 이벤트 명칭에 넣은 적이 있다 (9/26).
+        # 그날 우리는 협업기획을 하지 않으므로 해당 이벤트는 영향을 끼치지 않는다.
+        # 행사 이름은 (3)이 "드론쇼" 처럼 줄여 써서 맞추기 어렵고, 날짜는
+        # 표기가 몇 안 되므로 날짜로 본다.
+        if events and start:
+            sale_to = start + timedelta(days=(days or MIN_DAYS) - 1)
+            text = " ".join(str(ev.get(k) or "") for k in ("명칭", "내용")) \
+                + " " + str(p.get("홍보_문구") or "")
+            for title, when in outside_events(events, start, sale_to):
+                if mentions_date(text, when):
+                    issues.append(
+                        f"{pid}: 판매 기간({start}~{sale_to}) 밖 행사를 엮었음 "
+                        f"— {title[:24]} ({when})")
 
         copy = str(p.get("홍보_문구") or "")
         if not copy:

@@ -477,16 +477,21 @@ def render_plan(item: dict, meta: dict) -> None:
             f'<span style="font-size:1.25rem; font-weight:700; flex:1">'
             f'{item.get("메뉴명") or "이름 없음"}</span></div>',
             unsafe_allow_html=True)
-        was = aid in (meta.get("adopted") or [])
-        now = c_pick.checkbox("제안서에 담기", value=was,
-                              key=f"adopt_{meta.get('plan_id')}_{aid}")
-        if now != was:
+        # 체크박스는 글씨가 작아 눈에 안 띈다(9/25). 담긴 상태에 따라 글자와 색이
+        # 바뀌는 버튼으로 둔다 — 누르면 담고, 다시 누르면 뺀다.
+        # 스타일은 Streamlit 기본 primary/secondary 를 쓴다. 상태마다 CSS 를 주입하면
+        # 그 markdown 이 빈 블록으로 공간을 차지해 카드가 흔들린다 (9/25).
+        picked = aid in (meta.get("adopted") or [])
+        if c_pick.button("담김 ✓" if picked else "제안서에 담기",
+                         type="primary" if picked else "secondary",
+                         key=f"adopt_{aid}", use_container_width=True):
             ids = set(meta.get("adopted") or [])
             ids.symmetric_difference_update({aid})
             if save_adopted(meta.get("plan_id"), sorted(ids)):
                 meta["adopted"] = sorted(ids)
-                # 토스트는 rerun 하면 사라지므로 세션에 남겼다가 다시 그릴 때 띄운다
-                st.session_state[SS_TOAST] = len(ids)
+                # 알림은 rerun 하면 사라지므로 세션에 남겼다가 다시 그릴 때 띄운다.
+                # 담았는지 뺐는지를 같이 남긴다 — 문구가 달라야 한다.
+                st.session_state[SS_TOAST] = (not picked, len(ids))
                 st.rerun()
         img = item.get("메뉴_이미지")
         if img:
@@ -522,21 +527,15 @@ def render_result(result: dict, meta: dict) -> None:
         st.error("안이 비어 있습니다. 다시 생성해 주세요.")
         return
 
-    # 담을 때마다 토스트로 알린다 — 여러 개 담을 수 있다는 것이 그때 보인다.
-    n_picked = st.session_state.pop(SS_TOAST, None)
-    if n_picked is not None:
-        st.toast(f"제안서에 담긴 안 {n_picked}개" if n_picked
-                 else "담긴 안을 모두 뺐습니다", icon="📄")
+    # 담기 버튼의 높이·글씨를 여기서 한 번에 정한다. 카드 안에서 상태마다 CSS 를
+    # 주입하면 그 markdown 이 빈 블록으로 공간을 차지해 카드가 흔들린다 (9/25).
+    st.markdown(
+        '<style>' + ", ".join(f'.st-key-adopt_{a} button' for a in "ABC")
+        + ' { min-height: 46px; font-size: 0.95rem; font-weight: 700; }</style>',
+        unsafe_allow_html=True)
 
-    picked = meta.get("adopted") or []
-    if picked:
-        names = {p.get("안_id"): p.get("메뉴명") for p in plans}
-        st.markdown(
-            f'<div style="margin:10px 0 2px; padding:10px 16px; background:#EFF6FF; '
-            f'border:1px solid #BFDBFE; border-radius:8px; color:#1E40AF; font-size:0.88rem">'
-            f'제안서에 담긴 안 <b>{len(picked)}개</b> — '
-            f'{" · ".join(names.get(a) or a for a in picked)}</div>',
-            unsafe_allow_html=True)
+    # 담긴 목록은 따로 띄우지 않는다. 담을 때 알림이 뜨고, 카드마다 버튼이 「담김」
+    # 으로 바뀌어 있어 무엇이 담겼는지 그 자리에서 보인다 (9/26).
 
     # 순위가 아니라 접근으로 가른다. 단품·세트·포장은 구성이 달라 우열이 없고,
     # 어느 것을 할지는 대표님이 정하신다. 탭마다 제안서가 붙는다.
@@ -729,3 +728,28 @@ if st.session_state.get(SS_RESULT):
     render_result(st.session_state[SS_RESULT], meta)
 elif not go:
     st.info("협력사와 실행일을 고르고 생성을 누르면 약 30초 뒤 기획안 3안이 나옵니다.")
+
+# 담기·빼기 알림. 화면 가운데에 띄우고 2초 뒤 사라진다 (st.toast 는 오른쪽 아래
+# 구석이라 눈에 안 띄고 위치를 CSS 로 못 옮겼다 — 9/25).
+#
+# 페이지 맨 끝에서 그린다. 위쪽에 두면 fixed 라도 Streamlit 이 감싸는 빈 컨테이너가
+# 흐름에 남아, 알림이 떴다 사라질 때마다 아래 내용이 밀린다.
+flash = st.session_state.pop(SS_TOAST, None)
+if flash is not None:
+    added, n_picked = flash
+    if added:
+        msg = f"보관함에 담았습니다 — 모두 {n_picked}개"
+    else:
+        msg = (f"보관함에서 뺐습니다 — 남은 안 {n_picked}개" if n_picked
+               else "보관함에서 뺐습니다 — 담긴 안이 없습니다")
+    # 애니메이션 이름과 class 에 매번 다른 번호를 붙인다. 같은 이름이 이미 DOM 에
+    # 있으면 브라우저가 애니메이션을 다시 시작하지 않아 배너가 안 보인다.
+    tag = f"f{int(datetime.now(KST).timestamp() * 1000) % 100000}"
+    st.markdown(
+        f'<style>@keyframes {tag} {{ 0%,88% {{opacity:1}} 100% {{opacity:0; visibility:hidden}} }}'
+        f'.{tag} {{ position:fixed; left:50%; top:34%; transform:translateX(-50%);'
+        f'  z-index:100000; background:#111827; color:#fff; padding:22px 40px;'
+        f'  border-radius:14px; font-size:1.3rem; font-weight:700; white-space:nowrap;'
+        f'  box-shadow:0 16px 48px rgba(0,0,0,0.35);'
+        f'  animation: {tag} 3.4s ease forwards; }}</style>'
+        f'<div class="{tag}">📄 {msg}</div>', unsafe_allow_html=True)

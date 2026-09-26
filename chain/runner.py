@@ -284,7 +284,8 @@ def run(context: str, target_date: str, beer_list: str,
                 3, "홍보 기획 중...", call_p3,
                 lambda out: check_promo(out, result["p2"],
                                         date.fromisoformat(target_date),
-                                        partner_sns=NO_DATA not in partner_sns))
+                                        partner_sns=NO_DATA not in partner_sns,
+                                        events=events))
             result["final"] = make(
                 4, "최종 검토 중...", call_p4,
                 lambda out: check_final(out, result["p2"], prices))
@@ -306,7 +307,7 @@ def run(context: str, target_date: str, beer_list: str,
                         label, f"- 메뉴와 맞지 않는다: {why}", prev),
                     lambda out: check_promo(
                         out, result["p2"], date.fromisoformat(target_date),
-                        partner_sns=NO_DATA not in partner_sns))
+                        partner_sns=NO_DATA not in partner_sns, events=events))
                 result["final"] = make(
                     4, "최종 검토 중...", call_p4,
                     lambda out: check_final(out, result["p2"], prices))
