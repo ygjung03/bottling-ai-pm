@@ -382,6 +382,36 @@ def build_proposal(item: dict, meta: dict) -> str:
     return "\n".join(out)
 
 
+def _page_number_footer(section) -> None:
+    """
+    Word 바닥글 가운데에 "1 / 3".
+
+    python-docx 에 쪽 번호 기능이 없어 필드 코드를 XML 로 직접 넣는다.
+    PAGE 는 현재 쪽, NUMPAGES 는 전체 쪽수이며 Word 가 열 때 계산한다.
+    """
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+    from docx.shared import Pt, RGBColor
+
+    p = section.footer.paragraphs[0]
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    def field(code: str) -> None:
+        run = p.add_run()
+        run.font.size, run.font.color.rgb = Pt(9), RGBColor(0x6B, 0x72, 0x80)
+        begin = run._r.makeelement(qn("w:fldChar"), {qn("w:fldCharType"): "begin"})
+        instr = run._r.makeelement(qn("w:instrText"), {qn("xml:space"): "preserve"})
+        instr.text = f" {code} "
+        end = run._r.makeelement(qn("w:fldChar"), {qn("w:fldCharType"): "end"})
+        for el in (begin, instr, end):
+            run._r.append(el)
+
+    field("PAGE")
+    sep = p.add_run(" / ")
+    sep.font.size, sep.font.color.rgb = Pt(9), RGBColor(0x6B, 0x72, 0x80)
+    field("NUMPAGES")
+
+
 def build_proposal_docx(item: dict, meta: dict) -> bytes:
     """
     제안서를 Word 로 만든다. 시안(docs/ref/피그마_예시2.pdf)처럼 문서번호·제목·
@@ -398,6 +428,7 @@ def build_proposal_docx(item: dict, meta: dict) -> bytes:
     for s in doc.sections:
         s.left_margin = s.right_margin = Cm(2.2)
         s.top_margin = s.bottom_margin = Cm(2.0)
+        _page_number_footer(s)
 
     p = doc.add_paragraph()
     r = p.add_run(h["no"])
@@ -550,8 +581,36 @@ def build_proposal_pdf(item: dict, meta: dict) -> bytes:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import cm
+    from reportlab.pdfgen import canvas as pdfcanvas
     from reportlab.platypus import (PageBreak, Paragraph, SimpleDocTemplate, Spacer,
                                     Table, TableStyle)
+
+    class Numbered(pdfcanvas.Canvas):
+        """
+        쪽마다 아래 가운데에 "1 / 3".
+
+        총 쪽수는 다 그려 봐야 알 수 있다. 그래서 페이지를 내보내지 않고 모아
+        두었다가, 마지막에 번호를 찍어 한꺼번에 내보낸다 (reportlab 관용구).
+        머리글·워터마크를 나중에 붙인다면 이 클래스 안에서 해야 한다.
+        """
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self._pages = []
+
+        def showPage(self):
+            self._pages.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._pages)
+            for state in self._pages:
+                self.__dict__.update(state)
+                self.setFont("Nanum", 9)
+                self.setFillColor("#6B7280")
+                self.drawCentredString(A4[0] / 2, 1.1 * cm,
+                                       f"{self._pageNumber} / {total}")
+                super().showPage()
+            super().save()
 
     _register_fonts()
     h = _head(meta)
@@ -644,7 +703,7 @@ def build_proposal_pdf(item: dict, meta: dict) -> bytes:
         # 0번은 작성일, 1번이 발신 명의다. 명의만 크게.
         flow.append(Paragraph(escape(line), right if i == 1 else right_small))
 
-    doc.build(flow)
+    doc.build(flow, canvasmaker=Numbered)
     return buf.getvalue()
 
 
