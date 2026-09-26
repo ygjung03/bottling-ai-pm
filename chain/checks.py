@@ -318,6 +318,14 @@ def check_menu(out: dict, beers: dict, p1: dict | None = None) -> Checked:
     if unknown:
         issues.append(f"정의에 없는 접근 {unknown} — {sorted(APPROACHES)} 중이어야 함")
 
+    # 세 안이 모두 같은 안주면 고를 것이 하나뿐이다 (p2 지시 1 — 두 안까지는 허용).
+    # 카페 2차에서 단품·세트·포장이 전부 바스크 치즈케이크로 나온 적이 있다 (9/26).
+    items = [str(m.get("협력사_제공") or m.get("메뉴명") or "") for m in menus]
+    if len(menus) >= 3 and len(set(items)) == 1:
+        issues.append(f"세 안이 모두 같은 안주다 — {items[0][:30]}. "
+                      f"두 안까지만 같은 품목을 쓸 수 있다. "
+                      f"협력사 메뉴 중 다른 것으로 한 안을 바꿀 것")
+
     for m in menus:
         mid = m.get("안_id", "?")
 
