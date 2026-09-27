@@ -113,6 +113,9 @@ def run(label: str, target: date, save: bool = False) -> None:
         p1_output=json.dumps(p1, ensure_ascii=False),
         p2_output=json.dumps(p2, ensure_ascii=False),
         p3_output=json.dumps(p3, ensure_ascii=False),
+        # (4)도 행사 원본을 받는다. (3)의 이벤트에는 판매 기간만 있어
+        # 배경에 행사 날짜를 쓸 때 섞였다 (9/22, runner.py 와 같은 이유).
+        events=build_events(target),
         beer_list=beer_text, partner_resources=partner_res,
         rec_reason=NO_REC_REASON,
         constraints=rules["p4"], fewshot=NO_FEWSHOT,

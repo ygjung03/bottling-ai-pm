@@ -133,6 +133,11 @@ def parse_beer_prices(text: str) -> dict[str, float]:
             if v["price"] is not None}
 
 
+# (4)의 최종 검수 항목 번호 (p4_consultant.yaml [최종 검수] 1~6).
+# 체크리스트에 이 밖의 번호가 오면 프롬프트에 없는 항목을 지어낸 것이다.
+CHECKLIST_ITEMS = frozenset(range(1, 7))
+
+
 def check_final(out: dict, p2: dict, beers: dict) -> Checked:
     """프롬프트가 지시한 제약을 지켰는지 본다."""
     issues: list[str] = []
@@ -254,9 +259,37 @@ def check_final(out: dict, p2: dict, beers: dict) -> Checked:
                 issues.append(f"{rid}: 매입 근거에 미확인 항목이 비었음 "
                               "— 협력사 실제 원가를 안다고 말하는 셈이다")
 
-    # 검수 결과를 남겼는가
-    if not (out.get("체크리스트") or []):
-        issues.append("체크리스트 없음")
+    # 체크리스트에는 통과하지 못한 항목만 들어온다 (p4 지시 4-2).
+    #
+    # 9/26 에 출력을 줄이려고 「통과 못 한 것만 적어라」로 바꿨는데 검사는
+    # 「비어 있으면 걸림」으로 남아 있었다. 전부 통과하면 빈 배열이 정상이라
+    # 매 호출마다 재호출이 한 번 헛돌았다 — MAX_REDO_FINAL 이 1 이므로 정작
+    # 문제가 생겼을 때 쓸 재호출이 남지 않았다 (9/27, 6건 중 6건 재현).
+    #
+    # 그래서 보는 것을 바꿨다. 비었는지가 아니라 적힌 것이 규칙대로인지 본다.
+    passed, noted, unknown = [], [], []
+    for i, row in enumerate(out.get("체크리스트") or []):
+        rid = row.get("안_id") or f"#{i + 1}"
+        no = row.get("항목")
+        if row.get("통과") is not False:
+            passed.append(f"{rid}-{no}")
+        elif not row.get("비고"):
+            noted.append(f"{rid}-{no}")
+        if no not in CHECKLIST_ITEMS:
+            unknown.append(f"{rid}-{no}")
+
+    # 걸린 항목을 한 줄로 묶는다. 이 문구가 그대로 재호출 프롬프트에 들어가므로
+    # 18줄(3안 × 6항목)이 되면 출력이 다시 길어져 JSON 이 깨진다.
+    if passed:
+        issues.append(f"체크리스트에 통과한 항목이 {len(passed)}건 들어 있다 "
+                      f"({', '.join(passed[:6])}{'…' if len(passed) > 6 else ''}) "
+                      f"— 통과하지 못한 항목만 남기고 나머지는 지울 것")
+    if noted:
+        issues.append(f"체크리스트 {', '.join(noted)}: 왜 통과하지 못했는지 "
+                      f"비고가 비었음")
+    if unknown:
+        issues.append(f"체크리스트 {', '.join(unknown)}: 검수는 "
+                      f"{min(CHECKLIST_ITEMS)}~{max(CHECKLIST_ITEMS)}번이다")
 
     return Checked(issues, warns)
 
