@@ -16,7 +16,7 @@ import re
 from datetime import date, timedelta
 from typing import NamedTuple
 
-from chain.inputs import NO_DATA
+from chain.inputs import NO_DATA, menu_rows
 
 
 class Checked(NamedTuple):
@@ -321,8 +321,16 @@ def _spend_levels(p1: dict | None) -> set[int]:
     return out
 
 
-def check_menu(out: dict, beers: dict, p1: dict | None = None) -> Checked:
-    """프롬프트가 지시한 제약을 지켰는지 본다."""
+def check_menu(out: dict, beers: dict, p1: dict | None = None,
+               fixed_menu: bool = False) -> Checked:
+    """
+    프롬프트가 지시한 제약을 지켰는지 본다.
+
+    fixed_menu — 협의로 메뉴가 하나로 정해진 뒤인가 (9/29)
+
+    그때는 세 안이 같은 안주인 것이 정상이다. 접근(단품·세트·포장)만 다르다.
+    끄지 않으면 재호출이 헛돌고, (2)가 협력사와 정하지 않은 메뉴를 끌어온다.
+    """
     issues: list[str] = []
     warns: list[str] = []
     menus = out.get("메뉴안") or []
@@ -353,8 +361,14 @@ def check_menu(out: dict, beers: dict, p1: dict | None = None) -> Checked:
 
     # 세 안이 모두 같은 안주면 고를 것이 하나뿐이다 (p2 지시 1 — 두 안까지는 허용).
     # 카페 2차에서 단품·세트·포장이 전부 바스크 치즈케이크로 나온 적이 있다 (9/26).
+    #
+    # 메뉴가 협의로 정해진 뒤에는 이 검사가 실행되지 않도록 끈다. 3안을 다 같은 메뉴로 해도 정상이기 때문.
+    #
+    # 수량이 다르면 이 검사를 그냥 지나가는 일이 있었다 — 「슈크림빵 1개」와 「슈크림빵 2개」가
+    # 다른 문자열이기 때문이다. 그래서 fixed_menu 없이도 통과하는 일이 있는데,
+    # 그것은 우연이지 검사가 맞게 도는 것이 아니다 (9/29).
     items = [str(m.get("협력사_제공") or m.get("메뉴명") or "") for m in menus]
-    if len(menus) >= 3 and len(set(items)) == 1:
+    if not fixed_menu and len(menus) >= 3 and len(set(items)) == 1:
         issues.append(f"세 안이 모두 같은 안주다 — {items[0][:30]}. "
                       f"두 안까지만 같은 품목을 쓸 수 있다. "
                       f"협력사 메뉴 중 다른 것으로 한 안을 바꿀 것")
@@ -511,10 +525,18 @@ def check_menu_sources(out: dict, partner: dict) -> Checked:
 
     올 곳은 둘뿐이다 — 협력사가 납품하는 메뉴, 그리고 바틀링이 준비하는 것.
     둘 다 아니면 아무도 준비하지 않는 재료라 그 안은 실행되지 않는다.
+
+    메뉴 목록은 menu_rows() 를 쓴다. AI 에게 보여준 것과 검사가 인정하는 것이
+    같아야 한다 — 직접 menu_prices 만 읽었다가, 컬럼을 나눈 뒤 후기 값만 있는
+    협력사가 「파는 메뉴가 없는 가게」로 보인 적이 있다 (9/29 프레즐).
+
+    협의로 정한 메뉴(agreed_menu)도 출처로 인정한다. 협의 자리에서 새로 나온
+    메뉴는 목록에 없을 수 있는데, 사장님이 직접 말한 것이라 막으면 안 된다.
     """
-    sold = " ".join(str(m.get("메뉴") or "")
-                    for m in (partner.get("menu_prices") or []))
-    base = f"{sold} {partner.get('signature_menu') or ''}"
+    sold = " ".join(str(m.get("메뉴") or "") for m in menu_rows(partner))
+    base = " ".join([sold,
+                     partner.get("signature_menu") or "",
+                     partner.get("agreed_menu") or ""])
 
     issues = []
     for m in out.get("메뉴안") or []:

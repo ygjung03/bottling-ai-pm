@@ -265,6 +265,15 @@ def generate(partner: dict, target: date, rnd: int) -> None:
 
     rnd 는 사람이 고른 회차다. 전에는 폼 값이 있으면 무조건 2차로 떠서 1차 과정을
     보여줄 수 없었다 (9/24).
+
+    2차면 협의 결과를 AI 에게 넘긴다 (9/29). 안 넘기면 협력사가 폼에 적은 매입가를
+    AI 가 못 봐서 2차가 1차와 같은 값을 낸다.
+
+    [A 갈래는 아직 반쪽이다]
+    「네, 그 메뉴로 진행하겠습니다」는 폼에서 메뉴 이름을 묻지 않는다. 1차에서 고른
+    안에서 가져와야 하는데, 화면에 그 안을 고르는 자리가 아직 없다(쟁점 1-1-2).
+    그래서 A 는 쪽지에 「확정 메뉴가 넘어오지 않았다」가 적힌다 — 조용히 틀리지는
+    않는다. 2차 화면을 만들 때 agreed_menu 를 함께 넘긴다(쟁점 1-3-2).
     """
     with st.status(f"{rnd}차 기획안 생성 중...", expanded=True) as box:
         step_slot = st.empty()
@@ -283,7 +292,7 @@ def generate(partner: dict, target: date, rnd: int) -> None:
             context=ctx,
             target_date=target.isoformat(),
             beer_list=build_beer_list(),
-            partner_res=build_partner_resources(partner),
+            partner_res=build_partner_resources(partner, confirmed=rnd == 2),
             partner_blockers=build_partner_blockers(partner),
             bottling_ingredients=BOTTLING_INGREDIENTS,
             margin_ref=MARGIN_REF,
@@ -297,6 +306,7 @@ def generate(partner: dict, target: date, rnd: int) -> None:
             past_cases=PAST_CASES,
             rec_reason=build_rec_reason(partner),
             partner=partner,
+            fixed_menu=rnd == 2,
             on_step=on_step,
         )
 
