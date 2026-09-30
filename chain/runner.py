@@ -361,5 +361,30 @@ def run(context: str, target_date: str, beer_list: str,
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
 
+    settle_deal(result, partner, fixed_menu)
     result["latency_ms"] = total_ms
     return result
+
+
+def settle_deal(result: dict, partner: dict | None, fixed_menu: bool) -> None:
+    """
+    협의가 끝난 매입가에서 「협의 필요」 표시를 뗀다 (9/30).
+
+    (4)는 매입가를 늘 「협의 필요」로 낸다 — 협력사 원가를 우리가 모르니 협의할
+    값이라는 뜻이고, 1차에서는 맞다. 그런데 2차는 협력사가 폼에 값을 적은 뒤다.
+    그대로 두면 확정 제안서에 「※ 협의 필요」와 「매입가 최종 확정」이 붙는다.
+    협력사가 2,500원에 주겠다고 적었는데 그렇게 나가면 이상하다.
+
+    금액은 덮지 않는다. 폼의 값은 개당 단가이고, 안에 따라 쓰는 수량이 달라
+    (2)(4)가 환산한 값이 맞다 — 3개 쓰는 안은 7,500원이다.
+
+    검사(check_final)가 「협의_필요는 항상 true」를 보므로 검사가 끝난 뒤에
+    고친다. 검사 쪽도 회차를 알게 만들 수 있지만, 매입 블록을 코드가 채우는
+    작업(남은_작업 ⑦-0)에서 함께 정리하는 편이 낫다.
+    """
+    if not (fixed_menu and partner and partner.get("agreed_price")):
+        return
+    for item in ((result.get("final") or {}).get("안") or []):
+        deal = item.get("매입")
+        if isinstance(deal, dict) and deal.get("바틀링_제안_매입가"):
+            deal["협의_필요"] = False

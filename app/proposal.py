@@ -250,7 +250,12 @@ def _sections(item: dict, meta: dict) -> list[dict]:
         if deal.get("바틀링_제안_매입가"):
             amount = won(deal["바틀링_제안_매입가"])
             shown = f"{amount:,}원" if amount else str(deal["바틀링_제안_매입가"])
-            offer.append(("제안 매입가", f"{shown}  ※ 협의 필요" if deal.get("협의_필요") else shown))
+            # 협의가 끝난 값은 제안이 아니다. 협력사가 폼에 적은 값을 그대로
+            # 쓴 것이므로 이름도 「매입가」로 적는다 (9/30).
+            if deal.get("협의_필요"):
+                offer.append(("제안 매입가", f"{shown}  ※ 협의 필요"))
+            else:
+                offer.append(("매입가", f"{shown}  (협의로 정한 값)"))
         if deal.get("협력사_수익"):
             offer.append(("협력사 수익", deal["협력사_수익"]))
         offer += [("보관 조건", item.get("보관_조건") or "협의 필요"),
