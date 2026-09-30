@@ -137,9 +137,19 @@ def run(context: str, target_date: str, beer_list: str,
         constraints: dict, fewshot: str,
         bottling_sns: str, partner_sns: str, events: str, past_cases: str,
         rec_reason: str, partner: dict | None = None,
-        on_step=None) -> dict:
+        fixed_menu: bool = False, on_step=None) -> dict:
     """
     on_step: 진행 상황 콜백 (Streamlit st.status 연동용)
+
+    fixed_menu: 협의로 메뉴가 하나로 정해진 뒤인가 (9/29)
+
+      그때는 세 안이 같은 안주인 것이 정상이라 그 검사를 끈다. 접근(단품·세트·
+      포장)만 다르다. 끄지 않으면 재호출이 헛돌고, (2)가 협력사와 정하지 않은
+      메뉴를 끌어온다.
+
+      build_partner_resources(confirmed=...) 와 같은 값을 넘긴다. 둘 다
+      「협의 결과를 반영하는 자리인가」를 뜻한다. 데이터로 판정하지 않는 이유는
+      그쪽 주석에 적어 두었다.
 
     partner 는 (2) 검사에 쓴다. 메뉴명에 나온 것이 협력사가 파는 것인지
     보려면 필요하다. None 이면 그 검사만 건너뛴다.
@@ -233,7 +243,7 @@ def run(context: str, target_date: str, beer_list: str,
 
         def check_p2(out) -> Checked:
             # (1)의 소비_수준을 같이 넘긴다 — 객단가를 판매가로 베꼈는지 보려면
-            found = check_menu(out, beers, result["p1"])
+            found = check_menu(out, beers, result["p1"], fixed_menu=fixed_menu)
             if not partner:
                 # 메뉴명에 나온 것이 어디서 오는지 보려면 협력사가 파는
                 # 메뉴를 알아야 한다. 안 넘겼으면 이 검사만 건너뛴다.
@@ -284,7 +294,8 @@ def run(context: str, target_date: str, beer_list: str,
                 3, "홍보 기획 중...", call_p3,
                 lambda out: check_promo(out, result["p2"],
                                         date.fromisoformat(target_date),
-                                        partner_sns=NO_DATA not in partner_sns))
+                                        partner_sns=NO_DATA not in partner_sns,
+                                        events=events))
             result["final"] = make(
                 4, "최종 검토 중...", call_p4,
                 lambda out: check_final(out, result["p2"], prices))
@@ -306,7 +317,7 @@ def run(context: str, target_date: str, beer_list: str,
                         label, f"- 메뉴와 맞지 않는다: {why}", prev),
                     lambda out: check_promo(
                         out, result["p2"], date.fromisoformat(target_date),
-                        partner_sns=NO_DATA not in partner_sns))
+                        partner_sns=NO_DATA not in partner_sns, events=events))
                 result["final"] = make(
                     4, "최종 검토 중...", call_p4,
                     lambda out: check_final(out, result["p2"], prices))
@@ -350,5 +361,30 @@ def run(context: str, target_date: str, beer_list: str,
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
 
+    settle_deal(result, partner, fixed_menu)
     result["latency_ms"] = total_ms
     return result
+
+
+def settle_deal(result: dict, partner: dict | None, fixed_menu: bool) -> None:
+    """
+    협의가 끝난 매입가에서 「협의 필요」 표시를 뗀다 (9/30).
+
+    (4)는 매입가를 늘 「협의 필요」로 낸다 — 협력사 원가를 우리가 모르니 협의할
+    값이라는 뜻이고, 1차에서는 맞다. 그런데 2차는 협력사가 폼에 값을 적은 뒤다.
+    그대로 두면 확정 제안서에 「※ 협의 필요」와 「매입가 최종 확정」이 붙는다.
+    협력사가 2,500원에 주겠다고 적었는데 그렇게 나가면 이상하다.
+
+    금액은 덮지 않는다. 폼의 값은 개당 단가이고, 안에 따라 쓰는 수량이 달라
+    (2)(4)가 환산한 값이 맞다 — 3개 쓰는 안은 7,500원이다.
+
+    검사(check_final)가 「협의_필요는 항상 true」를 보므로 검사가 끝난 뒤에
+    고친다. 검사 쪽도 회차를 알게 만들 수 있지만, 매입 블록을 코드가 채우는
+    작업(남은_작업 ⑦-0)에서 함께 정리하는 편이 낫다.
+    """
+    if not (fixed_menu and partner and partner.get("agreed_price")):
+        return
+    for item in ((result.get("final") or {}).get("안") or []):
+        deal = item.get("매입")
+        if isinstance(deal, dict) and deal.get("바틀링_제안_매입가"):
+            deal["협의_필요"] = False

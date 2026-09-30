@@ -1,6 +1,16 @@
 /**
  * 구글폼 응답 → Supabase partners 연동 (T21)
  *
+ * [폼이 둘이다] (2026-09-28)
+ *   「협의 사항 입력폼」              모두. 갈래를 정하고 조건을 받는다
+ *   「협의 사항 입력폼 (메뉴 확정)」   메뉴를 다시 정한 경우(B/C)만
+ *
+ *   문항 제목이 같으므로 **이 파일 하나가 두 폼을 모두 처리한다.** 폼마다
+ *   응답 시트를 만들고 각 시트에 이 내용을 붙여 트리거를 따로 걸면 된다.
+ *
+ *   폼 2 에 없는 문항(갈래·사진 등)은 아래 「빈 값으로 지우지 않는다」 규칙에
+ *   걸려 payload 에서 빠진다. 폼 1 에서 받은 값이 덮이지 않는다.
+ *
  * [어디에 붙이나]
  *   폼과 연결된 응답 시트를 먼저 만든다 (폼 → 응답 → 스프레드시트에 연결).
  *   그 시트에서 확장 프로그램 → Apps Script → 이 내용을 붙인다.
@@ -23,37 +33,87 @@
  * [키를 코드에 적지 않는다]
  *   프로젝트 설정 → 스크립트 속성에 둘을 넣는다.
  *     SUPABASE_URL   https://xxxx.supabase.co
- *     SUPABASE_KEY   프로젝트 API 키
+ *     SUPABASE_KEY   프로젝트 anon 키
+ *
+ *   anon 키를 쓴다. RLS 로 필요한 것만 열어 두었다 — 읽기·넣기·고치기는 되고
+ *   테이블 삭제는 안 된다 (db/rls_0928.sql). service_role 을 쓰지 않는 이유는
+ *   그 키가 RLS 를 전부 우회하기 때문이다.
  *
  * [문항 제목으로 답을 찾는다]
- *   docs/협력사_구글폼_문항.md 의 제목과 아래 FIELDS 가 같아야 한다.
- *   제목이 어긋나면 그 항목만 조용히 비어서 들어간다. 그래서 아래에서
+ *   docs/private/쟁점_2차흐름과_폼_0925.md 2절의 제목과 아래 FIELDS 가 같아야
+ *   한다. 제목이 어긋나면 그 항목만 조용히 비어서 들어간다. 그래서 아래에서
  *   못 찾은 제목을 따로 기록에 남긴다.
+ *
+ *   2026-09-28 에 두 폼의 응답 시트 1행을 문서와 글자 단위로 대조했다.
+ *   폼 1 은 16/16, 폼 2 는 8/8 일치한다.
  *
  * [어느 협력사인지는 확인 코드로 찾는다]
  *   partners.invite_code 와 맞춘다. 코드가 없거나 맞는 행이 없으면
  *   아무것도 쓰지 않는다. 엉뚱한 협력사 정보를 덮어쓰면 안 된다.
+ *
+ * [사진은 Supabase Storage 로 옮긴다]
+ *   구글 폼에 올린 파일은 폼 소유자 드라이브에 들어가는데, 그 링크로는 우리 앱이
+ *   사진을 받을 수 없다 — 인증 없이 열면 구글 로그인 화면이 온다(9/28 확인).
+ *   앱은 Streamlit Cloud 에서 도는 파이썬 코드라 구글 계정이 없다.
+ *
+ *   드라이브 파일 권한을 「링크가 있는 모든 사용자」로 푸는 길도 있지만, 협력사가
+ *   준 자료를 공개로 돌리는 것이라 택하지 않았다. 대신 여기서 우리 저장소로
+ *   올리고 그 경로를 partners.menu_photo_url 에 남긴다 (남은_작업 ②-2).
  */
 
+// ── 문항 제목 ───────────────────────────────────────────────
+// [일치필요] 폼에 적힌 것과 글자 하나까지 같아야 한다.
 var FIELDS = {
-  code:      '확인 코드',
-  name:      '가게 이름',
-  category:  '업종',
-  signature: '그중 대표 메뉴',
-  slots:     '납품 가능한 요일과 시간',
-  contact:   '협의 가능한 시간',
-  sns:       '주로 쓰시는 SNS',
-  content:   '주로 올리시는 것',
-  blockers:  '지켜야 할 조건'
+  code:        '확인 코드는 무엇인가요?',
+  reply:       '제안받은 메뉴로 진행하시겠어요?',
+
+  // 메뉴가 정해진 뒤 묻는 것. 폼 1 섹션 2·3 과 폼 2 가 같은 문항을 쓴다.
+  agreedMenu:  '어떤 메뉴로 협업을 진행하실건가요?',
+  salePrice:   '그 메뉴는 손님에게 얼마에 파시나요?',
+  buyPrice:    '이 메뉴는 개당 얼마에 주실 수 있나요?',
+  supplyQty:   '하루에 몇 개씩 주실 수 있나요?',
+  storage:     '어떻게 보관하고 며칠 안에 팔아야 하나요?',
+  takeout:     '이 메뉴는 포장 판매가 가능한가요?',
+  blockers:    '지켜야 할 조건이 있으면 알려주세요.',
+
+  // 메뉴를 다시 정하는 경우 (B/C). 폼 1 섹션 4 에만 있다.
+  photo:       '메뉴판 사진을 올려주세요.',
+  menuNote:    '사진을 올리기 어려우시면 파시는 메뉴중 협업하면 괜찮겠다 하는 메뉴 몇개를 적어주세요.',
+  takeoutNote: '포장해서 팔기 어려운 메뉴가 있으면 알려주세요.',
+
+  // 메뉴와 무관한 것. 폼 1 섹션 5·6.
+  slots:       '납품은 어느 요일 어느 시간에 가능하신가요?',
+  contact:     '전화나 방문으로 이야기 나누기 편한 때는 언제인가요?',
+  sns:         '주로 쓰시는 SNS 는 어떤것인가요?',
+  content:     '그 채널에 주로 올리시는 것은 무엇인가요?'
 };
 
-var MENU_COUNT = 5;
+// 「제안받은 메뉴로 진행하시겠어요?」의 답 → 갈래 코드.
+// 갈래별로 2차를 어떻게 만드는지는 쟁점 문서 1-3 에 있다.
+var REPLY_CODES = {
+  '네, 그 메뉴로 진행하겠습니다.': 'A',
+  '협의하여 정한 다른 메뉴가 있습니다.': 'A2',
+  '메뉴를 전체 메뉴 중에서 다시 추천받고 싶습니다.': 'B',
+  '제안받은 메뉴는 빼고 전체 메뉴 중에서 다시 추천받고 싶습니다.': 'C'
+};
 
-/** "3,000" · "3000원" → 3000. 숫자가 없으면 null. */
+// 사진을 올릴 버킷. 비공개다 — 키가 없으면 아무것도 못 본다.
+var BUCKET = 'partner-menus';
+
+/**
+ * "2,500" · "2500원" · "약 2500원" → 2500. 숫자가 없으면 null.
+ *
+ * 숫자 아닌 것을 전부 지우지 않고 **첫 숫자 묶음만** 가져온다.
+ * 전부 지우면 「2500~3000」이 25003000 이 된다 — 매입가로 그 값이 들어가면
+ * 제안서에 그대로 나간다. 폼에 응답 확인(숫자·초과 0)을 걸어 범위 표기를
+ * 막았지만, 여기서도 한 겹 더 둔다 (9/28).
+ */
 function toNumber(text) {
   if (!text) return null;
-  var digits = String(text).replace(/[^0-9]/g, '');
-  return digits ? parseInt(digits, 10) : null;
+  var m = String(text).match(/[0-9][0-9,]*/);
+  if (!m) return null;
+  var n = parseInt(m[0].replace(/,/g, ''), 10);
+  return isNaN(n) ? null : n;
 }
 
 /**
@@ -61,6 +121,9 @@ function toNumber(text) {
  *
  * missing 에 못 찾은 제목을 모아 둔다. 폼에서 제목을 고쳤을 때
  * 조용히 비어서 저장되는 것을 막기 위한 것이다.
+ *
+ * 폼 2 처럼 그 문항이 애초에 없는 폼도 이 함수를 지나간다. 그때 missing 에
+ * 쌓이는 것은 정상이므로, 기록만 남기고 예외를 던지지 않는다.
  */
 function answer(values, title, missing) {
   if (!(title in values)) {
@@ -73,24 +136,135 @@ function answer(values, title, missing) {
 }
 
 /**
- * 메뉴 1~5 를 [{메뉴, 가격, 납품가}] 으로 모은다.
+ * 답이 여러 개인 문항의 값을 모두 이어 준다 (파일 업로드).
  *
- * 메뉴명이 없는 줄은 버린다. 납품가는 선택 항목이라 비어 있으면 null 이고,
- * 그 메뉴의 매입가는 협의로 정해진다.
+ * 파일을 여러 장 올리면 한 칸에 쉼표로 이어져 들어온다. answer() 는 배열의
+ * 첫 값만 보므로 그 경우를 놓친다.
  */
-function collectMenus(values) {
+function answerAll(values, title) {
+  if (!(title in values)) return '';
+  var v = values[title];
+  if (!v) return '';
+  return (Array.isArray(v) ? v.join(', ') : String(v)).trim();
+}
+
+/**
+ * 드라이브 링크·id 문자열에서 파일 id 만 뽑는다.
+ *
+ * 폼 응답에 들어오는 형태가 여러 가지다.
+ *   https://drive.google.com/open?id=FILEID
+ *   https://drive.google.com/file/d/FILEID/view?usp=drivesdk
+ */
+function driveIds(text) {
   var out = [];
-  for (var i = 1; i <= MENU_COUNT; i++) {
-    var name = answer(values, '메뉴 ' + i);
-    if (!name) continue;
-    out.push({
-      '메뉴': name,
-      '가격': toNumber(answer(values, '메뉴 ' + i + ' 가격')),
-      '납품가': toNumber(answer(values, '메뉴 ' + i + ' 납품가'))
-    });
-  }
+  if (!text) return out;
+  String(text).split(',').forEach(function (part) {
+    var s = part.trim();
+    if (!s) return;
+    var m = s.match(/[?&]id=([\w-]{20,})/)
+         || s.match(/\/file\/d\/([\w-]{20,})/)
+         || s.match(/^([\w-]{20,})$/);
+    if (m) out.push(m[1]);
+  });
   return out;
 }
+
+/** content type → 파일 확장자. 모르는 것은 bin 으로 둔다. */
+function extOf(contentType) {
+  var map = {
+    'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png',
+    'image/webp': 'webp', 'image/heic': 'heic', 'image/heif': 'heic',
+    'image/gif': 'gif'
+  };
+  return map[String(contentType).toLowerCase()] || 'bin';
+}
+
+/**
+ * 드라이브에 올라온 사진을 Supabase Storage 로 옮긴다.
+ *
+ * 반환: { paths: [...올라간 경로], failed: [...실패 사유] }
+ *
+ * 실패해도 예외를 던지지 않는다. 폼 값 저장이 먼저이고, 사진 하나 때문에
+ * 매입가·조건이 다 날아가면 손해다(작업 원칙 ⑤). 대신 사유를 모아 두고
+ * 저장이 끝난 뒤에 알린다.
+ *
+ * 드라이브의 원본은 지우지 않는다. 옮긴 것이 잘못됐을 때 되돌릴 데가 있어야
+ * 하고, 사진 몇 장이라 용량이 문제되지 않는다.
+ *
+ * [경로에 드라이브 파일 id 를 쓴다]
+ *   트리거는 두 번 돌 수 있다 — 응답을 수정해 다시 내거나, 스크립트를 고쳐
+ *   같은 응답을 다시 돌릴 때다. 경로에 시각을 넣으면 그때마다 새 파일이 생기고
+ *   menu_photo_url 은 새 경로로 덮이면서 **옛 파일만 버킷에 쓰레기로 남는다.**
+ *
+ *   파일 id 는 그 사진의 고유값이라 같은 사진이면 같은 경로가 된다.
+ *   x-upsert 로 덮어쓰므로 몇 번을 돌려도 쌓이지 않는다.
+ *
+ *   버킷이 비공개라 id 가 경로에 드러나도 상관없고, 어느 드라이브 파일에서
+ *   왔는지 되짚을 수 있어 오히려 낫다.
+ */
+function movePhotos(text, code, url, key) {
+  var ids = driveIds(text);
+  var paths = [];
+  var failed = [];
+  if (!ids.length) return { paths: paths, failed: failed };
+
+  ids.forEach(function (id) {
+    try {
+      var blob = DriveApp.getFileById(id).getBlob();
+      var ctype = blob.getContentType();
+      var path = code + '/' + id + '.' + extOf(ctype);
+
+      var res = UrlFetchApp.fetch(
+        url + '/storage/v1/object/' + BUCKET + '/' + encodeURIComponent(path),
+        {
+          method: 'post',
+          contentType: ctype,
+          headers: {
+            apikey: key,
+            Authorization: 'Bearer ' + key,
+            'x-upsert': 'true'      // 같은 사진을 다시 올리면 덮는다
+          },
+          payload: blob.getBytes(),
+          muteHttpExceptions: true
+        });
+
+      var status = res.getResponseCode();
+      if (status >= 200 && status < 300) {
+        paths.push(path);
+      } else {
+        failed.push(id + ' → HTTP ' + status + ' ' + res.getContentText());
+      }
+    } catch (err) {
+      failed.push(id + ' → ' + err);
+    }
+  });
+
+  return { paths: paths, failed: failed };
+}
+
+/**
+ * [이미 제출된 응답을 다시 돌리려면]
+ *
+ * 트리거는 앞으로 들어오는 제출에만 붙는다. 스크립트를 고치거나 속성을 빠뜨려
+ * 실패했을 때, 그 응답을 소급해서 처리하지 않는다.
+ *
+ * 폼 설정 → 「제출 후 수정」을 켜 두면 제출 완료 화면에 수정 링크가 나온다.
+ * **그 링크를 적어 두고** 그것으로 다시 제출한다.
+ *
+ *   「제출 후 수정」은 사후에 켜도 이미 낸 응답에는 링크가 안 생긴다. 켠 뒤에
+ *   낸 것부터 적용된다. 그리고 응답 시트에는 수정 URL 열이 없어 링크를 잃으면
+ *   다시 얻기 어렵다.
+ *
+ * 시트의 마지막 행을 읽어 onFormSubmit 을 직접 부르는 함수를 두었다가 뺐다
+ * (9/28). 둘이 걸려서다.
+ *   · SpreadsheetApp 읽기 권한이 새로 필요하다 — onFormSubmit 은 시트를 안 읽는다
+ *   · 시트에 응답이 여러 개 쌓이면 「마지막 행」이 누구 것인지 모른 채 실행해
+ *     엉뚱한 협력사를 덮을 수 있다. 같은 값으로 덮으니 망가지지는 않지만
+ *     updated_at 이 바뀌어 「마지막 제출 시점」 기록이 틀려진다
+ *
+ * 수정 제출이 트리거를 다시 돌리지 않는 것으로 확인되면 그 함수를 다시 쓴다.
+ * 그때는 한 번만 쓰고 빼는 편이 낫다.
+ */
 
 function onFormSubmit(e) {
   var values = e && e.namedValues;
@@ -106,37 +280,74 @@ function onFormSubmit(e) {
                     + '협력사가 그 칸을 지우지 않았는지 확인할 것.');
   }
 
-  var menus = collectMenus(values);
+  var props = PropertiesService.getScriptProperties();
+  var url = props.getProperty('SUPABASE_URL');
+  var key = props.getProperty('SUPABASE_KEY');
+  if (!url || !key) {
+    throw new Error('스크립트 속성에 SUPABASE_URL / SUPABASE_KEY 가 없다.');
+  }
+
+  // 「지켜야 할 조건」은 한 줄에 하나씩 적게 한다. 「없음」이라고 적힌 경우는
+  // 여기서 걸러내지 않는다 — 「아직 안 냈다」와 「없다고 확인해 줬다」를
+  // 구분해야 하고 그 판단은 chain/inputs.py 의 NO_BLOCKER 가 한다.
   var blockers = answer(values, FIELDS.blockers, missing)
     .split('\n')
     .map(function (s) { return s.trim(); })
     .filter(function (s) { return s.length > 0; });
 
+  // 갈래. 선택지 문장을 코드로 바꾼다. 못 알아본 답은 원문을 그대로 넣고
+  // 크게 기록한다 — 값을 버리면 복구할 데가 없다. 화면이 넷 중 하나가
+  // 아닌 값을 잡는다 (db/migrate_0928.sql 의 reply_choice 주석).
+  var replyText = answer(values, FIELDS.reply, missing);
+  var reply = '';
+  if (replyText) {
+    reply = REPLY_CODES[replyText] || '';
+    if (!reply) {
+      reply = replyText;
+      Logger.log('갈래를 못 알아봤다: "' + replyText + '"'
+                 + '  → 폼 선택지 문구가 바뀌었는지 확인할 것 (REPLY_CODES)');
+    }
+  }
+
+  // 사진을 우리 저장소로 옮긴다. 폼 2 에는 이 문항이 없어 빈 결과가 온다.
+  var photos = movePhotos(answerAll(values, FIELDS.photo), code, url, key);
+
   var payload = {
-    name:             answer(values, FIELDS.name, missing),
-    category:         answer(values, FIELDS.category, missing),
-    menu_prices:      menus,
-    signature_menu:   answer(values, FIELDS.signature, missing)
-                      || (menus.length ? menus[0]['메뉴'] : null),
-    available_slots:  answer(values, FIELDS.slots, missing),
-    contact_slots:    answer(values, FIELDS.contact, missing),
-    sns_channel:      answer(values, FIELDS.sns, missing) || null,
-    sns_content_type: answer(values, FIELDS.content, missing) || null,
-    blockers:         blockers,
+    reply_choice:      reply,
+    agreed_menu:       answer(values, FIELDS.agreedMenu, missing),
+    agreed_sale_price: toNumber(answer(values, FIELDS.salePrice, missing)),
+    agreed_price:      toNumber(answer(values, FIELDS.buyPrice, missing)),
+    supply_qty:        answer(values, FIELDS.supplyQty, missing),
+    storage_note:      answer(values, FIELDS.storage, missing),
+    takeout:           answer(values, FIELDS.takeout, missing),
+    takeout_note:      answer(values, FIELDS.takeoutNote, missing),
+    menu_note:         answer(values, FIELDS.menuNote, missing),
+    menu_photo_url:    photos.paths,
+
+    available_slots:   answer(values, FIELDS.slots, missing),
+    contact_slots:     answer(values, FIELDS.contact, missing),
+    sns_channel:       answer(values, FIELDS.sns, missing),
+    sns_content_type:  answer(values, FIELDS.content, missing),
+    blockers:          blockers,
 
     // 협력사가 언제 제출했는지. partners.updated_at 은 DEFAULT now() 뿐이라
     // 갱신 시 자동으로 바뀌지 않는다. 안 넣으면 행을 처음 만든 날짜가
     // 그대로 남아 마지막 제출 시점을 알 수 없다.
-    updated_at:       new Date().toISOString()
+    updated_at:        new Date().toISOString()
   };
 
   if (missing.length) {
-    Logger.log('폼에서 못 찾은 문항: ' + missing.join(' / ')
-               + '  → 제목이 바뀌었는지 확인할 것 (docs/협력사_구글폼_문항.md)');
+    Logger.log('이 폼에 없는 문항: ' + missing.join(' / ')
+               + '  → 폼 2 라면 정상이다. 폼 1 이라면 제목이 바뀌었는지 확인할 것'
+               + ' (docs/private/쟁점_2차흐름과_폼_0925.md 2절)');
   }
 
   // 빈 값으로 기존 내용을 지우지 않는다. 협력사가 일부만 고쳐 다시 냈을 때
   // 안 적은 항목까지 날아가면 이전 답을 잃는다.
+  //
+  // **폼 2 가 폼 1 의 값을 덮지 않는 것도 이 규칙이 한다.** 폼 2 에 없는
+  // 문항(갈래·사진·메뉴 이름 등)은 여기서 빠진다.
+  //
   // updated_at 은 항상 값이 있으므로 여기서 지워지지 않는다.
   Object.keys(payload).forEach(function (k) {
     var v = payload[k];
@@ -144,13 +355,6 @@ function onFormSubmit(e) {
       delete payload[k];
     }
   });
-
-  var props = PropertiesService.getScriptProperties();
-  var url = props.getProperty('SUPABASE_URL');
-  var key = props.getProperty('SUPABASE_KEY');
-  if (!url || !key) {
-    throw new Error('스크립트 속성에 SUPABASE_URL / SUPABASE_KEY 가 없다.');
-  }
 
   var res = UrlFetchApp.fetch(
     url + '/rest/v1/partners?invite_code=eq.' + encodeURIComponent(code),
@@ -177,5 +381,17 @@ function onFormSubmit(e) {
     throw new Error('확인 코드 "' + code + '" 에 맞는 협력사가 없다. '
                     + '아무것도 쓰이지 않았다.');
   }
-  Logger.log('저장 완료 — 메뉴 ' + menus.length + '개, 불가 조건 ' + blockers.length + '개');
+
+  Logger.log('저장 완료 — 갈래 ' + (reply || '(없음)')
+             + ', 사진 ' + photos.paths.length + '장'
+             + ', 불가 조건 ' + blockers.length + '개'
+             + ', 채운 항목 ' + Object.keys(payload).length + '개');
+
+  // 폼 값은 저장됐지만 사진이 하나라도 실패하면 알린다. 알림 메일은 예외를
+  // 던질 때만 오므로 여기서 던진다 — 저장은 끝난 뒤라 값이 날아가지 않는다.
+  if (photos.failed.length) {
+    throw new Error('폼 값은 저장됐다. 다만 사진 '
+                    + photos.failed.length + '장을 옮기지 못했다: '
+                    + photos.failed.join(' / '));
+  }
 }

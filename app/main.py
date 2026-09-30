@@ -300,7 +300,7 @@ if not is_owner():
     st.stop()
 
 # ── 로그인 후 ──
-render_topnav()
+render_topnav("logout")
 
 st.markdown(
     '<div class="hero">'
@@ -357,5 +357,5 @@ for i, (col, (icon_key, title, desc, target)) in enumerate(zip(cols, cards)):
 
 st.write("")
 st.divider()
-st.caption("협력사 입력 폼은 초대 코드로 접근합니다. "
-           "파트너 추천 화면에서 링크를 만들 수 있습니다.")
+st.caption("협력사와 채울 폼 링크는 기획안 생성 화면의 보관함에서 만듭니다. "
+           "협력사에 보낼 안을 고르면 해당 화면에서 받을 수 있습니다.")

@@ -13,10 +13,10 @@ tests/test_p4.py 안에 있던 검사를 옮겨 왔다. 테스트는 여기서 �
 """
 import json
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import NamedTuple
 
-from chain.inputs import NO_DATA
+from chain.inputs import NO_DATA, menu_rows
 
 
 class Checked(NamedTuple):
@@ -34,6 +34,19 @@ class Checked(NamedTuple):
     @property
     def all(self) -> list[str]:
         return self.redo + self.warn
+
+
+def _won(text) -> int | None:
+    """
+    "1800원 — 협력사 정가 3000원 대비 60%" 처럼 설명이 붙은 값에서 앞의 금액만.
+    "산출 불가" 나 숫자가 없으면 None — 모르는 값을 0 으로 두면 검사가 헛돈다.
+    """
+    if text is None:
+        return None
+    if isinstance(text, (int, float)):
+        return int(text)
+    m = re.search(r"(\d[\d,]*)", str(text))
+    return int(m.group(1).replace(",", "")) if m else None
 
 # 모든 안에 반드시 있어야 하는 것.
 # 대표가 이 문서만 보고 실행할 수 있어야 한다(명세서 4-2).
@@ -118,6 +131,11 @@ def parse_beer_prices(text: str) -> dict[str, float]:
     """
     return {k: v["price"] for k, v in parse_beers(text).items()
             if v["price"] is not None}
+
+
+# (4)의 최종 검수 항목 번호 (p4_consultant.yaml [최종 검수] 1~6).
+# 체크리스트에 이 밖의 번호가 오면 프롬프트에 없는 항목을 지어낸 것이다.
+CHECKLIST_ITEMS = frozenset(range(1, 7))
 
 
 def check_final(out: dict, p2: dict, beers: dict) -> Checked:
@@ -221,6 +239,13 @@ def check_final(out: dict, p2: dict, beers: dict) -> Checked:
             issues.append(f"{rid}: 매입의 협의_필요가 {deal.get('협의_필요')} "
                           f"— 항상 true 여야 한다")
 
+        # 매입가는 100원 단위로 끊는다. 협의 자리에서 주고받는 값이라 1원 단위는
+        # 뜻이 없고, 문서에 그대로 나간다 (9/26).
+        buy = _won(deal.get("바틀링_제안_매입가"))
+        if buy and buy % 100:
+            issues.append(f"{rid}: 제안 매입가 {buy:,}원 — 100원 단위로 끊을 것 "
+                          f"(예: {buy // 100 * 100:,}원)")
+
         # 대표님이 이 숫자를 들고 협상하신다. 어디서 나온 값인지 보여야 한다.
         why = deal.get("근거")
         if why is not None and not isinstance(why, dict):
@@ -234,9 +259,37 @@ def check_final(out: dict, p2: dict, beers: dict) -> Checked:
                 issues.append(f"{rid}: 매입 근거에 미확인 항목이 비었음 "
                               "— 협력사 실제 원가를 안다고 말하는 셈이다")
 
-    # 검수 결과를 남겼는가
-    if not (out.get("체크리스트") or []):
-        issues.append("체크리스트 없음")
+    # 체크리스트에는 통과하지 못한 항목만 들어온다 (p4 지시 4-2).
+    #
+    # 9/26 에 출력을 줄이려고 「통과 못 한 것만 적어라」로 바꿨는데 검사는
+    # 「비어 있으면 걸림」으로 남아 있었다. 전부 통과하면 빈 배열이 정상이라
+    # 매 호출마다 재호출이 한 번 헛돌았다 — MAX_REDO_FINAL 이 1 이므로 정작
+    # 문제가 생겼을 때 쓸 재호출이 남지 않았다 (9/27, 6건 중 6건 재현).
+    #
+    # 그래서 보는 것을 바꿨다. 비었는지가 아니라 적힌 것이 규칙대로인지 본다.
+    passed, noted, unknown = [], [], []
+    for i, row in enumerate(out.get("체크리스트") or []):
+        rid = row.get("안_id") or f"#{i + 1}"
+        no = row.get("항목")
+        if row.get("통과") is not False:
+            passed.append(f"{rid}-{no}")
+        elif not row.get("비고"):
+            noted.append(f"{rid}-{no}")
+        if no not in CHECKLIST_ITEMS:
+            unknown.append(f"{rid}-{no}")
+
+    # 걸린 항목을 한 줄로 묶는다. 이 문구가 그대로 재호출 프롬프트에 들어가므로
+    # 18줄(3안 × 6항목)이 되면 출력이 다시 길어져 JSON 이 깨진다.
+    if passed:
+        issues.append(f"체크리스트에 통과한 항목이 {len(passed)}건 들어 있다 "
+                      f"({', '.join(passed[:6])}{'…' if len(passed) > 6 else ''}) "
+                      f"— 통과하지 못한 항목만 남기고 나머지는 지울 것")
+    if noted:
+        issues.append(f"체크리스트 {', '.join(noted)}: 왜 통과하지 못했는지 "
+                      f"비고가 비었음")
+    if unknown:
+        issues.append(f"체크리스트 {', '.join(unknown)}: 검수는 "
+                      f"{min(CHECKLIST_ITEMS)}~{max(CHECKLIST_ITEMS)}번이다")
 
     return Checked(issues, warns)
 
@@ -268,8 +321,16 @@ def _spend_levels(p1: dict | None) -> set[int]:
     return out
 
 
-def check_menu(out: dict, beers: dict, p1: dict | None = None) -> Checked:
-    """프롬프트가 지시한 제약을 지켰는지 본다."""
+def check_menu(out: dict, beers: dict, p1: dict | None = None,
+               fixed_menu: bool = False) -> Checked:
+    """
+    프롬프트가 지시한 제약을 지켰는지 본다.
+
+    fixed_menu — 협의로 메뉴가 하나로 정해진 뒤인가 (9/29)
+
+    그때는 세 안이 같은 안주인 것이 정상이다. 접근(단품·세트·포장)만 다르다.
+    끄지 않으면 재호출이 헛돌고, (2)가 협력사와 정하지 않은 메뉴를 끌어온다.
+    """
     issues: list[str] = []
     warns: list[str] = []
     menus = out.get("메뉴안") or []
@@ -297,6 +358,20 @@ def check_menu(out: dict, beers: dict, p1: dict | None = None) -> Checked:
     unknown = [a for a in approaches if a not in APPROACHES]
     if unknown:
         issues.append(f"정의에 없는 접근 {unknown} — {sorted(APPROACHES)} 중이어야 함")
+
+    # 세 안이 모두 같은 안주면 고를 것이 하나뿐이다 (p2 지시 1 — 두 안까지는 허용).
+    # 카페 2차에서 단품·세트·포장이 전부 바스크 치즈케이크로 나온 적이 있다 (9/26).
+    #
+    # 메뉴가 협의로 정해진 뒤에는 이 검사가 실행되지 않도록 끈다. 3안을 다 같은 메뉴로 해도 정상이기 때문.
+    #
+    # 수량이 다르면 이 검사를 그냥 지나가는 일이 있었다 — 「슈크림빵 1개」와 「슈크림빵 2개」가
+    # 다른 문자열이기 때문이다. 그래서 fixed_menu 없이도 통과하는 일이 있는데,
+    # 그것은 우연이지 검사가 맞게 도는 것이 아니다 (9/29).
+    items = [str(m.get("협력사_제공") or m.get("메뉴명") or "") for m in menus]
+    if not fixed_menu and len(menus) >= 3 and len(set(items)) == 1:
+        issues.append(f"세 안이 모두 같은 안주다 — {items[0][:30]}. "
+                      f"두 안까지만 같은 품목을 쓸 수 있다. "
+                      f"협력사 메뉴 중 다른 것으로 한 안을 바꿀 것")
 
     for m in menus:
         mid = m.get("안_id", "?")
@@ -450,10 +525,18 @@ def check_menu_sources(out: dict, partner: dict) -> Checked:
 
     올 곳은 둘뿐이다 — 협력사가 납품하는 메뉴, 그리고 바틀링이 준비하는 것.
     둘 다 아니면 아무도 준비하지 않는 재료라 그 안은 실행되지 않는다.
+
+    메뉴 목록은 menu_rows() 를 쓴다. AI 에게 보여준 것과 검사가 인정하는 것이
+    같아야 한다 — 직접 menu_prices 만 읽었다가, 컬럼을 나눈 뒤 후기 값만 있는
+    협력사가 「파는 메뉴가 없는 가게」로 보인 적이 있다 (9/29 프레즐).
+
+    협의로 정한 메뉴(agreed_menu)도 출처로 인정한다. 협의 자리에서 새로 나온
+    메뉴는 목록에 없을 수 있는데, 사장님이 직접 말한 것이라 막으면 안 된다.
     """
-    sold = " ".join(str(m.get("메뉴") or "")
-                    for m in (partner.get("menu_prices") or []))
-    base = f"{sold} {partner.get('signature_menu') or ''}"
+    sold = " ".join(str(m.get("메뉴") or "") for m in menu_rows(partner))
+    base = " ".join([sold,
+                     partner.get("signature_menu") or "",
+                     partner.get("agreed_menu") or ""])
 
     issues = []
     for m in out.get("메뉴안") or []:
@@ -535,6 +618,34 @@ def duration_days(text: str) -> int | None:
     return None
 
 
+# build_events() 가 내는 줄에서 행사 제목과 기간을 뽑는다.
+#   - 2026 한강 불빛 공연 / 2026-10-09～2026-10-09 (협업 실행일 당일 시작) / 뚝섬한강공원, 약 280m
+EVENT_LINE = re.compile(r"-\s*(.+?)\s*/\s*(\d{4}-\d{2}-\d{2})\s*～\s*(\d{4}-\d{2}-\d{2})")
+
+
+def outside_events(events: str, sale_from: date, sale_to: date) -> list[tuple[str, date]]:
+    """
+    판매 기간과 겹치지 않는 행사들. (제목, 시작일) 목록을 돌려준다.
+
+    그날 우리는 팔지 않으므로 홍보에 엮을 수 없다 (p3 규칙 12).
+    """
+    out = []
+    for title, a, b in EVENT_LINE.findall(events or ""):
+        try:
+            start, end = date.fromisoformat(a), date.fromisoformat(b)
+        except ValueError:
+            continue
+        if end < sale_from or start > sale_to:
+            out.append((title, start))
+    return out
+
+
+def mentions_date(text: str, d: date) -> bool:
+    """글에 그 날짜가 나오는가. "10월 9일", "10/9", "2026-10-09" 세 표기를 본다."""
+    return bool(re.search(
+        rf"({d.month}월\s*{d.day}일|{d.month}/{d.day}(?!\d)|{d.isoformat()})", text))
+
+
 def span_start(text: str, year: int) -> date | None:
     """
     "2026-09-17(목)~2026-09-19(토) 3일간" 같은 표기에서 시작일을 뽑는다.
@@ -555,9 +666,14 @@ def span_start(text: str, year: int) -> date | None:
 
 
 def check_promo(out: dict, p2: dict, target: date,
-          partner_sns: bool = True) -> Checked:
+          partner_sns: bool = True, events: str = "") -> Checked:
     """
     프롬프트가 지시한 제약을 지켰는지 본다.
+
+    events: build_events() 가 낸 인근 행사 목록 원문. 코드는 그 목록을 거르지
+      않고 (3)에게 그대로 준다 — 어느 행사가 쓸 만한지는 제목을 읽어야 안다.
+      (3)이 판매 기간 밖 행사를 엮었는지는 코드가 잡을 수 있으므로 여기서 본다.
+      안 넘기면 그 검사만 건너뛴다.
 
     partner_sns: 협력사가 SNS 를 운영하는가.
       없으면 협력사에 홍보를 요청하지 않는 것이 맞다 (규칙 10).
@@ -657,6 +773,22 @@ def check_promo(out: dict, p2: dict, target: date,
         if start and start != target:
             issues.append(f"{pid}: 실행 기간이 대상일부터 시작하지 않음 "
                           f"— 대상 {target} / 기간 '{span}'")
+
+        # 판매 기간 밖 행사를 엮었는가 (p3 규칙 12).
+        #
+        # 10/2 실행인데 10/9 드론쇼를 이벤트 명칭에 넣은 적이 있다 (9/26).
+        # 그날 우리는 협업기획을 하지 않으므로 해당 이벤트는 영향을 끼치지 않는다.
+        # 행사 이름은 (3)이 "드론쇼" 처럼 줄여 써서 맞추기 어렵고, 날짜는
+        # 표기가 몇 안 되므로 날짜로 본다.
+        if events and start:
+            sale_to = start + timedelta(days=(days or MIN_DAYS) - 1)
+            text = " ".join(str(ev.get(k) or "") for k in ("명칭", "내용")) \
+                + " " + str(p.get("홍보_문구") or "")
+            for title, when in outside_events(events, start, sale_to):
+                if mentions_date(text, when):
+                    issues.append(
+                        f"{pid}: 판매 기간({start}~{sale_to}) 밖 행사를 엮었음 "
+                        f"— {title[:24]} ({when})")
 
         copy = str(p.get("홍보_문구") or "")
         if not copy:

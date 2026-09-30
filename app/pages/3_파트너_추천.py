@@ -173,11 +173,15 @@ def render_next_step(candidate_name: str, guessed_category: str, lat=None, lng=N
 
 
 def render_registered(row: dict, guessed_category: str):
-    """등록 직후 안내. 버튼 경로와 직접 입력 폼 경로가 같이 쓴다."""
+    """
+    등록 직후 안내. 버튼 경로와 직접 입력 폼 경로가 같이 쓴다.
+
+    확인 코드는 보여주지 않는다 (9/30). 등록할 때 만들어 두지만 사람이 읽고
+    옮겨 적을 값이 아니다 — 협의 자리에서 쓸 때는 보관함이 그 코드가 박힌
+    폼 링크를 통째로 내준다.
+    """
     st.success("협력사를 등록했습니다. 기획안 생성에서 고를 수 있습니다.")
-    st.code(row.get("invite_code") or "", language=None)
     st.caption(
-        f"위 코드는 협력사가 관심을 보인 뒤 구글 폼을 보낼 때 확인 코드로 쓰입니다. "
         f"업종은 '{guessed_category}'(으)로 초안을 채웠습니다 — "
         f"협력사가 폼에서 직접 고칠 수 있습니다."
     )

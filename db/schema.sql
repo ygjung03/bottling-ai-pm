@@ -10,13 +10,27 @@ CREATE TABLE IF NOT EXISTS partners (
   id                BIGSERIAL PRIMARY KEY,
   name              TEXT        NOT NULL,
   category          TEXT        NOT NULL,           -- 제과·디저트 / 피자 / 분식 / 카페 ...
+  -- [미사용] 폼에서 「그중 대표 메뉴」를 뺐다 (9/28). menu_prices 와 중복이고
+  -- 어느 경로로도 채워지지 않는다. equipment 와 함께 다음 정리에서 지운다.
   signature_menu    TEXT,
   menu_prices       JSONB       NOT NULL DEFAULT '[]',
-                    -- 협력사가 실제로 팔고 있는 메뉴와 가격 3~5개
-                    -- [{"메뉴": "붕어빵 3개", "가격": 3000, "납품가": 2100}, ...]
+                    -- **확실한** 메뉴와 가격 — 수동 등록, 또는 메뉴판 사진 → VLM
+                    -- [{"메뉴": "붕어빵 3개", "가격": 3000, "납품가": 2100,
+                    --   "근거": "메뉴판 사진 (2026-09-28)"}, ...]
                     -- 협업은 완제품 매입 하나이므로(기획서 6-1) 새 메뉴를 만드는
                     -- 것이 아니라 팔던 것을 변형한다. 실제 판매가를 알아야
                     -- 매입가 제안에 근거가 생긴다
+                    --
+                    -- 「근거」는 어느 경로로 들어온 값인지다. chain/inputs.py 가
+                    -- 판매가 뒤에 괄호로 실어 (2)가 얼마나 믿을지 가늠하게 한다.
+                    -- 사진이 들어오면 교체한다(합치지 않는다) — 메뉴판 전체를
+                    -- 담으므로 수동으로 넣은 일부보다 정확하다 (9/28)
+  menu_prices_review JSONB      NOT NULL DEFAULT '[]',
+                    -- **추측한** 메뉴와 가격 — 블로그 후기에서 모은 것 (U17)
+                    -- menu_prices 가 비었을 때만 쓴다. 후기는 시점이 과거라
+                    -- 지금 안 파는 메뉴가 섞이기 때문이다.
+                    -- 컬럼을 나눈 이유는 「사진이 오면 후기를 버린다」가 되돌릴 수
+                    -- 없는 동작이어서다. 나눠 두면 지우지 않고 무시한다 (9/28)
   -- [미사용] 완제품을 사 오므로 협력사 장비를 알 필요가 없다. 폼에서
   -- 묻지 않고 프롬프트에도 싣지 않는다. 다음 정리에서 지운다.
   equipment         TEXT[]      NOT NULL DEFAULT '{}',
@@ -28,6 +42,36 @@ CREATE TABLE IF NOT EXISTS partners (
   lat               DOUBLE PRECISION,
   lng               DOUBLE PRECISION,
   invite_code       TEXT UNIQUE NOT NULL,            -- 폼 접근용
+  -- 시연용 가상 협력사 (이름이 "테스트용"으로 시작). 화면이 예시 표시를 붙이고,
+  -- 2차 생성 제약(폼 + 채택)을 푼다. 실제 협력사는 그 경로로 새면 안 된다.
+  is_seed           BOOLEAN     NOT NULL DEFAULT false,
+
+  -- 〔협의 결과〕 구글 폼으로 들어온다 (migrate_0928.sql).
+  -- 전부 NULL 허용이다 — 폼이 오기 전에는 비어 있는 것이 정상이고, 비었다는
+  -- 사실 자체가 「아직 협의 전」이라는 뜻이다. 1차 기획안은 이 값 없이 만든다.
+  reply_choice      TEXT,       -- A(그 메뉴로) / A2(협의로 다른 메뉴)
+                                -- B(전체에서 재추천) / C(그 메뉴 빼고 재추천)
+                                -- CHECK 를 걸지 않는다 — 매핑이 어긋나면 PATCH 전체가
+                                -- 실패해 폼 값이 하나도 안 들어간다. 화면에서 잡는다
+  agreed_menu       TEXT,       -- 협의로 정한 협업 메뉴 하나 (한 협업에 메뉴는 하나다)
+                                -- A 는 비고, 2차를 만들 때 고른 1차 안에서 가져온다
+  agreed_sale_price INTEGER,    -- 그 메뉴를 협력사가 손님에게 받는 값
+  agreed_price      INTEGER,    -- 바틀링이 개당 사 오는 값. 협의로 정한 확정값이며
+                                -- AI 제안값이 아니다. 100원 단위 규칙을 걸지 않는다
+  supply_qty        TEXT,       -- 이번 협업에 하루 줄 수 있는 양. 여유를 함께 적으므로
+                                -- 숫자가 아니다 (예: 하루 20개, 미리 말씀하시면 30개까지)
+  storage_note      TEXT,       -- 보관 방법과 며칠 안에 팔아야 하는지
+  takeout           TEXT,       -- 포장 판매 가능 여부 — 폼의 답 그대로
+                                -- (가능합니다. / 어렵습니다.) **마침표가 붙는다**
+                                -- 메뉴가 하나로 정해진 뒤의 답이라 「메뉴에 따라
+                                -- 다릅니다」가 없다
+  takeout_note      TEXT,       -- (B/C) 포장이 어려운 메뉴. 추천에서 빼는 조건이
+                                -- 아니라 참고사항이다
+  menu_photo_url    TEXT[]      NOT NULL DEFAULT '{}',
+                                -- (B/C) 메뉴판·POS·배달앱 사진. VLM 으로 읽어
+                                -- menu_prices 를 교체한다
+  menu_note         TEXT,       -- (B/C) 사진 대신 적어 주신 메뉴 이름, 쉼표 구분 그대로
+
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );

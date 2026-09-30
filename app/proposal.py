@@ -107,6 +107,28 @@ EXPOSURE_OFFER = [
     "판매 기간이 끝나면 판매량과 손님 반응 공유",
 ]
 
+# 1차 제안서 끝의 회신 칸. 협력사가 무엇을 고르든 답을 준다.
+REPLY_OPTIONS = [
+    "참여 의향이 있습니다 — 미팅 일정을 조율하고 싶습니다.",
+    "협업은 하고 싶습니다 — 다만 메뉴는 다른 것으로 하고 싶습니다.",
+    "이번 제안은 참여가 어렵습니다.",
+]
+
+# 협의해서 정할 값. 1차는 "무엇을 정해야 하는지"만 빈칸으로 보이고, 값은 구글 폼으로
+# 받아 2차에서 채워진다. 문서에 손으로 적는 칸이 아니다 (9/25).
+AGREEMENT_FIELDS = ["매입가 (개당)", "납품 수량 (1일 기준)", "보관 방법",
+                    "납품 일시", "기타 협의 사항"]
+
+
+def _agreement_rows() -> list[tuple[str, str]]:
+    """
+    붙임 표의 줄. 전부 빈칸이다.
+
+    2차에 값을 채워 넣던 가지가 있었는데 없앴다 (9/30) — 2차는 협의가 끝난
+    값이라 본문에 이미 다 있고, 표로 또 두면 같은 내용이 두 번 나온다.
+    """
+    return [(f, "") for f in AGREEMENT_FIELDS]
+
 # 접근별 판매 방식. 협력사에게 "손님에게 어떻게 팔리나" 를 한 줄로.
 SALE_STYLE = {
     "단품": "안주 단품으로 판매합니다. 맥주는 손님이 셀프탭에서 따로 따릅니다.",
@@ -134,7 +156,9 @@ def _sections(item: dict, meta: dict) -> list[dict]:
     first = (meta.get("round") or 1) == 1
     partner = meta.get("partner_name") or "협력사"
     deal = item.get("매입") or {}
-    basis = deal.get("근거") if isinstance(deal.get("근거"), dict) else {}
+    # 매입.근거(소비_근거·협력사정가_대비·미확인)는 제안서에 싣지 않는다.
+    # 1차는 매입가 자체를 안 적고(위 설명), 2차는 협의로 정해진 값이라 우리
+    # 추정 근거를 적을 이유가 없다. 값은 plans.final_output 에 남는다.
     roles = item.get("역할분담") or {}
     gains = item.get("상호_이익") or {}
     ev = item.get("이벤트") or {}
@@ -185,6 +209,9 @@ def _sections(item: dict, meta: dict) -> list[dict]:
         menu_items.append(("바틀링 판매가", f"{set_price:,}원 (따로 사면 {listed:,}원)"))
     elif set_price:
         menu_items.append(("바틀링 판매가", f"{set_price:,}원"))
+    # 값의 근거는 값 바로 아래에 둔다. 제안 이유(3절)로 가면 "왜 이 가게인가" 와 섞인다.
+    if item.get("판매가_설명"):
+        menu_items.append(("판매가 근거", end_dot(item["판매가_설명"])))
     out.append({"title": "협업 메뉴 제안", "items": menu_items})
 
     # Ⅴ. 홍보 — 실행 전 시점이 문서에 없으면 실행 전에 안 올라간다 (1-5)
@@ -198,7 +225,7 @@ def _sections(item: dict, meta: dict) -> list[dict]:
     if item.get("홍보_문구"):
         promo.append(("홍보 문구(안)", item["홍보_문구"]))
     if promo:
-        out.append({"title": "홍보 및 판매 방식", "items": promo})
+        out.append({"title": "홍보 및 판매 방식", "items": promo, "table": True})
 
     # Ⅵ. 제안 내용 — 1차는 매입가 숫자 없이 "협의"
     offer: list = [
@@ -212,25 +239,51 @@ def _sections(item: dict, meta: dict) -> list[dict]:
         # 것도 "홍보 효과" 가 아니라 이름이 어디에 어떻게 나오는지로 적는다
         # (9/21 검토 — 블랙스미스 제안서와 비교). 확정이 아니라 제안이다.
         offer = ([OFFER_LEAD] + offer
-                 + [("매입가", "협의해서 정합니다."),
-                    ("납품 수량·보관", "협의해서 정합니다."),
-                    "협력사 이름은 이렇게 알리겠습니다 (제안):"]
+                 + ["협력사 이름은 이렇게 알리겠습니다 (제안):"]
                  + [("-", x) for x in EXPOSURE_OFFER])
-        out.append({"title": "협력사에 제안하는 내용", "items": offer})
+        out.append({"title": "협력사에 제안하는 내용", "items": offer, "table": True})
+        # 협의해서 정할 값은 문서 끝 붙임에 표로 둔다 — 여기 또 적으면 두 번 나온다
     else:
+        # 2차는 표를 셋으로 나눈다 (9/30). 하나에 몰아 두면 성격이 다른 열 줄이
+        # 붙어 읽히지 않는다.
+        #
+        #   누가 무엇을 맡나   역할분담
+        #   서로 얻는 것       상호_이익
+        #   협업 조건          매입가·수익·보관·수량
+        #
+        # 「협력사가 준비」·「바틀링이 준비」는 빼고 역할분담만 남긴다. 둘이 같은
+        # 말을 두 번 하고 있었다. 1차는 역할분담 표가 없어 그대로 둔다.
+        out.append({"title": "누가 무엇을 맡나", "table": True, "items": [
+            (side, " / ".join(roles.get(side) or []) or "데이터 없음")
+            for side in ("바틀링", "협력사")]})
+
+        out.append({"title": "서로 얻는 것", "table": True, "items": [
+            ("협력사가 얻는 것", end_dot(gains.get("협력사")) or "데이터 없음"),
+            ("바틀링이 얻는 것", end_dot(gains.get("바틀링")) or "데이터 없음"),
+        ]})
+
+        terms: list = []
         if deal.get("바틀링_제안_매입가"):
             amount = won(deal["바틀링_제안_매입가"])
             shown = f"{amount:,}원" if amount else str(deal["바틀링_제안_매입가"])
-            offer.append(("제안 매입가", f"{shown}  ※ 협의 필요" if deal.get("협의_필요") else shown))
+            # 협의가 끝난 값은 제안이 아니다. 협력사가 폼에 적은 값을 그대로
+            # 쓴 것이므로 이름도 「매입가」로 적는다 (9/30).
+            if deal.get("협의_필요"):
+                terms.append(("제안 매입가", f"{shown}  ※ 협의 필요"))
+            else:
+                terms.append(("매입가", f"{shown}  (협의로 정한 값)"))
         if deal.get("협력사_수익"):
-            offer.append(("협력사 수익", deal["협력사_수익"]))
-        offer += [("보관 조건", item.get("보관_조건") or "협의 필요"),
+            terms.append(("협력사 수익", deal["협력사_수익"]))
+        terms += [("보관 조건", item.get("보관_조건") or "협의 필요"),
                   ("1회 납품 수량", item.get("1회_납품_수량") or "협의 필요")]
-        role_lines = [(side, " / ".join(roles.get(side) or []) or "데이터 없음")
-                      for side in ("바틀링", "협력사")]
-        out.append({"title": "역할과 조건", "items": role_lines + offer})
+        out.append({"title": "역할과 조건", "items": terms, "table": True})
 
-        todo = list(basis.get("미확인") or [])
+        # 「미확인」은 싣지 않는다 (9/30). (4)가 매입가를 **추정할 때** 못 본 것을
+        # 적는 칸이라 협력사에게 협의하자고 내밀 항목이 아니다. 실제로 들어오는
+        # 값은 「협력사 실제 제조 원가」 하나인데, 그건 협력사 내부 숫자라 우리가
+        # 받을 것도 아니고 문서에 적으면 원가를 알려 달라는 말로 읽힌다.
+        # 값을 어떻게 잡았는지는 화면에서 보면 된다.
+        todo = []
         if deal.get("협의_필요"):
             todo.append("매입가 최종 확정")
         for label, key in [("1회 납품 수량", "1회_납품_수량"), ("보관 조건", "보관_조건")]:
@@ -249,7 +302,8 @@ def _sections(item: dict, meta: dict) -> list[dict]:
         steps: list = [
             ("회신", f"홍보 시작({promo_start}) 전까지 연락 주시면 일정이 맞습니다."
                     if promo_start else "관심이 있으시면 연락 주십시오."),
-            ("조건 확정", "만나서 매입가·납품 수량·보관을 함께 정합니다."),
+            ("조건 확정", "만나서 매입가·수량·보관을 협의하며 입력 양식을 함께 채웁니다. "
+                         "그 내용을 반영한 2차 제안서를 드립니다."),
         ]
         if promo_start:
             steps.append(("홍보 시작", promo_start))
@@ -257,7 +311,15 @@ def _sections(item: dict, meta: dict) -> list[dict]:
             steps.append(("판매", ev["기간"]))
         steps.append(("결과 공유", "판매 기간이 끝난 뒤"))
         steps.append(("연락", _contact()))
-        out.append({"title": "다음 단계", "items": steps})
+        out.append({"title": "다음 단계", "items": steps, "table": True})
+
+        # 회신 칸. 없으면 "연락 주십시오" 뿐이라 답할 방법이 문서 안에 없다
+        # (수동 보완본이 손으로 채워 넣은 것 — 9/24).
+        out.append({"title": "회신", "items": [
+            "아래 중 해당하는 곳에 표시해 회신해 주시면 감사하겠습니다.",
+            # 글머리(•)를 쓰지 않는다 — 체크 칸과 겹쳐 보인다
+            *[f"□   {x}" for x in REPLY_OPTIONS],
+        ]})
 
     return out
 
@@ -282,12 +344,38 @@ def _contact() -> str:
     return f"바틀링 대표 · {contact}" if contact else "바틀링 대표 (연락처는 보내기 전에 적습니다)"
 
 
+def _owner() -> str:
+    """
+    발신 명의. 대표 성함은 공개 저장소에 적지 않고 환경변수로 받는다
+    (`BOTTLING_OWNER`, .env·Cloud secrets). 없으면 직함만 남긴다.
+    """
+    name = os.getenv("BOTTLING_OWNER")
+    return f"바틀링 대표 {name}" if name else "바틀링 대표"
+
+
+# 문서 맨 끝의 발신 명의 (1차·2차 공통). 보내는 사람이 누구인지 문서 안에 있어야
+# 협력사가 답할 곳을 안다 (수동 보완본과 대조 9/24).
+def _signature(meta: dict) -> list:
+    """
+    문서 맨 끝에 오는 줄들. 작성일 → 발신 명의 → 주소 → 연락처 순이다.
+    날짜가 있어야 협력사가 언제 받은 문서인지 알 수 있다.
+    """
+    today = datetime.now(KST).date()
+    line = [f"{today.year}. {today.month}. {today.day}.", _owner(), BOTTLING_ADDRESS]
+    contact = os.getenv("BOTTLING_CONTACT")
+    if contact:
+        line.append(contact)
+    return line
+
+
 def _head(meta: dict) -> dict:
     partner = meta.get("partner_name") or "협력사"
     first = (meta.get("round") or 1) == 1
+    today = datetime.now(KST).date()
     return {
-        "no": f"문서번호: {proposal_no(meta)} | 버전 v1.0 | {'1차 제안' if first else '2차 확정'}",
-        "title": "협업 제안서" if first else "협업 확정안",
+        "no": (f"문서번호: {proposal_no(meta)} | 시행일자: {today.isoformat()} | "
+               f"{'1차' if first else '2차'} 제안"),
+        "title": "협업 제안서" if first else "협업 제안서 (2차)",
         "sub": f"공급사: {partner} | 협업 희망일: {meta.get('target_date') or ''}",
         "first": first,
         "partner": partner,
@@ -318,43 +406,34 @@ def build_proposal(item: dict, meta: dict) -> str:
     return "\n".join(out)
 
 
-def preview_html(item: dict, meta: dict, sections: int = 3) -> str:
+def _page_number_footer(section) -> None:
     """
-    화면의 종이 모양 미리보기 — 첫 페이지 분량(앞 절 몇 개). 시안(docs/ref/피그마_예시2.pdf).
-    Word 와 같은 절 목록에서 그리므로 내려받는 문서와 어긋나지 않는다.
-    """
-    import html as _h
+    Word 바닥글 가운데에 "1 / 3".
 
-    h = _head(meta)
-    secs = _sections(item, meta)
-    parts = [
-        f'<div style="font-size:11px;color:#6B7280;margin-bottom:6px">{_h.escape(h["no"])}</div>',
-        f'<div style="font-size:22px;font-weight:700;margin-bottom:4px">{_h.escape(h["title"])}</div>',
-        f'<div style="font-size:12px;color:#374151;border-bottom:1.5px solid #111827;'
-        f'padding-bottom:8px;margin-bottom:14px">{_h.escape(h["sub"])}</div>',
-    ]
-    for no, sec in enumerate(secs[:sections], 1):
-        parts.append(f'<div style="font-size:14px;font-weight:700;margin:14px 0 6px">'
-                     f'{no}. {_h.escape(sec["title"])}</div>')
-        for x in sec["items"]:
-            if isinstance(x, tuple):
-                k, v = x
-                if k == "-":
-                    parts.append(f'<div style="font-size:12px;margin:2px 0 2px 12px">• {_h.escape(str(v))}</div>')
-                else:
-                    parts.append(
-                        '<div style="display:flex;font-size:12px;margin:3px 0 3px 8px">'
-                        f'<span style="flex:0 0 110px;color:#374151">• {_h.escape(str(k))}</span>'
-                        f'<span style="flex:1">{_h.escape(str(v))}</span></div>')
-            else:
-                parts.append(f'<div style="font-size:12px;line-height:1.6;margin:4px 0">{_h.escape(str(x))}</div>')
-    parts.append(
-        '<div style="border-top:1px dashed #D1D5DB;margin-top:24px;padding-top:6px;'
-        'display:flex;justify-content:space-between;font-size:10px;color:#9CA3AF">'
-        '<span>* 본 미리보기는 1페이지 요약이며 내려받은 문서에 전체 내용이 들어 있습니다.</span>'
-        f'<span>Page 1 · 절 {len(secs)}개</span></div>')
-    return ('<div style="background:#fff;max-width:640px;margin:0 auto;padding:36px 40px;'
-            'box-shadow:0 2px 10px rgba(0,0,0,0.12);border-radius:4px">' + "".join(parts) + "</div>")
+    python-docx 에 쪽 번호 기능이 없어 필드 코드를 XML 로 직접 넣는다.
+    PAGE 는 현재 쪽, NUMPAGES 는 전체 쪽수이며 Word 가 열 때 계산한다.
+    """
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+    from docx.shared import Pt, RGBColor
+
+    p = section.footer.paragraphs[0]
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    def field(code: str) -> None:
+        run = p.add_run()
+        run.font.size, run.font.color.rgb = Pt(9), RGBColor(0x6B, 0x72, 0x80)
+        begin = run._r.makeelement(qn("w:fldChar"), {qn("w:fldCharType"): "begin"})
+        instr = run._r.makeelement(qn("w:instrText"), {qn("xml:space"): "preserve"})
+        instr.text = f" {code} "
+        end = run._r.makeelement(qn("w:fldChar"), {qn("w:fldCharType"): "end"})
+        for el in (begin, instr, end):
+            run._r.append(el)
+
+    field("PAGE")
+    sep = p.add_run(" / ")
+    sep.font.size, sep.font.color.rgb = Pt(9), RGBColor(0x6B, 0x72, 0x80)
+    field("NUMPAGES")
 
 
 def build_proposal_docx(item: dict, meta: dict) -> bytes:
@@ -373,6 +452,7 @@ def build_proposal_docx(item: dict, meta: dict) -> bytes:
     for s in doc.sections:
         s.left_margin = s.right_margin = Cm(2.2)
         s.top_margin = s.bottom_margin = Cm(2.0)
+        _page_number_footer(s)
 
     p = doc.add_paragraph()
     r = p.add_run(h["no"])
@@ -385,42 +465,123 @@ def build_proposal_docx(item: dict, meta: dict) -> bytes:
     r.font.size = Pt(10)
     p.paragraph_format.space_after = Pt(10)
 
+    def grid(rows: list[tuple], widths=(Cm(3.6), Cm(12.4))) -> None:
+        """
+        「항목 | 값」 줄을 테두리 있는 표로. 줄이 여럿인 절은 표가 읽기 쉽다.
+
+        표는 페이지 경계에서 갈라지지 않게 한다 (9/30). Word 에 「표를 쪼개지
+        마라」는 설정이 따로 없어, 마지막 줄을 뺀 모든 칸에 「다음과 붙여
+        두기」를 걸어 한 덩어리로 만든다.
+        """
+        t = doc.add_table(rows=len(rows), cols=2)
+        t.style = "Table Grid"
+        for i, (row, (k, v)) in enumerate(zip(t.rows, rows)):
+            for cell, text, bold, w in ((row.cells[0], str(k), True, widths[0]),
+                                        (row.cells[1], str(v), False, widths[1])):
+                cell.width = w
+                para = cell.paragraphs[0]
+                para.paragraph_format.space_after = Pt(0)
+                para.paragraph_format.keep_with_next = i < len(rows) - 1
+                run = para.add_run(text)
+                run.font.size, run.font.bold = Pt(10), bold
+
+    def bullet_line(x) -> None:
+        """"• 항목 <탭> 값" 한 문단. 값이 두 줄을 넘으면 둘째 줄부터도 값 위치
+        (3.6cm)에서 시작하도록 내어쓰기로 잡는다 (9/21 화면 확인)."""
+        pp = doc.add_paragraph()
+        pp.paragraph_format.left_indent = Cm(3.6)
+        pp.paragraph_format.first_line_indent = Cm(-3.2)
+        pp.paragraph_format.space_after = Pt(2)
+        k = pp.add_run(f"• {x[0]}")
+        k.font.size, k.font.bold = Pt(10), True
+        pp.add_run("\t")
+        v = pp.add_run(str(x[1]))
+        v.font.size = Pt(10)
+        pp.paragraph_format.tab_stops.add_tab_stop(Cm(3.6))
+
     for no, sec in enumerate(_sections(item, meta), 1):
         hp = doc.add_paragraph()
         hr = hp.add_run(f"{no}. {sec['title']}")
         hr.font.size, hr.font.bold = Pt(12), True
         hp.paragraph_format.space_before = Pt(10)
         hp.paragraph_format.space_after = Pt(4)
+        # 제목만 페이지 끝에 남지 않게 한다 (9/30).
+        hp.paragraph_format.keep_with_next = True
+
+        # 표로 그리는 절은 「항목|값」 쌍만 모아 한 표로 내고, 문장·글머리는
+        # 표 앞뒤에 그대로 둔다. 표 중간에 문장이 끼면 표가 쪼개진다.
+        pairs = [x for x in sec["items"] if isinstance(x, tuple) and x[0] != "-"]
+        if sec.get("table") and pairs:
+            for x in sec["items"]:
+                if isinstance(x, tuple) and x[0] != "-":
+                    continue
+                if isinstance(x, tuple):
+                    doc.add_paragraph(str(x[1]), style="List Bullet")
+                else:
+                    pp = doc.add_paragraph(str(x))
+                    pp.paragraph_format.space_after = Pt(4)
+                    for rr in pp.runs:
+                        rr.font.size = Pt(10)
+            grid(pairs)
+            doc.add_paragraph().paragraph_format.space_after = Pt(0)
+            continue
+
         for x in sec["items"]:
             if isinstance(x, tuple) and x[0] == "-":
                 doc.add_paragraph(str(x[1]), style="List Bullet")
             elif isinstance(x, tuple):
-                # "• 항목 <탭> 값" 한 문단. 값이 두 줄을 넘으면 둘째 줄부터도 값 위치
-                # (3.6cm)에서 시작해야 해서 내어쓰기로 잡는다 — 문단 전체를 3.6cm
-                # 들이고 첫 줄만 0.4cm 로 당긴다 (9/21 화면 확인).
-                pp = doc.add_paragraph()
-                pp.paragraph_format.left_indent = Cm(3.6)
-                pp.paragraph_format.first_line_indent = Cm(-3.2)
-                pp.paragraph_format.space_after = Pt(2)
-                k = pp.add_run(f"• {x[0]}")
-                k.font.size, k.font.bold = Pt(10), True
-                pp.add_run("\t")
-                v = pp.add_run(str(x[1]))
-                v.font.size = Pt(10)
-                pp.paragraph_format.tab_stops.add_tab_stop(Cm(3.6))
+                bullet_line(x)
             else:
                 pp = doc.add_paragraph(str(x))
                 pp.paragraph_format.space_after = Pt(4)
                 for rr in pp.runs:
                     rr.font.size = Pt(10)
 
+    # 붙임 — 1차만. 무엇을 협의해야 하는지 빈칸으로 보여 준다. 문서에 손으로
+    # 적는 칸이 아니다 (9/25). 새 페이지에서 시작한다 — 본문 끝에 붙이면 표가
+    # 페이지 경계에서 쪼개진다.
+    #
+    # 2차에는 두지 않는다 (9/30). 협의가 끝난 값이라 본문에 이미 다 있고, 표로
+    # 또 두면 같은 내용이 두 번 나온다.
+    #
+    # 설명 줄도 두지 않는다 (9/30). 제목이 이미 그 말을 하고, 회신 요청은
+    # 「다음 단계」와 「회신」 절에 이미 있다.
+    if h["first"]:
+        doc.add_page_break()
+        p = doc.add_paragraph()
+        r = p.add_run("붙임. 협의해서 정할 항목")
+        r.font.size, r.font.bold = Pt(12), True
+        p.paragraph_format.space_after = Pt(6)
+        grid(_agreement_rows())
+
+    # 서명란은 2차에만. 1차는 아직 제안이라 서명할 것이 없다.
+    # 쪽을 넘기지 않는다 — 자리가 남으면 본문에 이어 붙는다 (9/30).
     if not h["first"]:
         doc.add_paragraph()
-        doc.add_paragraph("위 내용에 합의합니다.")
-        t = doc.add_table(rows=2, cols=3)
-        t.style = "Table Grid"
-        for row, who in zip(t.rows, ("바틀링", h["partner"])):
-            row.cells[0].text, row.cells[1].text, row.cells[2].text = who, "(서명)", "날짜"
+        p = doc.add_paragraph("위 내용에 합의합니다.")
+        # 이 줄만 페이지 끝에 남고 표가 다음 쪽으로 넘어가는 것을 막는다.
+        p.paragraph_format.keep_with_next = True
+        for rr in p.runs:
+            rr.font.size = Pt(10)
+        sign = doc.add_table(rows=2, cols=2)
+        sign.style = "Table Grid"
+        sign.rows[0].cells[0].text, sign.rows[0].cells[1].text = "바틀링", h["partner"]
+        for cell in sign.rows[1].cells:
+            cell.text = "담당자 ______________   (서명) ______________   날짜 ____ . ____ ."
+        for row in sign.rows:
+            for cell in row.cells:
+                for rr in cell.paragraphs[0].runs:
+                    rr.font.size = Pt(9)
+
+    # 발신 명의
+    doc.add_paragraph()
+    for i, line in enumerate(_signature(meta)):
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        p.paragraph_format.space_after = Pt(0)
+        r = p.add_run(line)
+        # 0번은 작성일, 1번이 발신 명의다. 명의만 크고 굵게.
+        r.font.size, r.font.bold = (Pt(11), True) if i == 1 else (Pt(9), False)
 
     buf = BytesIO()
     doc.save(buf)
@@ -458,8 +619,36 @@ def build_proposal_pdf(item: dict, meta: dict) -> bytes:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import cm
-    from reportlab.platypus import (Paragraph, SimpleDocTemplate, Spacer, Table,
-                                    TableStyle)
+    from reportlab.pdfgen import canvas as pdfcanvas
+    from reportlab.platypus import (KeepTogether, PageBreak, Paragraph,
+                                    SimpleDocTemplate, Spacer, Table, TableStyle)
+
+    class Numbered(pdfcanvas.Canvas):
+        """
+        쪽마다 아래 가운데에 "1 / 3".
+
+        총 쪽수는 다 그려 봐야 알 수 있다. 그래서 페이지를 내보내지 않고 모아
+        두었다가, 마지막에 번호를 찍어 한꺼번에 내보낸다 (reportlab 관용구).
+        머리글·워터마크를 나중에 붙인다면 이 클래스 안에서 해야 한다.
+        """
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self._pages = []
+
+        def showPage(self):
+            self._pages.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._pages)
+            for state in self._pages:
+                self.__dict__.update(state)
+                self.setFont("Nanum", 9)
+                self.setFillColor("#6B7280")
+                self.drawCentredString(A4[0] / 2, 1.1 * cm,
+                                       f"{self._pageNumber} / {total}")
+                super().showPage()
+            super().save()
 
     _register_fonts()
     h = _head(meta)
@@ -480,45 +669,85 @@ def build_proposal_pdf(item: dict, meta: dict) -> bytes:
     flow = [Paragraph(escape(h["no"]), small), Paragraph(escape(h["title"]), title),
             Paragraph(escape(h["sub"]), body), Spacer(1, 10)]
 
-    for no, sec in enumerate(_sections(item, meta), 1):
-        flow.append(Paragraph(escape(f"{no}. {sec['title']}"), h2))
-        rows = []           # 이어지는 「항목 | 값」 줄은 표 하나로 묶는다 — 값이 길면 줄바꿈이
-                            # 값 칸 안에서만 일어나 Word 의 내어쓰기와 같은 모양이 된다
+    # 「항목 | 값」 줄은 표로 묶는다 — 값이 길면 줄바꿈이 값 칸 안에서만 일어나
+    # Word 의 내어쓰기와 같은 모양이 된다. grid=True 면 테두리까지 그린다.
+    def pairs_table(rows, grid=False) -> Table:
+        t = Table(rows, colWidths=[3.6 * cm, 12.4 * cm], hAlign="LEFT")
+        style = [
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5 if grid else 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5 if grid else 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 4 if grid else 1),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4 if grid else 3),
+        ]
+        if grid:
+            style.append(("GRID", (0, 0), (-1, -1), 0.5, "#9CA3AF"))
+        t.setStyle(TableStyle(style))
+        return t
 
-        def flush():
+    for no, sec in enumerate(_sections(item, meta), 1):
+        # 절을 따로 모았다가 한 번에 붙인다. 표가 있는 절은 KeepTogether 로
+        # 묶어 제목과 표가 페이지 경계에서 갈라지지 않게 한다 (9/30).
+        sec_flow = [Paragraph(escape(f"{no}. {sec['title']}"), h2)]
+        boxed = bool(sec.get("table"))
+        rows = []
+
+        def flush(boxed=boxed):
             if rows:
-                t = Table(rows, colWidths=[3.2 * cm, None], hAlign="LEFT")
-                t.setStyle(TableStyle([
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                    ("TOPPADDING", (0, 0), (-1, -1), 1),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                ]))
-                flow.append(t)
+                sec_flow.append(pairs_table(list(rows), grid=boxed))
                 rows.clear()
 
         for x in sec["items"]:
             if isinstance(x, tuple) and x[0] == "-":
                 flush()
-                flow.append(Paragraph(escape(str(x[1])), bullet, bulletText="•"))
+                sec_flow.append(Paragraph(escape(str(x[1])), bullet, bulletText="•"))
             elif isinstance(x, tuple):
-                rows.append([Paragraph(escape(f"• {x[0]}"), label),
-                             Paragraph(escape(str(x[1])), body)])
+                key = escape(str(x[0])) if boxed else escape(f"• {x[0]}")
+                rows.append([Paragraph(key, label), Paragraph(escape(str(x[1])), body)])
             else:
                 flush()
-                flow.append(Paragraph(escape(str(x)), body))
+                sec_flow.append(Paragraph(escape(str(x)), body))
         flush()
+        if boxed:
+            flow.append(KeepTogether(sec_flow))
+        else:
+            flow.extend(sec_flow)
 
+    # 붙임 — 1차만. Word 쪽 같은 자리의 설명 참고.
+    if h["first"]:
+        flow += [
+            PageBreak(),
+            Paragraph("붙임. 협의해서 정할 항목", h2),
+            Spacer(1, 4),
+            pairs_table([[Paragraph(escape(k), label), Paragraph(escape(str(v)), body)]
+                         for k, v in _agreement_rows()], grid=True),
+        ]
+
+    # 서명란은 2차에만. 1차는 아직 제안이라 서명할 것이 없다.
+    # 쪽을 넘기지 않고, KeepTogether 로 묶어 「위 내용에 합의합니다」와 표가
+    # 페이지 경계에서 갈라지지 않게 한다 (9/30).
     if not h["first"]:
-        flow += [Spacer(1, 12), Paragraph("위 내용에 합의합니다.", body)]
-        sign = Table([[who, "(서명)", "날짜"] for who in ("바틀링", h["partner"])],
-                     colWidths=[4 * cm, 5 * cm, 4 * cm])
-        sign.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, "#111827"),
-                                  ("FONTNAME", (0, 0), (-1, -1), "Nanum")]))
-        flow.append(sign)
+        sign_line = "담당자 __________  (서명) __________  날짜 ____ . ____ ."
+        sign = Table([[Paragraph("바틀링", label), Paragraph(escape(h["partner"]), label)],
+                      [Paragraph(sign_line, small), Paragraph(sign_line, small)]],
+                     colWidths=[8 * cm, 8 * cm], hAlign="LEFT")
+        sign.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, "#9CA3AF"),
+                                  ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                                  ("TOPPADDING", (0, 0), (-1, -1), 4),
+                                  ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
+        flow.append(KeepTogether([
+            Spacer(1, 12), Paragraph("위 내용에 합의합니다.", body),
+            Spacer(1, 4), sign]))
 
-    doc.build(flow)
+    # 발신 명의
+    right = ParagraphStyle("right", parent=body, alignment=2)
+    right_small = ParagraphStyle("right_small", parent=small, alignment=2)
+    flow.append(Spacer(1, 16))
+    for i, line in enumerate(_signature(meta)):
+        # 0번은 작성일, 1번이 발신 명의다. 명의만 크게.
+        flow.append(Paragraph(escape(line), right if i == 1 else right_small))
+
+    doc.build(flow, canvasmaker=Numbered)
     return buf.getvalue()
 
 

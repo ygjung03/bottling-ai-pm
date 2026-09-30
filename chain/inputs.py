@@ -334,6 +334,23 @@ def fetch_partner(partner_id: int | None = None) -> dict | None:
     return rows[0] if rows else None
 
 
+def menu_rows(partner: dict) -> list[dict]:
+    """
+    협력사 메뉴 목록. 확실한 값이 있으면 그것만, 없으면 후기 값을 쓴다.
+
+      menu_prices          확실  수동 등록 · 메뉴판 사진 → VLM
+      menu_prices_review   추측  블로그 후기에서 모은 것 (U17)
+
+    후기는 시점이 과거라 지금 안 파는 메뉴가 섞인다. 그래서 섞지 않고 가른다.
+
+    **검사도 이 함수를 쓴다** (chain/checks.py 의 check_menu_sources).
+    「AI 에게 보여준 메뉴」와 「검사가 인정하는 메뉴」가 어긋나면 안 된다.
+    한 줄로 박아 두었다가 컬럼을 나누면서 검사 쪽만 옛 칸을 보게 된 적이 있다
+    (9/29) — 프레즐은 메뉴가 전부 후기라 「파는 메뉴가 없는 가게」로 보였다.
+    """
+    return partner.get("menu_prices") or partner.get("menu_prices_review") or []
+
+
 def _menus(partner: dict) -> str:
     """
     협력사가 지금 팔고 있는 메뉴와 두 가지 값.
@@ -348,13 +365,29 @@ def _menus(partner: dict) -> str:
 
     납품가는 선택 입력이라 비어 있을 수 있다. 그때는 협의로 정한다.
 
-    1차 기획안은 협력사가 입력하기 전에 블로그 후기에서 본 값으로 만든다.
-    그 값에는 「후기 5건, 2026-08」 같은 근거가 붙는다. 판매가 뒤에 그대로
-    실어 (2)가 얼마나 믿을 값인지 가늠하게 한다 — 상권 데이터에 관측
-    건수를 붙이는 것과 같다.
+    [확실한 값이 있으면 추측한 값은 싣지 않는다] (9/28)
+
+    메뉴가 들어오는 길이 셋이고 신뢰도가 다르다.
+
+      menu_prices          확실  수동 등록 · 메뉴판 사진 → VLM
+      menu_prices_review   추측  블로그 후기에서 모은 것 (U17)
+
+    후기는 시점이 과거다. 「후기 5건, 2026-08」은 8월에 누가 그 메뉴를
+    언급했다는 뜻이지 지금 판다는 뜻이 아니다. 그대로 섞으면 지금 안 파는
+    메뉴가 협업 후보로 올라간다. 그래서 확실한 값이 하나라도 있으면 후기
+    쪽은 아예 넘기지 않는다.
+
+    합치지 않고 컬럼을 나눈 이유는 「사진이 오면 후기를 버린다」가 되돌릴 수
+    없는 동작이어서다 — 사진을 잘못 읽었을 때 후기 값까지 없어진다.
+    나눠 두면 지우지 않고 무시한다.
+
+    어느 쪽이든 항목의 「근거」를 판매가 뒤에 그대로 실어 (2)가 얼마나 믿을
+    값인지 가늠하게 한다 — 상권 데이터에 관측 건수를 붙이는 것과 같다.
     """
+    rows = menu_rows(partner)
+
     parts = []
-    for r in partner.get("menu_prices") or []:
+    for r in rows:
         name = str(r.get("메뉴") or "").strip()
         if not name:
             continue
@@ -372,7 +405,45 @@ def _menus(partner: dict) -> str:
     return " / ".join(parts) if parts else NO_DATA
 
 
-def build_partner_resources(partner: dict | None) -> str:
+def _agreed_menu_line(partner: dict, name: str) -> str:
+    """
+    확정된 메뉴 한 줄. 「판매 중인 메뉴」 자리에 이것만 들어간다.
+
+    _menus() 와 같은 모양으로 적는다. 다른 것은 매입가에 [확정] 이 붙는 것뿐이다.
+    그 표시를 보면 (2)가 값을 다시 계산하지 않고 그대로 쓴다.
+
+    판매가는 비어 있을 수 있다. A 갈래는 폼에서 그것을 묻지 않는다. 지어내지 않는다.
+    """
+    sale, buy = partner.get("agreed_sale_price"), partner.get("agreed_price")
+    bits = [name]
+    bits.append(f"판매가 {int(sale):,}원" if sale else "판매가 미입력")
+    bits.append(f"납품가 {int(buy):,}원 [확정]" if buy
+                else "납품가 미정 (협의 대상)")
+    return " ".join(bits)
+
+
+def _agreed_block(partner: dict, menu: str | None) -> list[str]:
+    """
+    협의로 정한 것. 폼에서 받은 값이다 (migrate_0928.sql).
+
+    메뉴 이름은 밖에서 받는다. A 갈래는 폼에서 메뉴를 묻지 않아(제안받은 그
+    메뉴이므로) DB 가 비어 있고, 1차에서 고른 안에서 가져와야 한다.
+    """
+    return [
+        "",
+        "[확정된 협업 메뉴]  — 협의로 정한 것이다.",
+        f"- 메뉴: {menu}",
+        "- 이 메뉴 하나로만 만든다. 다른 메뉴를 섞거나 곁들이지 마라.",
+        f"- 하루 납품 수량: {partner.get('supply_qty') or NO_DATA}",
+        f"- 보관: {partner.get('storage_note') or NO_DATA}",
+        f"- 포장 판매: {partner.get('takeout') or NO_DATA}",
+        "",
+    ]
+
+
+def build_partner_resources(partner: dict | None,
+                            confirmed: bool = False,
+                            agreed_menu: str | None = None) -> str:
     """
     협력사가 가진 것. 셰프가 메뉴를 짜는 재료다.
 
@@ -389,18 +460,56 @@ def build_partner_resources(partner: dict | None) -> str:
     매입하는 값이 나온다.
 
     (4)에도 이 문자열을 넘긴다. 역할분담을 쓰려면 상대가 무엇을 가졌는지
-    알아야 한다(명세서 1-4).
+    알아야 한다(명세서 1-4). 한 문자열이 (2)와 (4)에 같이 가므로
+    (chain/runner.py 의 call_p2·call_p4) 여기만 고치면 둘이 함께 달라진다.
+
+    [confirmed — 협의 결과를 실을지] (9/28)
+
+    호출하는 쪽이 정한다. 회차가 아니라 「협의 결과를 반영하는 자리인가」로 본다.
+
+      1차 생성 · 1차 재생성    False   협의 전이다
+      A2 의 3안 도출           True    폼에서 메뉴와 조건을 다 받았다
+      B/C 의 3안 도출          False   사진만 받았다. 협의는 그 다음이다
+      2차 확정                 True    폼 값으로 확정하는 자리다
+
+    confirmed 면 「판매 중인 메뉴」에 확정 메뉴 하나만 넣는다. 목록을 남기면
+    (2)가 다른 메뉴를 섞는데, 협의로 하나를 정한 뒤에는 그러면 안 된다.
+
+    줄 자체는 남긴다. p2 지시 1 이 이 줄을 가리키므로, 하나만 두면 프롬프트를
+    고치지 않고도 그것을 고르게 된다.
+
+    확정 메뉴를 모르는 채로 confirmed 를 받으면(호출 실수) 그 사실을 문자열에
+    적는다. 조용히 넘어가면 추정값으로 기획이 나간다.
+
+    [메뉴는 폼 값이 우선이다]
+    협력사와 다시 협의해 폼을 또 내면 DB 가 최신이고, 화면이 들고 있는 값은
+    옛것일 수 있다. 그래서 폼에 메뉴가 있으면 그것을 쓴다.
+
+    agreed_menu 인자는 **폼에 메뉴가 없는 A 갈래를 위한 것**이다. A 는 제안받은
+    그 메뉴이므로 폼이 묻지 않고, 1차에서 고른 안에서 가져와야 한다.
     """
     if partner is None:
         return f"{NO_DATA} (협력사 미선택)"
 
+    name = (partner.get("agreed_menu") or agreed_menu) if confirmed else None
     head = f"{partner.get('name', '?')} / {partner.get('category') or NO_DATA}"
-    return "\n".join([
-        head,
-        f"- 대표 메뉴: {partner.get('signature_menu') or NO_DATA}",
-        f"- 판매 중인 메뉴: {_menus(partner)}",
+    lines = [head]
+
+    if confirmed and name:
+        lines += _agreed_block(partner, name)
+        menus = _agreed_menu_line(partner, name)
+    else:
+        if confirmed:
+            lines += ["", f"[확정된 협업 메뉴] {NO_DATA} "
+                          "— 확정 메뉴가 넘어오지 않았다. 아래는 협의 전 값이다.",
+                      ""]
+        menus = _menus(partner)
+
+    lines += [
+        f"- 판매 중인 메뉴: {menus}",
         f"- 납품 가능 요일·시간: {partner.get('available_slots') or NO_DATA}",
-    ])
+    ]
+    return "\n".join(lines)
 
 
 # 제약을 받는 단계. (1) 상권분석가는 받지 않는다 — 데이터를 읽을 뿐

@@ -76,30 +76,45 @@ def load_testset() -> dict:
 # 스냅샷
 # ══════════════════════════════════════════
 
-def make_snapshot() -> None:
-    ts = load_testset()
-    target = date.fromisoformat(ts["target_date"])
-    categories = sorted({c["partner"]["category"] for c in ts["cases"]})
+def case_date(case: dict, ts: dict) -> str:
+    """케이스의 대상일. 안 적혀 있으면 테스트셋 전체의 기본값을 쓴다."""
+    return case.get("target_date") or ts["target_date"]
 
-    print(f"대상일 {target} / 업종 {categories}")
-    contexts = {}
-    for cat in categories:
-        print(f"  컨텍스트 — {cat}")
-        contexts[cat] = build_context(target, partner_category=cat)
+
+def make_snapshot() -> None:
+    """
+    입력을 날짜별로 박아 둔다.
+
+    대상일이 다르면 상권 컨텍스트도 행사 목록도 달라진다. 날짜마다 그 날짜에
+    쓰이는 업종만 만든다 — 모든 날짜 × 모든 업종을 만들면 파일만 커진다.
+    """
+    ts = load_testset()
+    need: dict[str, set] = {}
+    for c in ts["cases"]:
+        need.setdefault(case_date(c, ts), set()).add(c["partner"]["category"])
+
+    by_date = {}
+    for d, cats in sorted(need.items()):
+        target = date.fromisoformat(d)
+        print(f"대상일 {d} / 업종 {sorted(cats)}")
+        contexts = {}
+        for cat in sorted(cats):
+            print(f"  컨텍스트 — {cat}")
+            contexts[cat] = build_context(target, partner_category=cat)
+        by_date[d] = {"contexts": contexts, "events": build_events(target)}
 
     snap = {
         "built_at": datetime.now(KST).isoformat(timespec="seconds"),
-        "target_date": target.isoformat(),
-        "contexts": contexts,
+        "by_date": by_date,
         "beer_list": build_beer_list(),
-        "events": build_events(target),
         "constraints": build_constraints(),
     }
     SNAPSHOT.write_text(json.dumps(snap, ensure_ascii=False, indent=2),
                         encoding="utf-8")
     print(f"저장 → {SNAPSHOT.relative_to(ROOT)}")
-    for cat, ctx in contexts.items():
-        print(f"  {cat:12} {len(ctx):>6}자")
+    for d, v in by_date.items():
+        for cat, ctx in v["contexts"].items():
+            print(f"  {d} {cat:12} {len(ctx):>6}자")
 
 
 def load_snapshot() -> dict:
@@ -172,11 +187,13 @@ def run_cases(ids: list[str] | None) -> None:
     for c in cases:
         partner = c["partner"]
         cat = partner["category"]
-        print(f"[{c['id']}] {partner['name']} · {c['round']}차")
+        tdate = case_date(c, ts)
+        day = snap["by_date"][tdate]
+        print(f"[{c['id']}] {partner['name']} · {c['round']}차 · {tdate}")
 
         args = dict(
-            context=snap["contexts"][cat],
-            target_date=snap["target_date"],
+            context=day["contexts"][cat],
+            target_date=tdate,
             beer_list=snap["beer_list"],
             partner_res=build_partner_resources(partner),
             partner_blockers=build_partner_blockers(partner),
@@ -188,7 +205,7 @@ def run_cases(ids: list[str] | None) -> None:
             fewshot=NO_FEWSHOT,
             bottling_sns=BOTTLING_SNS,
             partner_sns=build_partner_sns(partner),
-            events=snap["events"],
+            events=day["events"],
             past_cases=PAST_CASES,
             rec_reason=NO_REC_REASON,
             partner=partner,

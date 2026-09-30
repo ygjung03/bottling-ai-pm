@@ -13,3 +13,7 @@ data/raw/*
 
 # 제3자 제안서·미공개 협상 자료 (공개 저장소이므로 올리지 않는다)
 docs/private/
+
+# 확인용 코드가 그때그때 만드는 것 (probe_vlm 이 그리는 메뉴판 그림 등)
+tests/probe_*_input.*
+tests/out/
