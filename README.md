@@ -26,7 +26,10 @@
 |---|---|
 | `app/pages/3_파트너_추천.py` | **A** |
 | `app/pages/4_상권_대시보드.py` | **A** |
-| `app/main.py` · `pages/2_기획안_생성.py` · `pages/9_관리.py` · `proposal.py` · `theme.py` | **B** |
+| `app/pages/2_기획안_생성.py` · `proposal.py` · `auth.py` | **B** |
+| `app/main.py` · `theme.py` · `app/pages/9_관리.py` | **공용** |
+
+`main.py`(홈)와 `theme.py`(상단 바)는 모든 화면이 함께 쓴다.
 
 ---
 
