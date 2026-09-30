@@ -247,17 +247,17 @@ def _sections(item: dict, meta: dict) -> list[dict]:
         # 2차는 표를 셋으로 나눈다 (9/30). 하나에 몰아 두면 성격이 다른 열 줄이
         # 붙어 읽히지 않는다.
         #
-        #   누가 무엇을 맡나   역할분담
-        #   서로 얻는 것       상호_이익
-        #   협업 조건          매입가·수익·보관·수량
+        #   역할분담           역할분담
+        #   협업 기대효과       상호_이익
+        #   거래 및 운영 조건   매입가·수익·보관·수량
         #
         # 「협력사가 준비」·「바틀링이 준비」는 빼고 역할분담만 남긴다. 둘이 같은
         # 말을 두 번 하고 있었다. 1차는 역할분담 표가 없어 그대로 둔다.
-        out.append({"title": "누가 무엇을 맡나", "table": True, "items": [
+        out.append({"title": "역할분담", "table": True, "items": [
             (side, " / ".join(roles.get(side) or []) or "데이터 없음")
             for side in ("바틀링", "협력사")]})
 
-        out.append({"title": "서로 얻는 것", "table": True, "items": [
+        out.append({"title": "협업 기대효과", "table": True, "items": [
             ("협력사가 얻는 것", end_dot(gains.get("협력사")) or "데이터 없음"),
             ("바틀링이 얻는 것", end_dot(gains.get("바틀링")) or "데이터 없음"),
         ]})
@@ -276,7 +276,7 @@ def _sections(item: dict, meta: dict) -> list[dict]:
             terms.append(("협력사 수익", deal["협력사_수익"]))
         terms += [("보관 조건", item.get("보관_조건") or "협의 필요"),
                   ("1회 납품 수량", item.get("1회_납품_수량") or "협의 필요")]
-        out.append({"title": "역할과 조건", "items": terms, "table": True})
+        out.append({"title": "거래 및 운영 조건", "items": terms, "table": True})
 
         # 「미확인」은 싣지 않는다 (9/30). (4)가 매입가를 **추정할 때** 못 본 것을
         # 적는 칸이라 협력사에게 협의하자고 내밀 항목이 아니다. 실제로 들어오는
