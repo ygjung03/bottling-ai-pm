@@ -68,10 +68,10 @@ SS_META = "plan_meta"          # 협력사·날짜 등 생성 조건
 SS_PARTNER_ID = "partner_id_last"
 
 # 보관함. 열렸는지는 주소의 질의 문자열이 정한다 (app/theme.ARCHIVE_PARAM).
-# 「최종 선택」으로 확정한 보낸 안. 협력사마다 따로 담는다 {협력사 id: 고른 안} —
-# 자리가 하나면 다른 협력사에서 고를 때 덮여, 여러 곳을 번갈아 준비할 때
-# 앞서 고른 것이 사라진다.
-SS_ARCHIVE_SENT = "archive_sent"
+#
+# 「최종 선택」으로 정한 보낸 안은 세션이 아니라 DB 에 있다 (plans.sent_option,
+# db/migrate_0930.sql). 1차 제안서를 보내고 며칠 뒤에 폼이 오므로 그 사이
+# 브라우저가 반드시 끊긴다.
 SS_ARCHIVE_WARN = "archive_warn"   # 둘 이상 골라 되돌렸다 — 창을 띄울 표시
 SS_ARCHIVE_SWAP = "archive_swap"   # 보낸 안을 바꾸려 한다 — 확인 창에 넘길 값
 SS_ARCHIVE_NOTE = "archive_note"   # 보관함에서 띄울 알림 한 줄
@@ -138,6 +138,35 @@ def has_form(partner: dict) -> bool:
 def round_of(partner: dict) -> int:
     """기본 회차. 폼이 있으면 2차를 먼저 보인다 — 고르는 것은 사람이다."""
     return 2 if has_form(partner) else 1
+
+
+def menu_block(partner: dict) -> str | None:
+    """
+    2차를 막아야 하면 그 이유, 괜찮으면 None.
+
+    갈래마다 확정 메뉴가 어디서 오는 곳이 다르다 (partners.reply_choice).
+
+      A    제안받은 그 메뉴다. 폼이 묻지 않아 보관함에서 고른 안을 쓴다
+      A2   협의로 정한 다른 메뉴. 폼 1 이 이름을 받는다
+      B·C  메뉴를 다시 고르겠다는 뜻. 이름은 폼 2 에서 온다
+
+    B·C 는 협력사가 그 메뉴를 **거절한** 것이라, 새 메뉴가 오기 전에 2차를
+    만들면 거절한 메뉴로 확정 기획안이 나간다. 경고도 안 뜬다 — 코드가 폼
+    값이 없으면 화면이 든 값을 쓰기 때문이다 (chain/inputs.py). 그래서 막는다.
+
+    갈래를 모르면(값이 비면) 막지 않는다. 폼이 오기 전이거나 옛 응답인데,
+    가장 흔한 A 를 막아 버리면 정상 흐름이 멈춘다.
+    """
+    if partner.get("agreed_menu"):
+        return None
+    branch = (partner.get("reply_choice") or "").strip().upper()
+    if branch in ("B", "C"):
+        return ("협력사가 메뉴를 다시 추천받고 싶다고 했습니다. "
+                "메뉴를 정한 뒤 두 번째 구글폼을 받아야 2차를 만들 수 있습니다.")
+    if branch == "A2":
+        return ("협의로 정한 메뉴가 폼에 들어오지 않았습니다. "
+                "폼을 다시 제출해야 합니다.")
+    return None
 
 
 def prompt_version() -> str | None:
@@ -237,7 +266,8 @@ def load_adopted(partner_id: int) -> list[dict]:
     """
     try:
         rows = (get_client().table("plans")
-                .select("id,adopted_option,target_date,created_at,final_output")
+                .select("id,adopted_option,sent_option,target_date,"
+                        "created_at,final_output")
                 .eq("partner_id", partner_id).eq("round", 1)
                 .not_.is_("adopted_option", "null")
                 .order("id", desc=True).limit(20).execute().data or [])
@@ -268,8 +298,8 @@ def load_archive(partner_id: int) -> list[dict]:
     """
     try:
         rows = (get_client().table("plans")
-                .select("id,round,adopted_option,target_date,created_at,"
-                        "final_output")
+                .select("id,round,adopted_option,sent_option,target_date,"
+                        "created_at,final_output")
                 .eq("partner_id", partner_id)
                 .not_.is_("adopted_option", "null")
                 .order("round").order("id", desc=True)
@@ -307,9 +337,43 @@ def sent_options(picks: list[dict]) -> list[dict]:
                 "판매가_제안": it.get("판매가_제안"),
                 "target_date": p.get("target_date"),
                 "created_at": p.get("created_at"),
+                "보냄": p.get("sent_option") == aid,
                 "item": it,        # 미리보기가 쓴다 — 안 내용 통째
             })
     return out
+
+
+def sent_pick(options: list[dict]) -> dict | None:
+    """이 협력사의 「보낸 안」. 없으면 None."""
+    return next((o for o in options if o["보냄"]), None)
+
+
+def save_sent(partner_id: int, plan_id: int, option_id: str) -> bool:
+    """
+    「협력사에 보낸 안」을 DB 에 남긴다.
+
+    한 협력사에 보낸 안은 하나다. 다른 행에 남아 있던 표시를 먼저 비우고
+    새 행에 적는다 — UNIQUE 를 안 걸었으므로(db/migrate_0930.sql) 순서를
+    여기서 지킨다.
+
+    세션이 아니라 DB 에 두는 이유는, 1차 제안서를 보내고 며칠 뒤에 폼이 와서
+    그 사이 브라우저가 반드시 끊기기 때문이다.
+    """
+    try:
+        cli = get_client()
+        (cli.table("plans").update({"sent_option": None, "sent_at": None})
+         .eq("partner_id", partner_id)
+         .not_.is_("sent_option", "null").execute())
+        (cli.table("plans")
+         .update({"sent_option": option_id,
+                  "sent_at": datetime.now(KST).isoformat()})
+         .eq("id", plan_id).execute())
+        load_adopted.clear()
+        load_archive.clear()
+        return True
+    except Exception as e:
+        st.warning(f"보낸 안을 저장하지 못했습니다 — {e}")
+        return False
 
 
 def adopted_ids(value) -> list[str]:
@@ -409,9 +473,12 @@ SS_FILES = "proposal_files"   # 안별 제안서 파일 캐시. 생성할 때마
 SS_TOAST = "adopt_toast"      # 담긴 개수. rerun 뒤에 토스트로 띄우고 지운다.
 
 
-def flash_note(msg: str | None) -> None:
+def flash_note(msg: str | None, seconds: float = 2.0) -> None:
     """
-    화면 가운데에 떴다 2초 뒤 사라지는 알림. None 이면 아무것도 안 그린다.
+    화면 가운데에 떴다 잠시 뒤 사라지는 알림. None 이면 아무것도 안 그린다.
+
+    seconds 는 **다 보이는 시간**이다. 그 뒤 0.4초에 걸쳐 흐려진다.
+    읽을 글자가 많으면 늘린다 — 보관함 알림이 그래서 3.5초다.
 
     st.toast 는 오른쪽 아래 구석이라 눈에 안 띄고 위치를 CSS 로 못 옮겼다
     (9/25). 부르는 곳은 화면 맨 끝이어야 한다 — 위에 두면 알림이 사라질 때
@@ -422,14 +489,15 @@ def flash_note(msg: str | None) -> None:
     # 애니메이션 이름과 class 에 매번 다른 번호를 붙인다. 같은 이름이 이미 DOM 에
     # 있으면 브라우저가 애니메이션을 다시 시작하지 않아 배너가 안 보인다.
     tag = f"f{int(datetime.now(KST).timestamp() * 1000) % 100000}"
-    # 2초 보이고 0.4초에 걸쳐 사라진다 (전체 2.4초의 83% 지점부터).
+    total = seconds + 0.4
+    hold = round(seconds / total * 100)
     st.markdown(
-        f'<style>@keyframes {tag} {{ 0%,83% {{opacity:1}} 100% {{opacity:0; visibility:hidden}} }}'
+        f'<style>@keyframes {tag} {{ 0%,{hold}% {{opacity:1}} 100% {{opacity:0; visibility:hidden}} }}'
         f'.{tag} {{ position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);'
         f'  z-index:100000; background:#111827; color:#fff; padding:22px 40px;'
         f'  border-radius:14px; font-size:1.3rem; font-weight:700; white-space:nowrap;'
         f'  box-shadow:0 16px 48px rgba(0,0,0,0.35);'
-        f'  animation: {tag} 2.4s ease forwards; }}</style>'
+        f'  animation: {tag} {total}s ease forwards; }}</style>'
         f'<div class="{tag}">📄 {msg}</div>', unsafe_allow_html=True)
 
 
@@ -745,8 +813,11 @@ ARCHIVE_CSS = """
   .arch-no { color:#0F172A; font-size:26px; font-weight:800; line-height:1.1; }
   .arch-no span { display:block; color:#94A3B8; font-size:12px; font-weight:600;
     margin-top:4px; }
+  /* 회차 배지. 1차와 2차는 뜻이 달라 색도 달라야 한다 — 고를 수 있는 것은
+     1차뿐이고 2차는 그것으로 만든 확정본이다 */
   .arch-rnd { display:inline-block; padding:5px 13px; border-radius:999px;
     background:#EEF2FF; color:#4338CA; font-size:14px; font-weight:800; }
+  .arch-rnd-2 { background:#FEF3C7; color:#92400E; }
 
   /* 보낸 안으로 확정한 줄 — 눈에 띄어야 한다 */
   .st-key-arch_rows [data-testid="stHorizontalBlock"]:has(.arch-sent) {
@@ -902,12 +973,10 @@ def _confirm_swap(old: dict, new: dict, partner_id: int) -> None:
     st.write(f"**{new['메뉴명']}** 로 바꾸시겠습니까?")
     c1, c2 = st.columns(2)
     if c1.button("바꾸기", type="primary", use_container_width=True):
-        chest = dict(st.session_state.get(SS_ARCHIVE_SENT) or {})
-        chest[partner_id] = new
-        st.session_state[SS_ARCHIVE_SENT] = chest
         st.session_state.pop(SS_ARCHIVE_SWAP, None)
-        st.session_state[SS_ARCHIVE_NOTE] = (
-            f"{new['메뉴명']} 로 바꿨습니다 — 그 줄에서 폼 링크를 받으세요")
+        if save_sent(partner_id, new["plan_id"], new["안_id"]):
+            st.session_state[SS_ARCHIVE_NOTE] = (
+                f"{new['메뉴명']} 로 바꿨습니다 — 그 줄에서 폼 링크를 받으세요")
         st.rerun()
     if c2.button("그대로 두기", use_container_width=True):
         st.session_state.pop(SS_ARCHIVE_SWAP, None)
@@ -947,7 +1016,7 @@ def render_archive(partner: dict, options: list[dict]) -> None:
             col.markdown(f'<div class="arch-head-cell">{label}</div>',
                          unsafe_allow_html=True)
 
-    sent = (st.session_state.get(SS_ARCHIVE_SENT) or {}).get(partner["id"])
+    sent = sent_pick(options)
 
     # 「최종 선택」으로 고르는 것은 협력사에게 **보낸** 안이라 1차뿐이다.
     # 그 안의 메뉴가 2차를 만드는 입력이 된다.
@@ -972,7 +1041,8 @@ def render_archive(partner: dict, options: list[dict]) -> None:
                             "확정본이라 고를 대상이 아닙니다.",
                             on_change=_only_one, args=(o["key"], keys))
             with c_rnd:
-                st.markdown(f'<div class="arch-rnd">{o["round"]}차</div>',
+                cls = "arch-rnd" if first else "arch-rnd arch-rnd-2"
+                st.markdown(f'<div class="{cls}">{o["round"]}차</div>',
                             unsafe_allow_html=True)
             with c_no:
                 st.markdown(f'<div class="arch-no">{seq[o["round"]]:02d}'
@@ -1032,19 +1102,18 @@ def render_archive(partner: dict, options: list[dict]) -> None:
                 if sent and sent["key"] != new["key"]:
                     st.session_state[SS_ARCHIVE_SWAP] = new
                     st.rerun()
-                chest = dict(st.session_state.get(SS_ARCHIVE_SENT) or {})
-                chest[partner["id"]] = new
-                st.session_state[SS_ARCHIVE_SENT] = chest
                 # 여기서 화면을 닫지 않는다. 안을 고른 다음 할 일이 그 줄의
                 # 「폼 링크」를 받는 것이라, 닫아 버리면 다시 들어와야 한다.
                 # 생성 화면으로 돌아가는 일은 폼 링크 창이 맡는다.
-                st.session_state[SS_ARCHIVE_NOTE] = (
-                    f"{new['메뉴명']} 로 정했습니다 — 그 줄에서 폼 링크를 "
-                    f"받으세요")
+                if save_sent(partner["id"], new["plan_id"], new["안_id"]):
+                    st.session_state[SS_ARCHIVE_NOTE] = (
+                        f"{new['메뉴명']} 로 정했습니다 — 그 줄에서 폼 링크를 "
+                        f"받으세요")
                 st.rerun()
 
     # 알림은 화면 맨 끝에서 그린다. 위에 두면 떴다 사라질 때마다 아래가 밀린다.
-    flash_note(st.session_state.pop(SS_ARCHIVE_NOTE, None))
+    # 담기 알림보다 길게 둔다 — 읽고 나서 다음에 할 일까지 적혀 있다.
+    flash_note(st.session_state.pop(SS_ARCHIVE_NOTE, None), seconds=3.5)
 
 
 # ══════════════════════════════════════════
@@ -1089,10 +1158,12 @@ if _in_archive:
     if st.session_state.pop(SS_ARCHIVE_WARN, False):
         _one_only()
     _swap = st.session_state.get(SS_ARCHIVE_SWAP)
-    if _swap:
-        _confirm_swap(
-            (st.session_state.get(SS_ARCHIVE_SENT) or {})[partner["id"]],
-            _swap, partner["id"])
+    _old = sent_pick(options)
+    if _swap and _old:
+        _confirm_swap(_old, _swap, partner["id"])
+    elif _swap:
+        # 바꿀 대상이 사라졌다(무르기 등). 표시만 지운다.
+        st.session_state.pop(SS_ARCHIVE_SWAP, None)
     render_archive(partner, options)
     st.stop()
 
@@ -1173,22 +1244,25 @@ with st.container(key="param_card"):
         # 행위이고(쟁점 1-1-2), 보내는 일은 화면 밖(메일·카톡)에서 일어나
         # 시스템이 알 수 없다. 자동으로 정하면 보낸 적 없는 안으로 2차가
         # 만들어진다.
-        sent = (st.session_state.get(SS_ARCHIVE_SENT) or {}).get(chosen["id"])
-        # 담은 것을 무르면(scripts/clear_adopted) 그 안이 보관함에서 빠지는데
-        # 세션에는 남는다. 그대로 쓰면 보관함에 없는 안으로 2차가 만들어진다.
-        if sent and sent["plan_id"] not in {o["plan_id"] for o in options}:
-            sent = None
+        sent = sent_pick(options)
+
+        # 갈래에 따라 2차를 막아야 할 수 있다. 막으면 왜 막았는지 적는다.
+        blocked = menu_block(chosen) if rnd == 2 else None
 
         # 고른 안은 보관함에서 표시로 보인다. 여기에 또 적지 않는다.
         # 다만 안 골랐으면 생성 버튼이 막히므로 왜 막혔는지는 알려야 한다.
         if rnd == 2 and not sent:
             st.caption("상단 「보관함」에서 협력사에 보낼 안을 골라 주세요.")
 
+    if blocked:
+        st.warning(blocked)
+
     has_menus = bool(menu_rows(chosen))
     if not has_menus:
         st.info("메뉴·판매가가 아직 없습니다. 들어오면 만들 수 있습니다.")
 
-    allowed = can_1st if rnd == 1 else (can_2nd and bool(sent))
+    allowed = (can_1st if rnd == 1
+               else (can_2nd and bool(sent) and not blocked))
     _, c_btn = st.columns([3, 1])
     go = c_btn.button("기획안 최적 생성 시작", type="primary", icon=":material/auto_awesome:",
                       use_container_width=True, disabled=not has_menus or not allowed)
@@ -1205,7 +1279,7 @@ elif not form_in:
     st.caption("협력사와 합의해 폼을 채우면 2차 기획안을 만들 수 있습니다.")
 else:
     st.caption("폼을 받았습니다. 2차 기획안을 만듭니다. "
-               "골랐던 1차 기획안은 결과 화면에서 다시 볼 수 있습니다.")
+               "골랐던 1차 기획안은 보관함에서 다시 볼 수 있습니다.")
 
 if st.session_state.get(SS_RESULT):
     meta = st.session_state[SS_META]

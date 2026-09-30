@@ -19,10 +19,10 @@
   plans 행까지 정말 지워야 하면 Supabase SQL 편집기에서 한다. 거기서는 RLS 가
   적용되지 않는다. 지우기 전에 그 기록이 필요 없는지 확인할 것.
 
-[「최종 선택」은 여기 없다]
-  보관함에서 고른 「협력사에 보낸 안」은 브라우저 세션에만 있다. 새로고침하면
-  사라지므로 따로 무를 것이 없다. 2차를 실제로 만들면 그때 plans.prev_plan_id
-  에 남는다.
+[「최종 선택」도 같이 무른다]
+  보관함에서 고른 「협력사에 보낸 안」은 plans.sent_option 에 남는다
+  (db/migrate_0930.sql). 담은 표시를 비우면서 이것도 같이 비운다 — 담지 않은
+  안이 보낸 안으로 남아 있으면 앞뒤가 안 맞는다.
 """
 import sys
 
@@ -85,7 +85,8 @@ def main() -> None:
     cli = get_client()
     for r in rows:
         (cli.table("plans")
-         .update({"adopted_option": None, "status": "generated"})
+         .update({"adopted_option": None, "status": "generated",
+                  "sent_option": None, "sent_at": None})
          .eq("id", r["id"]).execute())
     print(f"\n{len(rows)}건을 물렀다. 보관함이 비었다.")
 
