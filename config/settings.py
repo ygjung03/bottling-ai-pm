@@ -29,6 +29,25 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 BOTTLING_LAT = float(os.getenv("BOTTLING_LAT", "37.5318919"))
 BOTTLING_LNG = float(os.getenv("BOTTLING_LNG", "127.0679483"))
 
+# --- 협력사 폼 ---
+#
+# 「협의 사항 입력폼」의 주소와, 「확인 코드는 무엇인가요?」 문항의 번호.
+# 둘을 합쳐 협력사마다 코드가 박힌 링크를 만든다.
+#
+#   {URL}?usp=pp_url&{ENTRY}={초대 코드}
+#         어느 문항에 ↑        무엇을 넣을지 ↑
+#
+# ENTRY 는 값이 아니라 **문항을 가리키는 이름표**다 (entry.1920643830 같은
+# 모양). 협력사가 바뀌어도 이 이름표는 그대로이고, 뒤에 붙는 초대 코드만 바뀐다.
+#
+# 미리 채우는 이유는 손으로 적다 틀리는 것을 막기 위해서다. 코드가 어긋나면
+# 폼은 통과시키고(형식만 본다) .gs 가 맞는 협력사를 못 찾아 아무것도 저장하지
+# 않는다 — 제출은 됐는데 DB 에 없는 상태가 된다.
+#
+# 공개 저장소라 값을 코드에 적지 않는다. .env 와 Cloud secrets 에만 둔다.
+PARTNER_FORM_URL = os.getenv("PARTNER_FORM_URL", "")
+PARTNER_FORM_CODE_ENTRY = os.getenv("PARTNER_FORM_CODE_ENTRY", "")
+
 # --- 수집 대상 지점 ---
 # TODO(A): 「서울시 주요 120장소 목록」에서 확인 후 실제 코드값으로 교체
 SPOTS = {
