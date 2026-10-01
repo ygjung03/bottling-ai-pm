@@ -8,8 +8,8 @@
  *   문항 제목이 같으므로 **이 파일 하나가 두 폼을 모두 처리한다.** 폼마다
  *   응답 시트를 만들고 각 시트에 이 내용을 붙여 트리거를 따로 걸면 된다.
  *
- *   폼 2 에 없는 문항(갈래·사진 등)은 아래 「빈 값으로 지우지 않는다」 규칙에
- *   걸려 payload 에서 빠진다. 폼 1 에서 받은 값이 덮이지 않는다.
+ *   폼 2 의 문항은 폼 1 에도 다 있다. 각 폼은 자기 칸의 최신 응답만 반영하므로
+ *   폼 2 를 다시 내도 폼 1 에서 받은 값은 그대로 남는다 (아래 onFormSubmit 참고).
  *
  * [어디에 붙이나]
  *   폼과 연결된 응답 시트를 먼저 만든다 (폼 → 응답 → 스프레드시트에 연결).
@@ -68,13 +68,20 @@ var FIELDS = {
   reply:       '제안받은 메뉴로 진행하시겠어요?',
 
   // 메뉴가 정해진 뒤 묻는 것. 폼 1 섹션 2·3 과 폼 2 가 같은 문항을 쓴다.
+  //
+  // 「이 메뉴」·「그 메뉴」를 「협업 메뉴」로 바꿨다 (10/1). A 갈래는 섹션 2 를
+  // 건너뛰어 「그 메뉴」가 무엇인지 앞에 안 나왔다. 폼 1·2 를 함께 바꿨다.
   agreedMenu:  '어떤 메뉴로 협업을 진행하실건가요?',
-  salePrice:   '그 메뉴는 손님에게 얼마에 파시나요?',
-  buyPrice:    '이 메뉴는 개당 얼마에 주실 수 있나요?',
+  salePrice:   '협업 메뉴는 손님에게 얼마에 파시나요?',
+  buyPrice:    '협업 메뉴는 개당 얼마에 주실 수 있나요?',
   supplyQty:   '하루에 몇 개씩 주실 수 있나요?',
   storage:     '어떻게 보관하고 며칠 안에 팔아야 하나요?',
-  takeout:     '이 메뉴는 포장 판매가 가능한가요?',
+  takeout:     '협업 메뉴는 포장 판매가 가능한가요?',
   blockers:    '지켜야 할 조건이 있으면 알려주세요.',
+
+  // 손님에게 어떻게 낼지. 폼 1 섹션 2 에만 있다 (A2 전용).
+  // A 는 보낸 안에, B/C 는 고른 안에 들어 있어 화면이 안다.
+  approach:    '협의해서 정한 판매 방식은 무엇인가요?',
 
   // 메뉴를 다시 정하는 경우 (B/C). 폼 1 섹션 4 에만 있다.
   photo:       '메뉴판 사진을 올려주세요.',
@@ -266,6 +273,31 @@ function movePhotos(text, code, url, key) {
  * 그때는 한 번만 쓰고 빼는 편이 낫다.
  */
 
+/**
+ * 지금 DB 에 적힌 갈래. 없거나 못 읽으면 null.
+ *
+ * 폼 1 을 다시 냈을 때 갈래가 바뀌었는지 보려고 읽는다. 바뀌었으면 폼 2 가
+ * 채운 값이 옛 갈래의 것이라 무효가 된다.
+ */
+function currentReply(url, key, code) {
+  try {
+    var res = UrlFetchApp.fetch(
+      url + '/rest/v1/partners?invite_code=eq.' + encodeURIComponent(code)
+          + '&select=reply_choice',
+      {
+        method: 'get',
+        headers: { apikey: key, Authorization: 'Bearer ' + key },
+        muteHttpExceptions: true
+      });
+    if (res.getResponseCode() >= 300) return null;
+    var rows = JSON.parse(res.getContentText() || '[]');
+    return rows.length ? rows[0].reply_choice : null;
+  } catch (err) {
+    Logger.log('이전 갈래를 읽지 못했다: ' + err);
+    return null;
+  }
+}
+
 function onFormSubmit(e) {
   var values = e && e.namedValues;
   if (!values) {
@@ -317,6 +349,10 @@ function onFormSubmit(e) {
     agreed_menu:       answer(values, FIELDS.agreedMenu, missing),
     agreed_sale_price: toNumber(answer(values, FIELDS.salePrice, missing)),
     agreed_price:      toNumber(answer(values, FIELDS.buyPrice, missing)),
+    // 선택지 문장을 그대로 넣는다. 「단품」·「세트」·「포장」으로 바꾸는 일은
+    // 화면이 한다 — 「아직 정하지 않았습니다」와 기타 서술형도 와서, 여기서
+    // 셋 중 하나로 줄이면 그 답이 사라진다.
+    agreed_approach:   answer(values, FIELDS.approach, missing),
     supply_qty:        answer(values, FIELDS.supplyQty, missing),
     storage_note:      answer(values, FIELDS.storage, missing),
     takeout:           answer(values, FIELDS.takeout, missing),
@@ -342,18 +378,38 @@ function onFormSubmit(e) {
                + ' (docs/private/쟁점_2차흐름과_폼_0925.md 2절)');
   }
 
-  // 빈 값으로 기존 내용을 지우지 않는다. 협력사가 일부만 고쳐 다시 냈을 때
-  // 안 적은 항목까지 날아가면 이전 답을 잃는다.
+  // 각 폼이 받은 가장 최신 응답이 반영되도록 한다.
   //
-  // **폼 2 가 폼 1 의 값을 덮지 않는 것도 이 규칙이 한다.** 폼 2 에 없는
-  // 문항(갈래·사진·메뉴 이름 등)은 여기서 빠진다.
+  //   폼 2 를 다시 내면    폼 2 응답만 바꾸고 폼 1 응답은 그대로 둔다
+  //   폼 1 을 다시 내면    폼 1 응답을 이번 답으로 바꾼다. 안 적은 응답은 비운다
+  //   폼 1 을 다시 내면서 메뉴 갈래가 바뀌면
+  //                        폼 2 응답을 비운다. 지난 갈래의 답이라 쓸 수 없다
   //
-  // updated_at 은 항상 값이 있으므로 여기서 지워지지 않는다.
+  // SHARED 가 폼 2 의 칸이다. 폼 2 문항은 폼 1 에도 다 있다.
+  var SHARED = ['agreed_menu', 'agreed_sale_price', 'agreed_price',
+                'supply_qty', 'storage_note', 'takeout', 'blockers'];
+  var SOURCE = {
+    reply_choice: FIELDS.reply, agreed_menu: FIELDS.agreedMenu,
+    agreed_approach: FIELDS.approach, agreed_sale_price: FIELDS.salePrice,
+    agreed_price: FIELDS.buyPrice, supply_qty: FIELDS.supplyQty,
+    storage_note: FIELDS.storage, takeout: FIELDS.takeout,
+    blockers: FIELDS.blockers, menu_photo_url: FIELDS.photo,
+    menu_note: FIELDS.menuNote, takeout_note: FIELDS.takeoutNote,
+    available_slots: FIELDS.slots, contact_slots: FIELDS.contact,
+    sns_channel: FIELDS.sns, sns_content_type: FIELDS.content
+  };
+  var EMPTY = { blockers: [], menu_photo_url: [] };   // NOT NULL 배열 칸
+
+  var prevReply = currentReply(url, key, code);
+  var switched = !!(reply && prevReply && reply !== prevReply);
+
   Object.keys(payload).forEach(function (k) {
+    if (!(k in SOURCE)) return;                                  // updated_at
+    if (!(SOURCE[k] in values)) { delete payload[k]; return; }   // 이 폼에 없는 문항
     var v = payload[k];
-    if (v === '' || v === null || (Array.isArray(v) && !v.length)) {
-      delete payload[k];
-    }
+    if (v !== '' && v !== null && !(Array.isArray(v) && !v.length)) return;
+    if (SHARED.indexOf(k) >= 0 && !switched) { delete payload[k]; return; }
+    payload[k] = (k in EMPTY) ? EMPTY[k] : null;
   });
 
   var res = UrlFetchApp.fetch(
