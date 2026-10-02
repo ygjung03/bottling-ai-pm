@@ -387,6 +387,76 @@ def adopted_ids(value) -> list[str]:
 # 생성
 # ══════════════════════════════════════════
 
+def has_agreed_plan(partner: dict) -> bool:
+    """
+    협력사가 동의한 안이 이미 있나. 있으면 그 안을 그대로 쓴다.
+
+      A      보낸 안에 「그 메뉴로 하겠다」고 답했다   있다
+      A2     보낸 안 대신 다른 메뉴로 바꿨다          없다 — 새로 만든다
+      B/C    보낸 안을 거절했다                     없다 — 새로 만든다
+
+    B/C 는 메뉴판을 읽어 다시 고른 안이 있어야 하는데 그 화면이 아직 없다.
+    (남은_작업 ③-c). 생기면 여기에 B·C 를 더하면 된다 — 그 화면이 고른 안을
+    보관함과 같은 방식으로 남기므로 뒷일은 같다.
+    """
+    return (partner.get("reply_choice") or "A").strip().upper() == "A"
+
+
+def load_preset(partner: dict, sent: dict | None) -> dict | None:
+    """
+    2차에서 다시 만들지 않고 가져다 쓸 1차 결과.
+
+    협력사가 「그 메뉴로 하겠다」고 했으면 1차에서 고른 그 안이 곧 확정안이다.
+    다시 만들면 값이 달라진다 — 10/2 에 세트 판매가가 9,000원에서 7,500원으로
+    바뀌었다. 협력사가 동의한 것과 다른 문서가 나간다.
+
+    그래서 그 안을 그대로 가져오고, 협의로 정해진 것만 덮는다. 나머지(판매가·
+    구성·페어링 맥주)는 1차 그대로 둔다.
+
+    메뉴를 새로 정한 경우(A2)는 쓸 안이 없어 None 을 돌려준다.
+    """
+    if not sent or not has_agreed_plan(partner):
+        return None
+    try:
+        row = (get_client().table("plans").select("p1_output,p2_output")
+               .eq("id", sent["plan_id"]).single().execute().data)
+    except Exception:
+        return None
+    menus = (row.get("p2_output") or {}).get("메뉴안") or []
+    item = next((m for m in menus if m.get("안_id") == sent["안_id"]), None)
+    if not row.get("p1_output") or not item:
+        return None
+
+    item = dict(item)
+    if partner.get("agreed_price"):
+        item["협력사희망_매입가"] = f"{int(partner['agreed_price']):,}원 [확정]"
+    if partner.get("supply_qty"):
+        item["1회_납품_수량"] = partner["supply_qty"]
+    if partner.get("storage_note"):
+        item["보관_조건"] = partner["storage_note"]
+
+    return {"p1": row["p1_output"],
+            "p2": {"메뉴안": [item],
+                   "공통_주의사항": (row.get("p2_output") or {}).get("공통_주의사항") or []}}
+
+
+def screen_approach(partner: dict, sent: dict | None) -> str | None:
+    """
+    화면이 아는 판매 방식. 폼이 묻는 갈래면 넘기지 않는다.
+
+    판매 방식이 어디서 오는지는 갈래마다 하나뿐이어야 한다. 둘 다 오면 어느
+    것이 맞는지 따질 일이 생긴다.
+
+      A      화면에서 고른 안에 들어 있다        → 화면을 넘긴다
+      A2     폼 섹션 2 에서 받는다       → 화면을 넘기지 않는다. 메뉴가 바뀌었으니
+                                        화면에서 골랐던건 더이상 의미가 없다.
+      B/C    화면에서 고른 안에 들어 있다  → 화면을 넘긴다 (그 화면은 아직 없다)
+    """
+    if (partner.get("reply_choice") or "").strip().upper() == "A2":
+        return None
+    return (sent or {}).get("접근")
+
+
 def generate(partner: dict, target: date, rnd: int,
              sent: dict | None = None) -> None:
     """
@@ -421,7 +491,8 @@ def generate(partner: dict, target: date, rnd: int,
             beer_list=build_beer_list(),
             partner_res=build_partner_resources(
                 partner, confirmed=rnd == 2,
-                agreed_menu=(sent or {}).get("메뉴명")),
+                agreed_menu=(sent or {}).get("메뉴명"),
+                agreed_approach=screen_approach(partner, sent)),
             partner_blockers=build_partner_blockers(partner),
             bottling_ingredients=BOTTLING_INGREDIENTS,
             margin_ref=MARGIN_REF,
@@ -436,6 +507,7 @@ def generate(partner: dict, target: date, rnd: int,
             rec_reason=build_rec_reason(partner),
             partner=partner,
             fixed_menu=rnd == 2,
+            preset=load_preset(partner, sent) if rnd == 2 else None,
             on_step=on_step,
         )
 
@@ -454,6 +526,8 @@ def generate(partner: dict, target: date, rnd: int,
         "prompt_version": prompt_version(),
         # 2차가 어느 1차를 이어받았는지. 보관함에서 고른 그 안이 든 plan 이다.
         "prev_plan_id": (sent or {}).get("plan_id"),
+        # 제안서의 「포장 판매」 줄. 협력사가 폼에 답한 값이다.
+        "takeout": partner.get("takeout"),
     }
     meta["adopted"] = []            # 새로 만든 기획안이라 아직 담은 안이 없다
     meta["plan_id"] = save_plan(result, meta)
@@ -903,7 +977,8 @@ def _preview(o: dict, partner: dict) -> None:
     1차는 보기만」을 위한 별도 화면을 두지 않는다 (쟁점 1-3-1).
     """
     meta = {"partner_name": partner["name"], "round": o["round"],
-            "target_date": o["target_date"], "plan_id": o["plan_id"]}
+            "target_date": o["target_date"], "plan_id": o["plan_id"],
+            "takeout": partner.get("takeout")}
     missing = missing_fields(o["item"])
     if missing:
         st.warning(f"이 안에는 {', '.join(missing)}이(가) 없어 "

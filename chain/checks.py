@@ -340,7 +340,13 @@ def check_menu(out: dict, beers: dict, p1: dict | None = None,
     # 그 사유가 있어야 한다 — 없이 두 개면 그냥 하나를 빠뜨린 것이다.
     approaches = [m.get("접근") for m in menus]
     notes = " ".join(str(x) for x in (out.get("공통_주의사항") or []))
-    if len(menus) == 2 and "포장" not in approaches and "포장" in notes:
+    if fixed_menu:
+        # 메뉴가 정해진 뒤다. 고를 것을 내미는 자리가 아니라서 안은 하나다.
+        # (p2 지시 1). 접근만 달리해 세 안을 내던 때가 있었는데, 
+        # 모든 안이 같은 메뉴에 대해 나와 이상해보였다 (10/1 시연).
+        if len(menus) != 1:
+            issues.append(f"메뉴안 {len(menus)}개 — 메뉴가 정해졌으므로 1개여야 함")
+    elif len(menus) == 2 and "포장" not in approaches and "포장" in notes:
         pass
     elif len(menus) != 3:
         issues.append(f"메뉴안 {len(menus)}개 — 3개여야 함 "

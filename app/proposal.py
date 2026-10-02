@@ -276,6 +276,10 @@ def _sections(item: dict, meta: dict) -> list[dict]:
             terms.append(("협력사 수익", deal["협력사_수익"]))
         terms += [("보관 조건", item.get("보관_조건") or "협의 필요"),
                   ("1회 납품 수량", item.get("1회_납품_수량") or "협의 필요")]
+        # 안의 접근(단품·세트·포장)과 다른 것이다. 그쪽은 어떤 상품으로 파는가고,
+        # 이것은 그것과 별개로 포장이 가능한 메뉴인지에 대한 것이다. 
+        if meta.get("takeout"):
+            terms.append(("포장 판매", meta["takeout"]))
         out.append({"title": "거래 및 운영 조건", "items": terms, "table": True})
 
         # 「미확인」은 싣지 않는다 (9/30). (4)가 매입가를 **추정할 때** 못 본 것을
