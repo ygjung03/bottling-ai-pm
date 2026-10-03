@@ -410,8 +410,8 @@ def load_preset(partner: dict, sent: dict | None) -> dict | None:
     다시 만들면 값이 달라진다 — 10/2 에 세트 판매가가 9,000원에서 7,500원으로
     바뀌었다. 협력사가 동의한 것과 다른 문서가 나간다.
 
-    그래서 그 안을 그대로 가져오고, 협의로 정해진 것만 덮는다. 나머지(판매가·
-    구성·페어링 맥주)는 1차 그대로 둔다.
+    그래서 그 안을 그대로 가져오고, 협의로 정해진 것만 덮는다. 나머지(바틀링
+    예정 판매가·구성·페어링 맥주)는 1차 그대로 둔다.
 
     메뉴를 새로 정한 경우(A2)는 쓸 안이 없어 None 을 돌려준다.
     """
@@ -428,6 +428,16 @@ def load_preset(partner: dict, sent: dict | None) -> dict | None:
         return None
 
     item = dict(item)
+    # 협력사 정가는 1차에서 후기를 바탕으로 추정한 값이다. 폼으로 실제 값을 받았으면 그것이
+    # 맞는 값이다. 안 바꾸면 (4)가 틀린 정가를 근거로 판매가를 설명한다.
+    #
+    # 세트의 「정가_합」은 협력사 정가 + 맥주 500ml 값이다. 정가가 움직인
+    # 만큼 같이 움직여야 제안서의 「따로 사면 N원」이 맞는다.
+    sale, was = partner.get("agreed_sale_price"), item.get("협력사_정가")
+    if sale:
+        item["협력사_정가"] = int(sale)
+        if was and item.get("정가_합"):
+            item["정가_합"] = int(item["정가_합"]) + int(sale) - int(was)
     if partner.get("agreed_price"):
         item["협력사희망_매입가"] = f"{int(partner['agreed_price']):,}원 [확정]"
     if partner.get("supply_qty"):
