@@ -24,7 +24,7 @@ import pydeck as pdk
 import streamlit as st
 
 from app.auth import require_owner
-from app.theme import apply_chrome
+from app.theme import SS_PARTNER_ID, apply_chrome
 from context.builder import INDUSTRY_MAP
 from db.client import get_client
 from recommender.complement import TIER_LABELS, guess_industry_category, tier_label
@@ -157,11 +157,29 @@ def create_invite(name: str, category: str, lat=None, lng=None) -> dict | None:
 
 # ───────────────────────── 공통 UI 조각 ─────────────────────────
 
+def hand_over(partner: dict) -> None:
+    """고른 협력사를 기획안 생성 화면에 넘긴다.
+
+    기획안 생성 화면이 이 값을 협력사 고르는 칸의 기본값으로 읽는다. 안 넣으면
+    파트너추천에서 협력사로 고르고나서 기획안 생성 화면에서 또 골라야 한다.
+
+    넘어가는 순간이 아니라 협력사가 정해지는 자리에서 넣는다 — 링크는 코드를
+    돌릴 수 없고, 세션 값은 화면을 옮겨도 남는다.
+
+    셀렉트박스 key("partner_pick")에 직접 넣으면 안 된다. Streamlit 이 위젯을
+    안 그린 실행에서 그 값을 지우므로, 화면을 넘어가는 사이에 사라진다.
+    """
+    pid = partner.get("id")
+    if pid:
+        st.session_state[SS_PARTNER_ID] = pid
+
+
 def render_next_step(candidate_name: str, guessed_category: str, lat=None, lng=None, key_prefix=""):
     """추천받기·직접 지정 공통 — 이후 처리 (명세서 4-3 공통 절차)."""
     existing = find_existing_partner(candidate_name)
     if existing:
         st.warning(f"'{existing['name']}'은(는) 이미 등록된 협력사입니다.")
+        hand_over(existing)
         st.page_link("pages/2_기획안_생성.py", label="기획안 생성으로 이동", icon="📝")
         return
 
@@ -185,6 +203,7 @@ def render_registered(row: dict, guessed_category: str):
         f"업종은 '{guessed_category}'(으)로 초안을 채웠습니다 — "
         f"협력사가 폼에서 직접 고칠 수 있습니다."
     )
+    hand_over(row)
     st.page_link("pages/2_기획안_생성.py", label="기획안 생성으로 이동", icon="📝")
 
 
@@ -435,6 +454,7 @@ with tab_manual:
                 existing = find_existing_partner(m_name)
                 if existing:
                     st.warning(f"'{existing['name']}'은(는) 이미 등록된 협력사입니다.")
+                    hand_over(existing)
                     st.page_link("pages/2_기획안_생성.py", label="기획안 생성으로 이동", icon="📝")
                 else:
                     row = create_invite(m_name, m_category)

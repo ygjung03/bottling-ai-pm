@@ -40,7 +40,8 @@ import streamlit as st
 from app.auth import require_owner
 from app.proposal import (build_proposal_docx, build_proposal_pdf, end_dot,
                           missing_fields, pdf_pages, proposal_no)
-from app.theme import ARCHIVE_PARAM, SS_ARCHIVE_COUNT, apply_chrome
+from app.theme import (ARCHIVE_PARAM, SS_ARCHIVE_COUNT, SS_PARTNER_ID,
+                       apply_chrome)
 from app.ui import page_header
 from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           NO_TREND_MENU, PAST_CASES, WEATHER_PREF,
@@ -62,10 +63,7 @@ KST = timezone(timedelta(hours=9))
 SS_RESULT = "plan_result"      # 체인 출력
 SS_META = "plan_meta"          # 협력사·날짜 등 생성 조건
 
-# 고른 협력사 id. 셀렉트박스 값을 그대로 쓰지 못한다 — Streamlit 은 위젯이
-# 그려지지 않은 실행에서 그 key 의 세션 값을 지우는데, 보관함으로 갈라지면
-# 셀렉트박스가 안 그려져 값이 사라진다. 위젯 키가 아닌 곳에 복사해 둔다.
-SS_PARTNER_ID = "partner_id_last"
+# SS_PARTNER_ID(고른 협력사 id)는 app/theme.py 에 있다 — 파트너 추천도 쓴다.
 
 # 보관함. 열렸는지는 주소의 질의 문자열이 정한다 (app/theme.ARCHIVE_PARAM).
 #
@@ -1207,6 +1205,19 @@ def render_archive(partner: dict, options: list[dict]) -> None:
 
 partners = load_partners()
 
+# 파트너 추천에서 넘겨준 협력사가 목록에 없을 수 있다. 방금 등록한 것이면
+# 목록 캐시(60초)에 아직 안 들어와 있다. 그때는 한 번만 다시 읽는다.
+#
+# 다시 읽어도 없으면 지워진 협력사다. 그 값을 버려야 한다 — 셀렉트박스에 없는
+# 값이 남아 있으면 화면이 아예 뜨지 않는다.
+_want = st.session_state.get(SS_PARTNER_ID)
+if _want and not any(p["id"] == _want for p in partners):
+    load_partners.clear()
+    partners = load_partners()
+    if not any(p["id"] == _want for p in partners):
+        st.session_state.pop(SS_PARTNER_ID, None)
+        st.session_state.pop("partner_pick", None)
+
 # 상단 바를 여기서 그린다. 보관함 개수를 그 전에 세야 이번 실행에 반영된다 —
 # 상단 바가 본문보다 먼저 그려지므로, 본문에서 세면 한 박자 늦게 바뀐다.
 #
@@ -1287,7 +1298,14 @@ with st.container(key="param_card"):
         with c1:
             with st.container(key="partner_box"):
                 # key 를 준다 — 보관함 화면이 이 값으로 어느 협력사인지 안다.
-                pid = st.selectbox("협업 제안 대상", list(labels),
+                #
+                # index 로 기본값을 준다. 다른 화면에서 돌아오면 위젯 key 의 값이
+                # 지워져 있어, 그것 없이는 늘 첫 협력사로 되돌아간다. 파트너
+                # 추천에서 고른 협력사가 여기로 넘어오는 길이 이것이다.
+                ids = list(labels)
+                last = st.session_state.get(SS_PARTNER_ID)
+                pid = st.selectbox("협업 제안 대상", ids,
+                                   index=ids.index(last) if last in ids else 0,
                                    format_func=labels.get, key="partner_pick")
             chosen = next(p for p in partners if p["id"] == pid)
             st.session_state[SS_PARTNER_ID] = pid
