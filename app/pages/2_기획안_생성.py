@@ -1251,19 +1251,25 @@ def _manual_menu(partner: dict) -> None:
     # 숫자만 남긴다 — 「18,000원」처럼 적어도 받는다.
     digits = re.sub(r"[^0-9]", "", raw)
     price = int(digits) if digits else 0
-    ready = bool(name) and price > 0
 
     st.info(f"등록한 정보는 {partner['name']}의 메뉴 목록에 추가됩니다.", icon=":material/info:")
 
-    c_help, c_cancel, c_ok = st.columns([4, 1, 1], vertical_alignment="center")
-    c_help.caption("메뉴명과 가격을 입력하면 등록할 수 있습니다.")
+    _gap, c_cancel, c_ok = st.columns([4, 1, 1], vertical_alignment="center")
     if c_cancel.button("취소", use_container_width=True):
         st.rerun()
-    if c_ok.button("등록", type="primary", use_container_width=True,
-                   disabled=not ready):
-        save_manual_menu(partner, name, price)
-        st.session_state[SS_MENU_TOAST] = f"{name}을(를) 메뉴에 넣었습니다."
-        st.rerun()
+
+    # 「등록」을 늘 눌리게 두고 누를 때 검사한다. 입력 칸은 글자를 칠 때가
+    # 아니라 칸에서 빠져나올 때 값을 넘기므로, 다 채워도 버튼이 한 박자 늦게
+    # 켜진다. 비활성 버튼을 한 번 눌러야 켜지는 것처럼 보였다 (10/6).
+    if c_ok.button("등록", type="primary", use_container_width=True):
+        if not name or price <= 0:
+            # 창을 닫지 않으므로 여기서 바로 띄운다. 화면 가운데에 고정으로
+            # 그려져 창 위로 올라온다.
+            flash_note("메뉴명과 가격을 모두 입력해 주세요.")
+        else:
+            save_manual_menu(partner, name, price)
+            st.session_state[SS_MENU_TOAST] = f"{name}을(를) 메뉴에 넣었습니다."
+            st.rerun()
 
 
 def _menu_table(partner: dict):
