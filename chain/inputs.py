@@ -440,6 +440,11 @@ def _menus(partner: dict) -> str:
             bits.append("판매가 미입력")
         bits.append(f"납품가 {int(wholesale):,}원" if wholesale
                     else "납품가 미정 (협의 대상)")
+        # 구성을 적어 둔 메뉴는 그것까지 싣는다. 「커플세트」처럼 이름만으로는
+        # 무엇이 들었는지 모르는 메뉴를 (2)가 지어내지 않게 하려는 것이다.
+        note = str(r.get("설명") or "").strip()
+        if note:
+            bits.append(f"구성 {note}")
         parts.append(" ".join(bits))
     return " / ".join(parts) if parts else NO_DATA
 

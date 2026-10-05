@@ -19,9 +19,11 @@ import time
 from google import genai
 from google.genai import types
 
-from config.settings import GEMINI_API_KEY, GEMINI_MODEL
+from config.settings import (GEMINI_API_KEY, GEMINI_API_KEY_PAID,
+                             GEMINI_MODEL)
 
 _client: genai.Client | None = None
+_client_paid: genai.Client | None = None
 
 # 호출마다 토큰을 누적한다. 기획안 1건에 재호출·되감기까지 몇 번을 부르고
 # 얼마가 드는지 재는 용도다. 호출자(runner)의 반환 형식은 그대로 두고,
@@ -33,8 +35,24 @@ def reset_usage() -> None:
     USAGE.update(calls=0, input_tokens=0, output_tokens=0)
 
 
-def get_client() -> genai.Client:
-    global _client
+def get_client(paid: bool = False) -> genai.Client:
+    """
+    제미나이를 부를 때 쓰는 객체. paid 를 주면 유료 키로 진행한다.
+
+    블로그 후기에서 메뉴를 모을 때 유료 키를 쓴다. 가게 하나에 제미나이를
+    30번 부르는데, 무료 키는 분당 한도에 걸려 호출마다 20~40초씩 쉰다.
+
+    기획안 만드는 네 단계는 아직 무료 키다. **나중에 유료로 바꾼다** —
+    무료 키는 보낸 내용이 학습에 쓰일 수 있고, 협력사 매입가가 들어가기
+    때문이다. 대표님께도 그렇게 안내했다.
+    """
+    global _client, _client_paid
+    if paid:
+        if _client_paid is None:
+            if not GEMINI_API_KEY_PAID:
+                raise RuntimeError("환경변수 GEMINI_API_KEY_PAID 가 없습니다.")
+            _client_paid = genai.Client(api_key=GEMINI_API_KEY_PAID)
+        return _client_paid
     if _client is None:
         if not GEMINI_API_KEY:
             raise RuntimeError("환경변수 GEMINI_API_KEY 가 없습니다.")
@@ -43,11 +61,20 @@ def get_client() -> genai.Client:
 
 
 def call(prompt: str, retry: int = 2, model: str | None = None,
-         on_wait=None) -> tuple[dict, int]:
+         on_wait=None, temperature: float | None = None,
+         paid: bool = False) -> tuple[dict, int]:
     """
     JSON 응답을 강제하고 파싱해서 돌려준다.
 
     반환: (파싱된 dict, 소요 ms)
+
+    paid 를 주면 유료 키로 부른다 (get_client 설명 참고).
+
+    temperature 를 주면 그 값으로 부른다. 안 주면 모델 기본값이다.
+      글에 적힌 사실을 그대로 뽑아 오는 일에는 0 을 준다. 기본값으로 두면
+      같은 글에서 뽑은 결과가 호출마다 달라진다 — 블로그 후기에서 메뉴를
+      뽑을 때 5개가 나왔다 1개가 나왔다 했다 (10/5).
+      기획안을 만드는 네 단계는 글을 짓는 일이라 기본값을 그대로 쓴다.
 
     retry 는 JSON 파싱 실패와 일시적 오류에만 적용된다.
     429(할당량 초과)는 대기 후 재시도한다.
@@ -60,14 +87,16 @@ def call(prompt: str, retry: int = 2, model: str | None = None,
       보내므로 파싱 실패·429 는 넘겨도 내용 오류는 못 잡는다. 생성물이
       제약을 어긴 경우의 재호출은 runner 의 되감기가 맡는다. 층위가 다르다.
     """
-    cfg = types.GenerateContentConfig(response_mime_type="application/json")
+    cfg = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        **({"temperature": temperature} if temperature is not None else {}))
     model_name = model or GEMINI_MODEL
     last_err = None
 
     for attempt in range(retry + 1):
         t0 = time.perf_counter()
         try:
-            resp = get_client().models.generate_content(
+            resp = get_client(paid).models.generate_content(
                 model=model_name, contents=prompt, config=cfg
             )
             ms = int((time.perf_counter() - t0) * 1000)

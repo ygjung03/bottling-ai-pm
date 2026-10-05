@@ -133,9 +133,14 @@ def find_existing_partner(name: str) -> dict | None:
         return None
 
 
-def create_invite(name: str, category: str, lat=None, lng=None) -> dict | None:
+def create_invite(name: str, category: str, lat=None, lng=None,
+                  address: str | None = None) -> dict | None:
     """새 협력사 행을 만들고 초대 코드 발급 (scripts/new_partner.py와 동일 방식).
-    같은 상호가 이미 있으면 새로 만들지 않고 기존 코드 반환"""
+    같은 상호가 이미 있으면 새로 만들지 않고 기존 코드 반환
+
+    주소는 블로그 후기에서 메뉴를 모을 때 검색어에 「광진구」를 붙이는 데 쓴다.
+    이름만으로 찾으면 전국의 같은 이름 가게가 섞인다 (db/migrate_1005.sql).
+    """
     existing = find_existing_partner(name)
     if existing:
         return existing
@@ -145,6 +150,8 @@ def create_invite(name: str, category: str, lat=None, lng=None) -> dict | None:
         payload["lat"] = lat
     if lng is not None:
         payload["lng"] = lng
+    if address:
+        payload["address"] = address
 
     try:
         rows = client.table("partners").insert(payload).execute().data
@@ -174,7 +181,8 @@ def hand_over(partner: dict) -> None:
         st.session_state[SS_PARTNER_ID] = pid
 
 
-def render_next_step(candidate_name: str, guessed_category: str, lat=None, lng=None, key_prefix=""):
+def render_next_step(candidate_name: str, guessed_category: str, lat=None, lng=None,
+                     key_prefix="", address: str | None = None):
     """추천받기·직접 지정 공통 — 이후 처리 (명세서 4-3 공통 절차)."""
     existing = find_existing_partner(candidate_name)
     if existing:
@@ -185,7 +193,7 @@ def render_next_step(candidate_name: str, guessed_category: str, lat=None, lng=N
 
     st.info(f"'{candidate_name}'은(는) 아직 등록되지 않았습니다.")
     if st.button("협력사 등록", key=f"{key_prefix}_invite_btn"):
-        row = create_invite(candidate_name, guessed_category, lat, lng)
+        row = create_invite(candidate_name, guessed_category, lat, lng, address)
         if row:
             render_registered(row, guessed_category)
 
@@ -388,6 +396,7 @@ with tab_rec:
                     row["name"],
                     guess_industry_category(row.get("category_m"), row.get("category_s")),
                     row.get("lat"), row.get("lng"),
+                    address=row.get("address"),
                     key_prefix="rec",
                 )
 
@@ -432,6 +441,7 @@ with tab_manual:
             selected["name"],
             guess_industry_category(selected.get("category_m"), selected.get("category_s")),
             selected.get("lat"), selected.get("lng"),
+            address=selected.get("address"),
             key_prefix="manual",
         )
 

@@ -51,6 +51,7 @@ from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           build_partner_resources, build_partner_sns,
                           build_rec_reason, menu_rows, menu_rows_sourced)
 from chain.runner import run
+from collectors.menu_reviews import collect
 from config.settings import PARTNER_FORM_CODE_ENTRY, PARTNER_FORM_URL
 from context.builder import build as build_context
 from db.client import get_client
@@ -71,6 +72,10 @@ SS_META = "plan_meta"          # 협력사·날짜 등 생성 조건
 # 누르면 목록을 닫고 다음 실행에서 등록 창을 연다. 그 신호가 SS_MENU_ADD 다.
 SS_MENU_ADD = "menu_add_open"     # 수동 등록 창을 열어라
 SS_MENU_TOAST = "menu_toast"      # 등록·수집이 끝난 뒤 한 번 띄울 말
+SS_MENU_RUN = "menu_collecting"   # 지금 후기를 찾는 중이다 (버튼이 잠긴다)
+SS_MENU_VIEW = "menu_list_open"   # 메뉴 목록 창을 열어라
+SS_MENU_EDIT = "menu_list_edit"   # 그 창이 고치는 상태다
+
 
 # 보관함. 열렸는지는 주소의 질의 문자열이 정한다 (app/theme.ARCHIVE_PARAM).
 #
@@ -1051,6 +1056,155 @@ def _form_link(partner: dict) -> None:
         st.rerun()
 
 
+def save_auto_menus(partner: dict, rows: list[dict]) -> None:
+    """후기에서 찾은 메뉴를 partners.menu_prices_review 에 넣는다.
+
+    통째로 바꾼다. 수집은 그때그때 처음부터 다시 찾는 것이라, 예전 것을 남겨
+    두면 지난번에 잘못 들어간 값이 계속 남는다. 사람이 직접 넣은 메뉴는
+    menu_prices 라는 다른 칸에 있어서 여기서 건드리지 않는다.
+    """
+    get_client().table("partners").update(
+        {"menu_prices_review": rows}).eq("id", partner["id"]).execute()
+    load_partners.clear()
+
+
+# 수집 세 단계. 시안 3쪽의 칸 셋이다.
+COLLECT_STEPS = [("블로그 후기 검색", "협력사 관련 후기 검색"),
+                 ("메뉴·가격 추출", "후기 속 메뉴와 가격 확인 중"),
+                 ("중복 정리", "여러 글에 겹쳐 나온 메뉴만 남기는 중")]
+
+# 단계마다 쓰는 색 — (글자, 바탕, 테두리)
+STEP_TONE = {"완료": ("#059669", "#ECFDF5", "#A7F3D0"),
+             "진행 중": ("#2563EB", "#EFF6FF", "#BFDBFE"),
+             "대기": ("#9CA3AF", "#FFFFFF", "#E2E6EB")}
+
+
+def run_auto_collect(partner: dict) -> None:
+    """
+    후기에서 메뉴·가격을 찾아 넣는다. 찾는 동안 어디까지 됐는지 보여 준다.
+
+    끝나면 알림을 남기고 화면을 다시 그린다. 그때 SS_MENU_RUN 이 지워져
+    버튼이 다시 눌리는 상태가 된다.
+    """
+    # 제목과 세 칸을 한 상자에 담는다 (시안 3쪽). 따로 그리면 제목 상자만
+    # 끊겨 보인다. 그릴 자리도 하나면 돼서 고쳐 그리기 쉽다.
+    slot = st.empty()
+    state = {1: "대기", 2: "대기", 3: "대기"}
+
+    def mark(now: str, ink: str) -> str:
+        """칸 왼쪽의 표시 — 끝났으면 체크, 하는 중이면 도는 원, 아니면 빈 원."""
+        if now == "완료":
+            return f'<span style="color:{ink}; font-size:0.95rem">✓</span>'
+        if now == "진행 중":
+            return (f'<span class="mcspin" style="border-color:{ink}; '
+                    f'border-top-color:transparent"></span>')
+        return (f'<span style="display:inline-block; width:11px; height:11px; '
+                f'border:2px solid {ink}; border-radius:50%"></span>')
+
+    def draw() -> None:
+        cards = ""
+        for i, (title, desc) in enumerate(COLLECT_STEPS, 1):
+            ink, back, line = STEP_TONE[state[i]]
+            cards += (
+                f'<div style="flex:1; min-width:0; border:1px solid {line}; '
+                f'background:{back}; border-radius:10px; padding:11px 13px">'
+                f'<div style="display:flex; align-items:center; gap:8px">'
+                f'{mark(state[i], ink)}'
+                f'<b style="color:{ink}; font-size:0.88rem; flex:1">{title}</b>'
+                f'<span style="color:{ink}; font-size:0.76rem">{state[i]}</span>'
+                f'</div><div style="color:#59606D; font-size:0.78rem; '
+                f'margin:3px 0 0 19px">{desc}</div></div>')
+        slot.markdown(
+            '<style>@keyframes mcspin{to{transform:rotate(360deg)}}'
+            '.mcspin{display:inline-block; width:13px; height:13px; flex:none;'
+            ' border:2px solid; border-radius:50%;'
+            ' animation:mcspin .8s linear infinite}</style>'
+            f'<div style="background:#FFFFFF; border:1px solid #E2E6EB; '
+            f'border-radius:10px; padding:14px 16px; margin-top:12px">'
+            f'<div style="display:flex; align-items:center; gap:10px">'
+            f'<span class="mcspin" style="border-color:#2563EB; '
+            f'border-top-color:transparent"></span>'
+            f'<b style="color:#161A1F; flex:1">'
+            f'{partner["name"]}의 메뉴·가격을 찾고 있어요</b>'
+            f'<span style="background:#EFF6FF; color:#2563EB; font-size:0.78rem; '
+            f'font-weight:700; border-radius:6px; padding:3px 9px">수집 중</span>'
+            f'</div>'
+            f'<div style="color:#59606D; font-size:0.85rem; margin:4px 0 12px 23px">'
+            f'잠시만 기다려 주세요. 다 찾으면 메뉴 목록에서 볼 수 있습니다.</div>'
+            f'<div style="display:flex; gap:10px">{cards}</div></div>',
+            unsafe_allow_html=True)
+
+    def on_step(n: int, how: str) -> None:
+        state[n] = how
+        draw()
+
+    draw()
+    try:
+        res = collect(partner["name"], partner.get("address"), on_step=on_step)
+    except Exception as e:
+        st.session_state[SS_MENU_RUN] = False
+        st.session_state[SS_MENU_TOAST] = "후기를 가져오지 못했습니다."
+        st.error(f"네트워크나 검색 키 문제일 수 있습니다. ({type(e).__name__})")
+        return
+
+    if res["메뉴"]:
+        save_auto_menus(partner, res["메뉴"])
+        msg = f"후기에서 메뉴 {len(res['메뉴'])}개를 찾았습니다."
+    elif res["글"] and not res["읽음"]:
+        # 0개는 두 가지 뜻이다. 합쳐 말하면 틀린 안내가 된다 (collect 설명 참고).
+        msg = "후기는 찾았지만 글을 열어보지 못했습니다."
+    else:
+        msg = "블로그 후기에서 이 협력사의 메뉴를 찾지 못했습니다."
+
+    st.session_state[SS_MENU_RUN] = False
+    st.session_state[SS_MENU_TOAST] = msg
+    st.rerun()
+
+
+def save_menu_edits(partner: dict, before: list[tuple[str, dict]]) -> bool:
+    """
+    메뉴 목록에서 고친 줄을 저장한다. 고친 것이 있었는지 돌려준다.
+
+    고친 값은 입력 칸에서 읽는다 — 줄마다 `mname_{번호}`·`mprice_{번호}`.
+
+    **고친 줄은 수동 쪽(menu_prices)으로 옮긴다.** 자동 수집은 그 가게 메뉴를
+    통째로 다시 채우기 때문에, 후기에서 온 칸에 그대로 두면 다음 수집 때
+    고친 내용이 날아간다. 수동 쪽에 있으면 덮이지 않고, 같은 이름이면 수동이
+    이기는 규칙도 이미 있다 (chain/inputs.menu_rows).
+
+    안 고친 줄은 원래 있던 자리에 그대로 둔다.
+    """
+    today = datetime.now(KST).date().isoformat()
+    hand, auto, changed = [], [], False
+
+    for i, (src, old) in enumerate(before):
+        name = str(st.session_state.get(f"mname_{i}", old.get("메뉴")) or "").strip()
+        raw = str(st.session_state.get(f"mprice_{i}", old.get("가격") or "")).strip()
+        digits = re.sub(r"[^0-9]", "", raw)
+        price = int(digits) if digits else None
+
+        if name == str(old.get("메뉴") or "").strip() and price == old.get("가격"):
+            (hand if src == MENU_MANUAL else auto).append(old)
+            continue
+
+        changed = True
+        if not name:
+            continue                      # 이름을 지웠으면 그 줄은 뺀다
+        row = dict(old)
+        row["메뉴"], row["가격"] = name, price
+        row["근거"] = f"수동 수정, {today} 확인"
+        hand.append(row)
+
+    if not changed:
+        return False
+
+    get_client().table("partners").update(
+        {"menu_prices": hand, "menu_prices_review": auto}
+    ).eq("id", partner["id"]).execute()
+    load_partners.clear()
+    return True
+
+
 def save_manual_menu(partner: dict, name: str, price: int) -> None:
     """수동으로 적은 메뉴 한 줄을 partners.menu_prices 에 넣는다.
 
@@ -1110,18 +1264,12 @@ def _manual_menu(partner: dict) -> None:
         st.rerun()
 
 
-@st.dialog("등록된 메뉴·가격", width="large")
-def _menu_list(partner: dict) -> None:
-    """기획안에 쓰일 메뉴를 한눈에 보여 준다 (시안 2쪽).
-
-    자동 수집과 수동 등록을 한 목록으로 낸다. 어느 쪽에서 왔는지는 「등록 방식」
-    칸으로 가른다 — 같은 이름이면 수동 쪽만 남는다 (chain/inputs.menu_rows).
-    """
+def _menu_table(partner: dict):
+    """메뉴 목록 창 두 개가 함께 쓰는 윗부분. (줄 목록, 표) 를 돌려준다."""
     rows = menu_rows_sourced(partner)
     auto = sum(1 for src, _ in rows if src == MENU_AUTO)
     hand = len(rows) - auto
 
-    st.caption("기획안에 활용할 메뉴와 가격, 등록 출처를 확인해 주세요.")
     st.markdown(
         f'<div style="background:#F8FAFC; border:1px solid #E5E7EB; '
         f'border-radius:10px; padding:12px 16px; display:flex; '
@@ -1132,31 +1280,117 @@ def _menu_list(partner: dict) -> None:
         f'자동 수집 {auto}개 · 수동 등록 {hand}개</span>'
         f'</div>', unsafe_allow_html=True)
 
-    if not rows:
-        st.info("아직 등록된 메뉴가 없습니다. 자동 수집을 돌리거나 직접 등록해 주세요.")
-    else:
-        st.caption("후기 정보는 현재 판매 메뉴·가격과 다를 수 있습니다. "
-                   "수동 등록 항목도 실제 가격을 확인해 주세요.")
-        st.dataframe(
-            pd.DataFrame([{
-                "메뉴 이름": r.get("메뉴"),
-                "가격 (원)": r.get("가격"),
-                "등록 방식": src,
-                # 어디서 온 값인지는 「근거」에 들어 있다. (2)도 같은 문장을 읽는다.
-                "출처": r.get("근거") or ("직접 입력" if src == MENU_MANUAL else ""),
-            } for src, r in rows]),
-            hide_index=True, use_container_width=True,
-            column_config={"가격 (원)": st.column_config.NumberColumn(format="%,d")})
+    table = pd.DataFrame([{
+        "메뉴 이름": r.get("메뉴"),
+        "가격 (원)": r.get("가격"),
+        "등록 방식": src,
+        # 어디서 온 값인지는 「근거」에 들어 있다. (2)도 같은 문장을 읽는다.
+        "출처": r.get("근거") or ("직접 입력" if src == MENU_MANUAL else ""),
+    } for src, r in rows])
+    return rows, table
+
+
+# 숫자 형식에 「%,d」처럼 쉼표를 넣으면 Streamlit 이 못 읽는다 (10/6).
+# 단위는 칸 이름에 적는다.
+MENU_COLS = {"가격 (원)": st.column_config.NumberColumn(format="%d", step=100),
+             "등록 방식": st.column_config.TextColumn(disabled=True),
+             "출처": st.column_config.TextColumn(disabled=True, width="large")}
+
+
+@st.dialog("등록된 메뉴·가격", width="large")
+def _menu_list(partner: dict) -> None:
+    """
+    기획안에 쓰일 메뉴를 보여 주고 고칠 수 있게 한다 (시안 2쪽).
+
+    [창 안에서는 다시 그리지 않는다 (10/6)]
+    「수정」을 누를 때 st.rerun() 을 부르면 조각(fragment)이 어긋나
+    「Could not find fragment」로 터지고, 창을 둘로 나누면 앞 창이 안 닫혀
+    두 겹으로 뜬다. 다섯 번 겪었다.
+
+    그래서 **버튼을 먼저 처리하고 표를 나중에 그린다.** 버튼을 누른 그 실행
+    안에서 모드가 바뀌므로 다시 그릴 일이 없다. 표가 버튼 위에 보이도록
+    자리를 미리 잡아 둔다(`body`).
+    """
+    st.caption("기획안에 활용할 메뉴와 가격, 등록 출처를 확인해 주세요.")
+    rows, table = _menu_table(partner)
+    body = st.container()        # 표가 들어갈 자리. 내용은 맨 아래에서 채운다
 
     st.write("")
-    c_add, c_help, c_close = st.columns([1.2, 3, 1], vertical_alignment="center")
+    # 「메뉴 수동 추가」가 한 줄에 들어가야 해서 열을 넓히고 줄바꿈도 막는다.
+    with st.container(key="menu_list_btns"):
+        c_add, _gap, c_edit, c_close = st.columns([1.7, 1.4, 1.2, 0.9],
+                                                  vertical_alignment="center")
+    editing = st.session_state.get(SS_MENU_EDIT, False)
+
+    def shut() -> None:
+        """창을 닫는다. 신호와 입력 칸을 지워야 다음에 열 때 깨끗하다."""
+        st.session_state.pop(SS_MENU_VIEW, None)
+        st.session_state.pop(SS_MENU_EDIT, None)
+        for k in [k for k in st.session_state
+                  if k.startswith(("mname_", "mprice_"))]:
+            st.session_state.pop(k, None)
+
     if c_add.button("메뉴 수동 추가", icon=":material/add:",
                     use_container_width=True):
+        shut()
         st.session_state[SS_MENU_ADD] = True
         st.rerun()
-    c_help.caption("목록에 없는 메뉴를 직접 등록하세요.")
-    if c_close.button("닫기", use_container_width=True):
+
+    # 가운데 버튼은 자리를 잡아 두고 나중에 채운다. 먼저 그려 버리면 「수정」을
+    # 누른 그 실행에서는 글자가 안 바뀐다 (버튼이 이미 그려진 뒤라서).
+    slot = c_edit.empty()
+    save_now = False
+    if editing:
+        save_now = slot.button("저장하기", type="primary",
+                               use_container_width=True, key="menu_save")
+    elif slot.button("수정", use_container_width=True, disabled=not rows,
+                     key="menu_edit_btn"):
+        st.session_state[SS_MENU_EDIT] = True
+        editing = True
+        # 같은 자리를 「저장하기」로 덮어 그린다.
+        slot.button("저장하기", type="primary", use_container_width=True,
+                    key="menu_save")
+
+    if save_now:
+        if save_menu_edits(partner, rows):
+            st.session_state[SS_MENU_TOAST] = (
+                f"{partner['name']}의 메뉴·가격 정보를 수정하였습니다.")
+        shut()
         st.rerun()
+
+    if c_close.button("닫기", use_container_width=True):
+        shut()
+        st.rerun()
+
+    with body:
+        if not rows:
+            st.info("아직 등록된 메뉴가 없습니다. "
+                    "자동 수집을 돌리거나 직접 등록해 주세요.")
+        elif editing:
+            # 표 편집기(st.data_editor)를 쓰지 않는다. 팝업 안에서 칸을 고칠
+            # 때마다 조각(fragment)이 어긋나 터졌다 (10/6, 여러 번).
+            # 입력 칸만으로 만들면 그 문제가 없다 — 수동 등록 창이 그 방식이고
+            # 한 번도 안 터졌다.
+            st.caption("메뉴 이름과 가격을 고칠 수 있습니다. "
+                       "이름을 비우면 그 줄이 지워집니다.")
+            h1, h2, h3 = st.columns([3, 1.4, 2], vertical_alignment="center")
+            h1.caption("메뉴 이름")
+            h2.caption("가격 (원)")
+            h3.caption("등록 방식")
+            for i, (src, r) in enumerate(rows):
+                c1, c2, c3 = st.columns([3, 1.4, 2], vertical_alignment="center")
+                c1.text_input("메뉴 이름", value=r.get("메뉴") or "",
+                              key=f"mname_{i}", label_visibility="collapsed")
+                c2.text_input("가격", value=str(r.get("가격") or ""),
+                              key=f"mprice_{i}", label_visibility="collapsed")
+                c3.markdown(
+                    f'<div style="color:#59606D; font-size:0.85rem; '
+                    f'padding-top:6px">{src}</div>', unsafe_allow_html=True)
+        else:
+            st.caption("후기 정보는 현재 판매 메뉴·가격과 다를 수 있습니다. "
+                       "수동 등록 항목도 실제 가격을 확인해 주세요.")
+            st.dataframe(table, hide_index=True, use_container_width=True,
+                         column_config=MENU_COLS)
 
 
 @st.dialog("보낸 안을 바꿀까요?")
@@ -1419,6 +1653,12 @@ st.markdown(
     '.st-key-menu_box { background:#F9F9FB; border:1px solid #E2E6EB;'
     ' border-radius:12px; padding:18px 20px 20px; margin-top:20px; }'
     '.st-key-menu_box hr { margin:14px 0 12px; border-color:#EBEDF1; }'
+    # 수집 중 상자. 가로는 메뉴 상자 안에 머물되 세로는 내용만큼 늘어나야 한다.
+    # overflow:hidden 을 걸었더니 아래가 잘렸다 (10/5).
+    '.st-key-menu_run { width:100%; max-width:100%; height:auto; }'
+    # 메뉴 목록 창 아래 버튼들. 「메뉴 수동 추가」가 두 줄로 접히면 안 된다.
+    '.st-key-menu_list_btns button p, .st-key-menu_edit_btns button p'
+    ' { white-space:nowrap; }'
     # 상자 안 버튼은 흰 바탕에 얇은 테두리.
     '.st-key-menu_box button { background:#FFFFFF; border:1px solid #E0E3E8;'
     ' color:#161A1F; font-weight:600; }'
@@ -1472,27 +1712,45 @@ with st.container(key="param_card"):
                 f'{chosen["name"]} · 등록 {len(sourced)}개 · '
                 f'자동 수집 {n_auto}개 / 수동 등록 {n_hand}개</div>',
                 unsafe_allow_html=True)
+            # 여기서는 신호만 남긴다. 창은 카드 밖 맨 끝에서 연다.
             if c_view.button(f"메뉴·가격 보기  {len(sourced)}개",
                              icon=":material/list:", use_container_width=True,
                              key="menu_view_btn"):
-                _menu_list(chosen)
+                st.session_state[SS_MENU_VIEW] = True
 
             st.divider()
 
+            # 수집하는 동안에는 두 버튼을 잠근다. 수집은 1분 넘게 걸리는데
+            # 그 사이에 또 누르면 같은 일을 두 번 하게 된다 (시안 3쪽).
+            collecting = st.session_state.get(SS_MENU_RUN, False)
+
             c_auto, c_hand, c_desc = st.columns([1, 1, 3],
                                                 vertical_alignment="center")
-            c_auto.button("메뉴 자동 수집", icon=":material/download:",
-                          use_container_width=True, key="menu_auto_btn",
-                          disabled=True)
+            if c_auto.button("자동 수집 중" if collecting else "메뉴 자동 수집",
+                             icon=":material/download:", use_container_width=True,
+                             key="menu_auto_btn", disabled=collecting):
+                st.session_state[SS_MENU_RUN] = True
+                st.rerun()
             if c_hand.button("수동 등록", icon=":material/add:",
-                             use_container_width=True, key="menu_hand_btn"):
-                _manual_menu(chosen)
+                             use_container_width=True, key="menu_hand_btn",
+                             disabled=collecting):
+                st.session_state[SS_MENU_ADD] = True
             c_desc.markdown(
                 '<div style="color:#374151; font-size:0.88rem">'
                 '네이버 블로그 후기에서 선택한 협력사의 메뉴와 가격을 가져옵니다.</div>'
                 '<div style="color:#9CA3AF; font-size:0.82rem; margin-top:2px">'
-                '후기에 없는 메뉴는 수동으로 추가할 수 있습니다.</div>',
-                unsafe_allow_html=True)
+                + ('수집 중에는 다시 실행하거나 메뉴를 등록할 수 없습니다.'
+                   if collecting else '후기에 없는 메뉴는 수동으로 추가할 수 있습니다.')
+                + '</div>', unsafe_allow_html=True)
+
+            # 수집 중 상태. 버튼을 누른 다음 실행에서 여기서 실제로 돌린다 —
+            # 누른 그 실행에서 바로 돌리면 버튼이 잠긴 모습을 못 보여 준다.
+            #
+            # 자기 상자를 준다. 수집이 1분 넘게 걸리는데 그동안 화면을 고쳐
+            # 그리면, 자리를 잡아 두지 않은 경우 바깥으로 빠져나간다 (10/5).
+            if collecting:
+                with st.container(key="menu_run"):
+                    run_auto_collect(chosen)
 
             st.markdown(
                 '<div style="color:#59606D; font-size:0.85rem; display:flex; '
@@ -1504,10 +1762,6 @@ with st.container(key="param_card"):
                 '있습니다. 생성 전 메뉴·가격을 확인해 주세요.</div>',
                 unsafe_allow_html=True)
 
-        # 목록 창에서 「메뉴 수동 추가」를 눌렀으면 이번 실행에서 등록 창을 연다.
-        # 창을 겹쳐 띄울 수 없어 한 박자 나눈다.
-        if st.session_state.pop(SS_MENU_ADD, False):
-            _manual_menu(chosen)
 
         # 회차는 사람이 고른다. 전에는 폼 값이 있으면 무조건 2차로 떠서 1차 과정을
         # 보여줄 수 없었다 (9/24). 조건은 docs/private/쟁점_2차흐름과_폼_0925.md 1-3-1.
@@ -1572,7 +1826,20 @@ with st.container(key="param_card"):
         '약 30초 뒤, 기획안 3안을 확인할 수 있습니다.</div>',
         unsafe_allow_html=True)
     go = c_btn.button("기획안 최적 생성 시작", type="primary", icon=":material/auto_awesome:",
-                      use_container_width=True, disabled=not has_menus or not allowed)
+                      use_container_width=True,
+                      disabled=not has_menus or not allowed or collecting)
+
+# 창은 여기 한 곳에서만 연다.
+#
+# 메뉴 목록 창은 **닫을 때까지 신호를 지우지 않는다.** 그 안의 표는 칸을 고칠
+# 때마다 화면 전체를 다시 그리는데, 그때 신호가 없으면 창이 다시 안 열리고
+# 화면에만 남은 창이 없어진 조각을 불러 터진다 (10/6).
+#
+# 수동 등록 창은 입력만 받고 끝나므로 꺼내면서 지운다.
+if st.session_state.get(SS_MENU_VIEW):
+    _menu_list(chosen)
+elif st.session_state.pop(SS_MENU_ADD, False):
+    _manual_menu(chosen)
 
 if go:
     generate(chosen, target, rnd, sent)
@@ -1622,4 +1889,6 @@ if flash is not None:
     flash_note(msg)
 
 # 메뉴 등록·수집 알림. 같은 자리에서 그린다.
-flash_note(st.session_state.pop(SS_MENU_TOAST, None))
+# 담기 알림(2초)보다 길게 둔다 — 「찾지 못했습니다」처럼 읽고 다음에 뭘 할지
+# 정해야 하는 말이라 2초로는 짧다 (10/6).
+flash_note(st.session_state.pop(SS_MENU_TOAST, None), seconds=3.0)
