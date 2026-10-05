@@ -1880,7 +1880,7 @@ elif not go:
         '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/>'
         '<path d="M14 3v5h5M9 13h6M9 17h4"/></svg>'
         '<div style="color:#374151; font-weight:700; font-size:1.02rem">'
-        '협업의 시작, 메뉴 정보부터 준비해 주세요.</div>'
+        '협력사와 희망일을 고르고 메뉴 정보를 준비해 주세요.</div>'
         '<div style="font-size:0.9rem; margin-top:6px">'
         '생성된 기획안 3안은 이곳에 표시됩니다.</div></div>',
         unsafe_allow_html=True)
