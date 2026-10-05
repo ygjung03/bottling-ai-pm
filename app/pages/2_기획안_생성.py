@@ -1142,9 +1142,11 @@ def run_auto_collect(partner: dict) -> None:
     try:
         res = collect(partner["name"], partner.get("address"), on_step=on_step)
     except Exception as e:
+        # 여기서도 반드시 다시 그려야 한다. 안 그러면 이미 그려진 진행 표시와
+        # 잠긴 버튼이 그대로 남는다 — 토스트만 뜨고 멈춘 것처럼 보였다 (10/6).
         st.session_state[SS_MENU_RUN] = False
         st.session_state[SS_MENU_TOAST] = "후기를 가져오지 못했습니다."
-        st.error(f"네트워크나 검색 키 문제일 수 있습니다. ({type(e).__name__})")
+        st.rerun()
         return
 
     if res["메뉴"]:
