@@ -35,6 +35,7 @@ from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
 
 import _path  # noqa: F401  (프로젝트 루트를 sys.path 에 추가)
+import pandas as pd
 import streamlit as st
 
 from app.auth import require_owner
@@ -44,10 +45,11 @@ from app.theme import (ARCHIVE_PARAM, SS_ARCHIVE_COUNT, SS_PARTNER_ID,
                        apply_chrome)
 from app.ui import page_header
 from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
-                          NO_TREND_MENU, PAST_CASES, WEATHER_PREF,
-                          build_beer_list, build_constraints, build_events,
-                          build_partner_blockers, build_partner_resources,
-                          build_partner_sns, build_rec_reason, menu_rows)
+                          MENU_AUTO, MENU_MANUAL, NO_TREND_MENU, PAST_CASES,
+                          WEATHER_PREF, build_beer_list, build_constraints,
+                          build_events, build_partner_blockers,
+                          build_partner_resources, build_partner_sns,
+                          build_rec_reason, menu_rows, menu_rows_sourced)
 from chain.runner import run
 from config.settings import PARTNER_FORM_CODE_ENTRY, PARTNER_FORM_URL
 from context.builder import build as build_context
@@ -64,6 +66,11 @@ SS_RESULT = "plan_result"      # 체인 출력
 SS_META = "plan_meta"          # 협력사·날짜 등 생성 조건
 
 # SS_PARTNER_ID(고른 협력사 id)는 app/theme.py 에 있다 — 파트너 추천도 쓴다.
+
+# 메뉴·가격 블록. 팝업은 한 번에 하나만 뜨므로, 「메뉴 목록」에서 「수동 추가」를
+# 누르면 목록을 닫고 다음 실행에서 등록 창을 연다. 그 신호가 SS_MENU_ADD 다.
+SS_MENU_ADD = "menu_add_open"     # 수동 등록 창을 열어라
+SS_MENU_TOAST = "menu_toast"      # 등록·수집이 끝난 뒤 한 번 띄울 말
 
 # 보관함. 열렸는지는 주소의 질의 문자열이 정한다 (app/theme.ARCHIVE_PARAM).
 #
@@ -1044,6 +1051,114 @@ def _form_link(partner: dict) -> None:
         st.rerun()
 
 
+def save_manual_menu(partner: dict, name: str, price: int) -> None:
+    """수동으로 적은 메뉴 한 줄을 partners.menu_prices 에 넣는다.
+
+    같은 이름이 이미 있으면 값을 바꾼다. 두 줄이 되면 어느 쪽이 맞는지
+    알 수 없고, 사람이 같은 이름을 다시 적는 것은 고치려는 뜻이다.
+
+    「근거」는 (2)가 판매가 뒤에 그대로 읽는다 — 얼마나 믿을 값인지 가늠하라고.
+    """
+    today = datetime.now(KST).date().isoformat()
+    rows = [dict(r) for r in (partner.get("menu_prices") or [])]
+    row = {"메뉴": name, "가격": price, "납품가": None,
+           "근거": f"수동 등록, {today} 확인"}
+    for i, r in enumerate(rows):
+        if str(r.get("메뉴") or "").strip() == name:
+            rows[i] = row
+            break
+    else:
+        rows.append(row)
+
+    get_client().table("partners").update(
+        {"menu_prices": rows}).eq("id", partner["id"]).execute()
+    load_partners.clear()
+
+
+@st.dialog("메뉴 수동 등록")
+def _manual_menu(partner: dict) -> None:
+    """후기에 없는 메뉴를 사람이 직접 적는 자리 (시안 4쪽)."""
+    st.caption("후기에 없는 메뉴와 현재 판매 가격을 직접 등록해 주세요.")
+    st.markdown(
+        f'<div style="background:#F8FAFC; border:1px solid #E5E7EB; '
+        f'border-radius:10px; padding:12px 16px; display:flex; '
+        f'justify-content:space-between; align-items:center; margin:4px 0 14px">'
+        f'<b>{partner["name"]}</b>'
+        f'<span style="color:#6B7280; font-size:0.85rem">선택된 협력사에 등록</span>'
+        f'</div>', unsafe_allow_html=True)
+
+    name = st.text_input("메뉴명", placeholder="예: 바질 크림 파스타").strip()
+    st.caption("실제 판매 중인 메뉴 이름을 입력해 주세요.")
+    raw = st.text_input("판매 가격 (원)", placeholder="예: 18000").strip()
+    st.caption("원 단위로 숫자만 입력해 주세요.")
+
+    # 숫자만 남긴다 — 「18,000원」처럼 적어도 받는다.
+    digits = re.sub(r"[^0-9]", "", raw)
+    price = int(digits) if digits else 0
+    ready = bool(name) and price > 0
+
+    st.info(f"등록한 정보는 {partner['name']}의 메뉴 목록에 추가됩니다.", icon=":material/info:")
+
+    c_help, c_cancel, c_ok = st.columns([4, 1, 1], vertical_alignment="center")
+    c_help.caption("메뉴명과 가격을 입력하면 등록할 수 있습니다.")
+    if c_cancel.button("취소", use_container_width=True):
+        st.rerun()
+    if c_ok.button("등록", type="primary", use_container_width=True,
+                   disabled=not ready):
+        save_manual_menu(partner, name, price)
+        st.session_state[SS_MENU_TOAST] = f"{name}을(를) 메뉴에 넣었습니다."
+        st.rerun()
+
+
+@st.dialog("등록된 메뉴·가격", width="large")
+def _menu_list(partner: dict) -> None:
+    """기획안에 쓰일 메뉴를 한눈에 보여 준다 (시안 2쪽).
+
+    자동 수집과 수동 등록을 한 목록으로 낸다. 어느 쪽에서 왔는지는 「등록 방식」
+    칸으로 가른다 — 같은 이름이면 수동 쪽만 남는다 (chain/inputs.menu_rows).
+    """
+    rows = menu_rows_sourced(partner)
+    auto = sum(1 for src, _ in rows if src == MENU_AUTO)
+    hand = len(rows) - auto
+
+    st.caption("기획안에 활용할 메뉴와 가격, 등록 출처를 확인해 주세요.")
+    st.markdown(
+        f'<div style="background:#F8FAFC; border:1px solid #E5E7EB; '
+        f'border-radius:10px; padding:12px 16px; display:flex; '
+        f'justify-content:space-between; align-items:center; margin:4px 0 14px">'
+        f'<span><b>{partner["name"]}</b>'
+        f'<span style="color:#2563EB; margin-left:10px">총 {len(rows)}개</span></span>'
+        f'<span style="color:#6B7280; font-size:0.85rem">'
+        f'자동 수집 {auto}개 · 수동 등록 {hand}개</span>'
+        f'</div>', unsafe_allow_html=True)
+
+    if not rows:
+        st.info("아직 등록된 메뉴가 없습니다. 자동 수집을 돌리거나 직접 등록해 주세요.")
+    else:
+        st.caption("후기 정보는 현재 판매 메뉴·가격과 다를 수 있습니다. "
+                   "수동 등록 항목도 실제 가격을 확인해 주세요.")
+        st.dataframe(
+            pd.DataFrame([{
+                "메뉴 이름": r.get("메뉴"),
+                "가격 (원)": r.get("가격"),
+                "등록 방식": src,
+                # 어디서 온 값인지는 「근거」에 들어 있다. (2)도 같은 문장을 읽는다.
+                "출처": r.get("근거") or ("직접 입력" if src == MENU_MANUAL else ""),
+            } for src, r in rows]),
+            hide_index=True, use_container_width=True,
+            column_config={"가격 (원)": st.column_config.NumberColumn(format="%,d")})
+
+    st.write("")
+    c_add, c_help, c_close = st.columns([1.2, 3, 1], vertical_alignment="center")
+    if c_add.button("메뉴 수동 추가", icon=":material/add:",
+                    use_container_width=True):
+        st.session_state[SS_MENU_ADD] = True
+        st.rerun()
+    c_help.caption("목록에 없는 메뉴를 직접 등록하세요.")
+    if c_close.button("닫기", use_container_width=True):
+        st.rerun()
+
+
 @st.dialog("보낸 안을 바꿀까요?")
 def _confirm_swap(old: dict, new: dict, partner_id: int) -> None:
     """
@@ -1267,53 +1382,132 @@ if _in_archive:
 # 그대로 두었고 나중에 고친다 (9/21).
 # 명세서 4-2 의 「희망 기간」 방식은 아직 없어 고르는 칸을 두지 않는다 (T45).
 page_header("기획안 생성", "AI로 최적의 기획안을 빠르게 생성합니다.")
+# 색과 글자 크기는 시안(docs/ref/기획안생성화면_메뉴정보_figma.pdf)에서 픽셀로
+# 재서 넣었다. 짐작한 값이 아니다.
+#
+#   글자        #161A1F  (제목·라벨·입력 글자가 모두 같은 색이다)
+#   흐린 글자   #59606D
+#   입력 테두리 #E0E3E8      메뉴 상자 테두리 #E2E6EB
+#   메뉴 상자   #F9F9FB      구분선 #EBEDF1      배지 #EFEFF0
 st.markdown(
     '<style>.st-key-param_card { background:#FFFFFF; border:1px solid #E5E7EB; '
-    'border-radius:14px; padding:26px 30px 22px 20px; }'
-    '.st-key-param_card label p { font-weight:700; color:#1F2933; }'
-    '.st-key-param_card label p::after { content:" *"; color:#EF4444; }'
-    # 협력사 셀렉트박스만 좁힌다. 열 폭은 그대로 두고 입력 칸의 최대 폭만 잡는다 —
-    # 가장 긴 이름 「테스트용 제과점 (제과·디저트)」 이 한 줄에 들어오는 폭 (9/22).
-    '.st-key-partner_box, .st-key-partner_box [data-testid="stSelectbox"],'
-    ' .st-key-partner_box [data-baseweb="select"] { max-width: 280px !important; }'
-    # 카드 왼쪽 여백 20px 에 아이콘. 입력 칸 줄은 아이콘 폭(26px)+간격(10px)만큼
-    # 들여서 제목 글자·라벨이 같은 세로선에 서게 한다. 셀렉트박스는 안쪽 여백만큼
-    # (10px) 왼쪽으로 당겨 상자 안 글자도 그 선에 맞춘다 (9/22).
-    '.st-key-param_fields { padding-left: 36px; }'
-    '.st-key-partner_box [data-baseweb="select"],'
-    ' .st-key-param_fields [data-testid="stDateInput"] [data-baseweb="input"] { margin-left: -10px; }</style>',
+    'border-radius:14px; padding:26px 30px 22px 30px; }'
+    # 라벨. 시안에는 빨간 별표가 없고 글자가 본문과 같은 크기다.
+    '.st-key-param_card label p { font-weight:700; color:#161A1F;'
+    ' font-size:1rem; margin-bottom:2px; }'
+    # 입력칸 — 흰 바탕에 얇은 회색 테두리. 셀렉트박스와 날짜 칸을 같게 맞춘다.
+    '.st-key-param_fields [data-baseweb="select"] > div,'
+    ' .st-key-param_fields [data-testid="stDateInput"] [data-baseweb="input"] {'
+    ' background:#FFFFFF; border:1px solid #E0E3E8; border-radius:10px; }'
+    '.st-key-param_fields [data-baseweb="select"] div,'
+    ' .st-key-param_fields [data-testid="stDateInput"] input {'
+    ' color:#161A1F; font-size:1rem; }'
+    # 날짜 칸 오른쪽 끝의 달력 표시. Streamlit 은 이 아이콘을 안 그린다.
+    #
+    # 내가 감싼 상자(date_box)에 그린다. Streamlit 내부 이름에 기대면 버전에
+    # 따라 빗나간다. 상자는 라벨+입력칸을 함께 담으므로 아래쪽에서 띄워 입력칸
+    # 한가운데에 놓는다. pointer-events 를 꺼야 아이콘이 클릭을 가로채지 않는다.
+    '.st-key-date_box { position:relative; }'
+    '.st-key-date_box::after { content:""; position:absolute; right:14px;'
+    ' bottom:13px; width:17px; height:17px; pointer-events:none;'
+    ' background:url("data:image/svg+xml;base64,'
+    'PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNyIgaGVpZ2h0'
+    'PSIxNyIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNTk2MDZEIiBzdHJva2Utd2lkdGg9IjEuNyI+PHJl'
+    'Y3QgeD0iMiIgeT0iMy41IiB3aWR0aD0iMTMiIGhlaWdodD0iMTEuNSIgcng9IjIiLz48cGF0aCBk'
+    'PSJNMiA3LjNoMTNNNS41IDEuOXYzTTExLjUgMS45djMiLz48L3N2Zz4=") no-repeat center; }'
+    # 메뉴·가격 블록. 카드 안의 한 단 더 들어간 상자다 (시안 1쪽).
+    '.st-key-menu_box { background:#F9F9FB; border:1px solid #E2E6EB;'
+    ' border-radius:12px; padding:18px 20px 20px; margin-top:20px; }'
+    '.st-key-menu_box hr { margin:14px 0 12px; border-color:#EBEDF1; }'
+    # 상자 안 버튼은 흰 바탕에 얇은 테두리.
+    '.st-key-menu_box button { background:#FFFFFF; border:1px solid #E0E3E8;'
+    ' color:#161A1F; font-weight:600; }'
+    '</style>',
     unsafe_allow_html=True)
 with st.container(key="param_card"):
+    # 시안에는 아이콘 없이 글자만 있다.
     st.markdown(
-        '<div style="display:flex; align-items:center; gap:10px; margin:0 0 14px 0">'
-        '<span style="background:#DBEAFE; color:#2563EB; border-radius:8px; width:26px; '
-        'height:26px; display:inline-flex; align-items:center; justify-content:center">'
-        '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
-        'stroke-width="2.2" stroke-linecap="round"><path d="M14 4l6 6-10 10-6-6z"/>'
-        '<path d="M4 20l3-3M14 4l2-2M20 10l2-2"/></svg></span>'
-        '<span style="font-weight:800; color:#0F172A">기획안 생성 조건 설정</span></div>',
+        '<div style="font-weight:800; color:#161A1F; font-size:1.35rem; '
+        'margin:0 0 16px">생성 조건 설정</div>',
         unsafe_allow_html=True)
     with st.container(key="param_fields"):
         c1, c2 = st.columns(2, gap="large")
         with c1:
-            with st.container(key="partner_box"):
-                # key 를 준다 — 보관함 화면이 이 값으로 어느 협력사인지 안다.
-                #
-                # index 로 기본값을 준다. 다른 화면에서 돌아오면 위젯 key 의 값이
-                # 지워져 있어, 그것 없이는 늘 첫 협력사로 되돌아간다. 파트너
-                # 추천에서 고른 협력사가 여기로 넘어오는 길이 이것이다.
-                ids = list(labels)
-                last = st.session_state.get(SS_PARTNER_ID)
-                pid = st.selectbox("협업 제안 대상", ids,
-                                   index=ids.index(last) if last in ids else 0,
-                                   format_func=labels.get, key="partner_pick")
+            # key 를 준다 — 보관함 화면이 이 값으로 어느 협력사인지 안다.
+            #
+            # index 로 기본값을 준다. 다른 화면에서 돌아오면 위젯 key 의 값이
+            # 지워져 있어, 그것 없이는 늘 첫 협력사로 되돌아간다. 파트너
+            # 추천에서 고른 협력사가 여기로 넘어오는 길이 이것이다.
+            ids = list(labels)
+            last = st.session_state.get(SS_PARTNER_ID)
+            pid = st.selectbox("협업 제안 대상", ids,
+                               index=ids.index(last) if last in ids else 0,
+                               format_func=labels.get, key="partner_pick")
             chosen = next(p for p in partners if p["id"] == pid)
             st.session_state[SS_PARTNER_ID] = pid
             # 회차·협의 가능 시간·납품 요일 캡션은 화면에 두지 않는다 (9/22).
             # 회차는 결과의 「생성 조건」에 있고, 납품 요일은 체인 입력에 그대로 들어간다.
         with c2:
-            target = st.date_input("협업 시작 희망일",
-                                   value=datetime.now(KST).date() + timedelta(days=7))
+            # 달력 표시를 그리려고 상자로 감싼다. Streamlit 내부 이름
+            # (data-testid·data-baseweb)에 기대면 버전에 따라 빗나간다 —
+            # 실제로 두 번 빗나갔다 (10/5). 내가 지은 key 로만 잡는다.
+            with st.container(key="date_box"):
+                target = st.date_input(
+                    "협업 시작 희망일",
+                    value=datetime.now(KST).date() + timedelta(days=7))
+
+        # ── 협력사 메뉴·가격 정보 (시안 1쪽) ──
+        #
+        # 메뉴가 없으면 기획안을 만들 수 없다. 그래서 막히는 자리 바로 옆에
+        # 채우는 길 둘을 둔다 — 후기에서 자동으로 가져오기, 직접 적기.
+        sourced = menu_rows_sourced(chosen)
+        n_auto = sum(1 for src, _ in sourced if src == MENU_AUTO)
+        n_hand = len(sourced) - n_auto
+
+        with st.container(key="menu_box", border=True):
+            c_title, c_view = st.columns([3, 1], vertical_alignment="center")
+            c_title.markdown(
+                f'<div style="font-weight:700; color:#161A1F">협력사 메뉴·가격 정보</div>'
+                f'<div style="color:#59606D; font-size:0.85rem; margin-top:2px">'
+                f'{chosen["name"]} · 등록 {len(sourced)}개 · '
+                f'자동 수집 {n_auto}개 / 수동 등록 {n_hand}개</div>',
+                unsafe_allow_html=True)
+            if c_view.button(f"메뉴·가격 보기  {len(sourced)}개",
+                             icon=":material/list:", use_container_width=True,
+                             key="menu_view_btn"):
+                _menu_list(chosen)
+
+            st.divider()
+
+            c_auto, c_hand, c_desc = st.columns([1, 1, 3],
+                                                vertical_alignment="center")
+            c_auto.button("메뉴 자동 수집", icon=":material/download:",
+                          use_container_width=True, key="menu_auto_btn",
+                          disabled=True)
+            if c_hand.button("수동 등록", icon=":material/add:",
+                             use_container_width=True, key="menu_hand_btn"):
+                _manual_menu(chosen)
+            c_desc.markdown(
+                '<div style="color:#374151; font-size:0.88rem">'
+                '네이버 블로그 후기에서 선택한 협력사의 메뉴와 가격을 가져옵니다.</div>'
+                '<div style="color:#9CA3AF; font-size:0.82rem; margin-top:2px">'
+                '후기에 없는 메뉴는 수동으로 추가할 수 있습니다.</div>',
+                unsafe_allow_html=True)
+
+            st.markdown(
+                '<div style="color:#59606D; font-size:0.85rem; display:flex; '
+                'align-items:center; gap:7px; margin:10px 0 4px">'
+                '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" '
+                'stroke="currentColor" stroke-width="2" style="flex:none">'
+                '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.6v.1"/></svg>'
+                '모든 메뉴가 수집되지는 않으며, 후기 속 가격은 현재와 다를 수 '
+                '있습니다. 생성 전 메뉴·가격을 확인해 주세요.</div>',
+                unsafe_allow_html=True)
+
+        # 목록 창에서 「메뉴 수동 추가」를 눌렀으면 이번 실행에서 등록 창을 연다.
+        # 창을 겹쳐 띄울 수 없어 한 박자 나눈다.
+        if st.session_state.pop(SS_MENU_ADD, False):
+            _manual_menu(chosen)
 
         # 회차는 사람이 고른다. 전에는 폼 값이 있으면 무조건 2차로 떠서 1차 과정을
         # 보여줄 수 없었다 (9/24). 조건은 docs/private/쟁점_2차흐름과_폼_0925.md 1-3-1.
@@ -1360,30 +1554,34 @@ with st.container(key="param_card"):
     if blocked:
         st.warning(blocked)
 
+    # 메뉴가 없으면 생성 버튼이 잠긴다. 따로 알리지 않는다 — 바로 위 상자가
+    # 등록 개수와 채우는 길 둘을 이미 보여 준다 (10/5).
     has_menus = bool(menu_rows(chosen))
-    if not has_menus:
-        st.info("메뉴·판매가가 아직 없습니다. 들어오면 만들 수 있습니다.")
 
     allowed = (can_1st if rnd == 1
                else (can_2nd and bool(sent) and not blocked))
-    _, c_btn = st.columns([3, 1])
+    # 걸리는 시간을 버튼 바로 옆에 적는다 (시안 1쪽). 전에는 카드 밖에 있어
+    # 누르기 전에 눈에 안 들어왔다.
+    c_wait, c_btn = st.columns([3, 1], vertical_alignment="center")
+    c_wait.markdown(
+        '<div style="color:#59606D; font-size:0.9rem; display:flex; '
+        'align-items:center; gap:7px">'
+        '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" '
+        'stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/>'
+        '<path d="M12 7v5l3 2"/></svg>'
+        '약 30초 뒤, 기획안 3안을 확인할 수 있습니다.</div>',
+        unsafe_allow_html=True)
     go = c_btn.button("기획안 최적 생성 시작", type="primary", icon=":material/auto_awesome:",
                       use_container_width=True, disabled=not has_menus or not allowed)
 
 if go:
     generate(chosen, target, rnd, sent)
 
-# 생성 조건 상자와 결과 사이의 한 줄. 만드는 동안에는 이 자리를 진행 상황이
-# 쓴다 (generate 의 st.status 가 "n차 기획안 생성 중..."). 끝난 뒤에 지금 상태와
-# 다음에 할 일을 적는다. if/elif 라 맞는 것 하나만 나오므로 순서가 곧 해야 할 일의 순서다.
-if not picks:
-    st.caption("1차 기획안을 만듭니다. 안을 고르면 다음 단계로 넘어갑니다.")
-elif not form_in:
-    st.caption("협력사와 합의해 폼을 채우면 2차 기획안을 만들 수 있습니다.")
-else:
-    st.caption("폼을 받았습니다. 2차 기획안을 만듭니다. "
-               "골랐던 1차 기획안은 보관함에서 다시 볼 수 있습니다.")
-
+# 생성 조건 상자와 결과 사이는 비워 둔다. 만드는 동안에는 이 자리를 진행 상황이
+# 쓴다 (generate 의 st.status 가 "n차 기획안 생성 중...").
+#
+# 지금 어느 단계인지 알리던 세 줄은 지웠다 (10/5). 시안의 단계 표시
+# (협력사 선택 › 메뉴 정보 준비 › 기획안 생성)가 그 자리를 대신한다.
 if st.session_state.get(SS_RESULT):
     meta = st.session_state[SS_META]
     n_plans = len((st.session_state[SS_RESULT].get("final") or {}).get("안") or [])
@@ -1398,7 +1596,19 @@ if st.session_state.get(SS_RESULT):
         unsafe_allow_html=True)
     render_result(st.session_state[SS_RESULT], meta)
 elif not go:
-    st.info("협력사와 실행일을 고르고 생성을 누르면 약 30초 뒤 기획안 3안이 나옵니다.")
+    # 결과가 들어설 자리. 걸리는 시간은 카드 안 버튼 옆에 적혀 있으므로
+    # 여기서는 무엇부터 하면 되는지만 말한다 (시안 1쪽).
+    st.markdown(
+        '<div style="text-align:center; color:#9CA3AF; padding:70px 0 90px">'
+        '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" '
+        'stroke="currentColor" stroke-width="1.6" style="margin-bottom:14px">'
+        '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/>'
+        '<path d="M14 3v5h5M9 13h6M9 17h4"/></svg>'
+        '<div style="color:#374151; font-weight:700; font-size:1.02rem">'
+        '협업의 시작, 메뉴 정보부터 준비해 주세요.</div>'
+        '<div style="font-size:0.9rem; margin-top:6px">'
+        '생성된 기획안 3안은 이곳에 표시됩니다.</div></div>',
+        unsafe_allow_html=True)
 
 # 담기·빼기 알림. 페이지 맨 끝에서 그린다 (flash_note 설명 참고).
 flash = st.session_state.pop(SS_TOAST, None)
@@ -1410,3 +1620,6 @@ if flash is not None:
         msg = (f"보관함에서 뺐습니다 — 남은 안 {n_picked}개" if n_picked
                else "보관함에서 뺐습니다 — 담긴 안이 없습니다")
     flash_note(msg)
+
+# 메뉴 등록·수집 알림. 같은 자리에서 그린다.
+flash_note(st.session_state.pop(SS_MENU_TOAST, None))
