@@ -405,6 +405,39 @@ def _menus(partner: dict) -> str:
     return " / ".join(parts) if parts else NO_DATA
 
 
+# 폼의 선택지 문장 → 체인이 쓰는 접근 이름.
+#
+# 폼은 고른 문장을 그대로 저장한다. 「아직 정하지 않았습니다」와 기타 서술형도
+# 같은 칸으로 와서, 저장할 때 셋으로 줄이면 그 답이 사라진다 (migrate_1001.sql).
+APPROACH = {
+    "단품으로만 판매": "단품",
+    "맥주와 묶어 세트로 판매": "세트",
+    "포장해서 가져갈 수 있게 판매": "포장",
+}
+UNDECIDED = "아직 정하지 않았습니다"
+
+
+def fixed_approach(partner: dict | None, approach: str | None = None) -> str | None:
+    """
+    협의로 정한 판매 방식. 안 정해졌으면 None.
+
+    메뉴와 같은 규칙이다 — 폼 값이 먼저고, 없으면 화면이 넘긴 값을 쓴다.
+
+      A      폼이 묻지 않는다. 보낸 안의 접근을 화면이 넘긴다
+      A2     폼 섹션 2 에서 받는다
+      B/C    3안에서 고른 안의 접근을 화면이 넘긴다
+
+    셋 중 하나가 아니면(아직 안 정함·기타) None 이다. 그때는 (2)가 고른다.
+    """
+    form = (APPROACH.get((partner.get("agreed_approach") or "").strip())
+            if partner else None)
+    if form:
+        return form
+    # 화면이 넘기는 값은 이미 접근 이름이다 (안의 「접근」 필드).
+    picked = (approach or "").strip()
+    return picked if picked in APPROACH.values() else None
+
+
 def _agreed_menu_line(partner: dict, name: str) -> str:
     """
     확정된 메뉴 한 줄. 「판매 중인 메뉴」 자리에 이것만 들어간다.
@@ -422,28 +455,44 @@ def _agreed_menu_line(partner: dict, name: str) -> str:
     return " ".join(bits)
 
 
-def _agreed_block(partner: dict, menu: str | None) -> list[str]:
+def _agreed_block(partner: dict, menu: str | None,
+                  approach: str | None = None) -> list[str]:
     """
-    협의로 정한 것. 폼에서 받은 값이다 (migrate_0928.sql).
+    협의로 정한 것. 폼에서 받은 값이다 (migrate_0928.sql · migrate_1001.sql).
 
-    메뉴 이름은 밖에서 받는다. A 갈래는 폼에서 메뉴를 묻지 않아(제안받은 그
-    메뉴이므로) DB 가 비어 있고, 1차에서 고른 안에서 가져와야 한다.
+    메뉴 이름과 판매 방식은 밖에서도 받는다. 폼이 묻지 않는 갈래가 있어서다
+    (fixed_approach 설명 참고).
+
+    판매 방식이 정해졌으면 그 하나로만 만든다. 안 정해졌으면 (2)가 고른다.
+    어느 쪽이든 안은 하나다 — 협의가 끝난 뒤라 셋을 내밀 자리가 아니다.
     """
-    return [
+    way = fixed_approach(partner, approach)
+    lines = [
         "",
         "[확정된 협업 메뉴]  — 협의로 정한 것이다.",
         f"- 메뉴: {menu}",
-        "- 이 메뉴 하나로만 만든다. 다른 메뉴를 섞거나 곁들이지 마라.",
+    ]
+    # 사실만 적는다. 어떻게 할지는 p2 지시 1-1 이 정한다.
+    raw = (partner.get("agreed_approach") or "").strip()
+    if way:
+        lines.append(f"- 판매 방식: {way}")
+    elif raw and raw != UNDECIDED:
+        lines.append(f"- 판매 방식: 협력사가 적은 말 — {raw}")
+    else:
+        lines.append("- 판매 방식: 아직 정하지 않았다")
+    lines += [
         f"- 하루 납품 수량: {partner.get('supply_qty') or NO_DATA}",
         f"- 보관: {partner.get('storage_note') or NO_DATA}",
         f"- 포장 판매: {partner.get('takeout') or NO_DATA}",
         "",
     ]
+    return lines
 
 
 def build_partner_resources(partner: dict | None,
                             confirmed: bool = False,
-                            agreed_menu: str | None = None) -> str:
+                            agreed_menu: str | None = None,
+                            agreed_approach: str | None = None) -> str:
     """
     협력사가 가진 것. 셰프가 메뉴를 짜는 재료다.
 
@@ -496,7 +545,7 @@ def build_partner_resources(partner: dict | None,
     lines = [head]
 
     if confirmed and name:
-        lines += _agreed_block(partner, name)
+        lines += _agreed_block(partner, name, agreed_approach)
         menus = _agreed_menu_line(partner, name)
     else:
         if confirmed:

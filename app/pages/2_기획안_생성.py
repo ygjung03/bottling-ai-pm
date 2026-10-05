@@ -40,7 +40,8 @@ import streamlit as st
 from app.auth import require_owner
 from app.proposal import (build_proposal_docx, build_proposal_pdf, end_dot,
                           missing_fields, pdf_pages, proposal_no)
-from app.theme import ARCHIVE_PARAM, SS_ARCHIVE_COUNT, apply_chrome
+from app.theme import (ARCHIVE_PARAM, SS_ARCHIVE_COUNT, SS_PARTNER_ID,
+                       apply_chrome)
 from app.ui import page_header
 from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           NO_TREND_MENU, PAST_CASES, WEATHER_PREF,
@@ -62,10 +63,7 @@ KST = timezone(timedelta(hours=9))
 SS_RESULT = "plan_result"      # 체인 출력
 SS_META = "plan_meta"          # 협력사·날짜 등 생성 조건
 
-# 고른 협력사 id. 셀렉트박스 값을 그대로 쓰지 못한다 — Streamlit 은 위젯이
-# 그려지지 않은 실행에서 그 key 의 세션 값을 지우는데, 보관함으로 갈라지면
-# 셀렉트박스가 안 그려져 값이 사라진다. 위젯 키가 아닌 곳에 복사해 둔다.
-SS_PARTNER_ID = "partner_id_last"
+# SS_PARTNER_ID(고른 협력사 id)는 app/theme.py 에 있다 — 파트너 추천도 쓴다.
 
 # 보관함. 열렸는지는 주소의 질의 문자열이 정한다 (app/theme.ARCHIVE_PARAM).
 #
@@ -387,6 +385,86 @@ def adopted_ids(value) -> list[str]:
 # 생성
 # ══════════════════════════════════════════
 
+def has_agreed_plan(partner: dict) -> bool:
+    """
+    협력사가 동의한 안이 이미 있나. 있으면 그 안을 그대로 쓴다.
+
+      A      보낸 안에 「그 메뉴로 하겠다」고 답했다   있다
+      A2     보낸 안 대신 다른 메뉴로 바꿨다          없다 — 새로 만든다
+      B/C    보낸 안을 거절했다                     없다 — 새로 만든다
+
+    B/C 는 메뉴판을 읽어 다시 고른 안이 있어야 하는데 그 화면이 아직 없다.
+    (남은_작업 ③-c). 생기면 여기에 B·C 를 더하면 된다 — 그 화면이 고른 안을
+    보관함과 같은 방식으로 남기므로 뒷일은 같다.
+    """
+    return (partner.get("reply_choice") or "A").strip().upper() == "A"
+
+
+def load_preset(partner: dict, sent: dict | None) -> dict | None:
+    """
+    2차에서 다시 만들지 않고 가져다 쓸 1차 결과.
+
+    협력사가 「그 메뉴로 하겠다」고 했으면 1차에서 고른 그 안이 곧 확정안이다.
+    다시 만들면 값이 달라진다 — 10/2 에 세트 판매가가 9,000원에서 7,500원으로
+    바뀌었다. 협력사가 동의한 것과 다른 문서가 나간다.
+
+    그래서 그 안을 그대로 가져오고, 협의로 정해진 것만 덮는다. 나머지(바틀링
+    예정 판매가·구성·페어링 맥주)는 1차 그대로 둔다.
+
+    메뉴를 새로 정한 경우(A2)는 쓸 안이 없어 None 을 돌려준다.
+    """
+    if not sent or not has_agreed_plan(partner):
+        return None
+    try:
+        row = (get_client().table("plans").select("p1_output,p2_output")
+               .eq("id", sent["plan_id"]).single().execute().data)
+    except Exception:
+        return None
+    menus = (row.get("p2_output") or {}).get("메뉴안") or []
+    item = next((m for m in menus if m.get("안_id") == sent["안_id"]), None)
+    if not row.get("p1_output") or not item:
+        return None
+
+    item = dict(item)
+    # 협력사 정가는 1차에서 후기를 바탕으로 추정한 값이다. 폼으로 실제 값을 받았으면 그것이
+    # 맞는 값이다. 안 바꾸면 (4)가 틀린 정가를 근거로 판매가를 설명한다.
+    #
+    # 세트의 「정가_합」은 협력사 정가 + 맥주 500ml 값이다. 정가가 움직인
+    # 만큼 같이 움직여야 제안서의 「따로 사면 N원」이 맞는다.
+    sale, was = partner.get("agreed_sale_price"), item.get("협력사_정가")
+    if sale:
+        item["협력사_정가"] = int(sale)
+        if was and item.get("정가_합"):
+            item["정가_합"] = int(item["정가_합"]) + int(sale) - int(was)
+    if partner.get("agreed_price"):
+        item["협력사희망_매입가"] = f"{int(partner['agreed_price']):,}원 [확정]"
+    if partner.get("supply_qty"):
+        item["1회_납품_수량"] = partner["supply_qty"]
+    if partner.get("storage_note"):
+        item["보관_조건"] = partner["storage_note"]
+
+    return {"p1": row["p1_output"],
+            "p2": {"메뉴안": [item],
+                   "공통_주의사항": (row.get("p2_output") or {}).get("공통_주의사항") or []}}
+
+
+def screen_approach(partner: dict, sent: dict | None) -> str | None:
+    """
+    화면이 아는 판매 방식. 폼이 묻는 갈래면 넘기지 않는다.
+
+    판매 방식이 어디서 오는지는 갈래마다 하나뿐이어야 한다. 둘 다 오면 어느
+    것이 맞는지 따질 일이 생긴다.
+
+      A      화면에서 고른 안에 들어 있다        → 화면을 넘긴다
+      A2     폼 섹션 2 에서 받는다       → 화면을 넘기지 않는다. 메뉴가 바뀌었으니
+                                        화면에서 골랐던건 더이상 의미가 없다.
+      B/C    화면에서 고른 안에 들어 있다  → 화면을 넘긴다 (그 화면은 아직 없다)
+    """
+    if (partner.get("reply_choice") or "").strip().upper() == "A2":
+        return None
+    return (sent or {}).get("접근")
+
+
 def generate(partner: dict, target: date, rnd: int,
              sent: dict | None = None) -> None:
     """
@@ -421,7 +499,8 @@ def generate(partner: dict, target: date, rnd: int,
             beer_list=build_beer_list(),
             partner_res=build_partner_resources(
                 partner, confirmed=rnd == 2,
-                agreed_menu=(sent or {}).get("메뉴명")),
+                agreed_menu=(sent or {}).get("메뉴명"),
+                agreed_approach=screen_approach(partner, sent)),
             partner_blockers=build_partner_blockers(partner),
             bottling_ingredients=BOTTLING_INGREDIENTS,
             margin_ref=MARGIN_REF,
@@ -436,6 +515,7 @@ def generate(partner: dict, target: date, rnd: int,
             rec_reason=build_rec_reason(partner),
             partner=partner,
             fixed_menu=rnd == 2,
+            preset=load_preset(partner, sent) if rnd == 2 else None,
             on_step=on_step,
         )
 
@@ -454,6 +534,8 @@ def generate(partner: dict, target: date, rnd: int,
         "prompt_version": prompt_version(),
         # 2차가 어느 1차를 이어받았는지. 보관함에서 고른 그 안이 든 plan 이다.
         "prev_plan_id": (sent or {}).get("plan_id"),
+        # 제안서의 「포장 판매」 줄. 협력사가 폼에 답한 값이다.
+        "takeout": partner.get("takeout"),
     }
     meta["adopted"] = []            # 새로 만든 기획안이라 아직 담은 안이 없다
     meta["plan_id"] = save_plan(result, meta)
@@ -903,7 +985,8 @@ def _preview(o: dict, partner: dict) -> None:
     1차는 보기만」을 위한 별도 화면을 두지 않는다 (쟁점 1-3-1).
     """
     meta = {"partner_name": partner["name"], "round": o["round"],
-            "target_date": o["target_date"], "plan_id": o["plan_id"]}
+            "target_date": o["target_date"], "plan_id": o["plan_id"],
+            "takeout": partner.get("takeout")}
     missing = missing_fields(o["item"])
     if missing:
         st.warning(f"이 안에는 {', '.join(missing)}이(가) 없어 "
@@ -1122,6 +1205,19 @@ def render_archive(partner: dict, options: list[dict]) -> None:
 
 partners = load_partners()
 
+# 파트너 추천에서 넘겨준 협력사가 목록에 없을 수 있다. 방금 등록한 것이면
+# 목록 캐시(60초)에 아직 안 들어와 있다. 그때는 한 번만 다시 읽는다.
+#
+# 다시 읽어도 없으면 지워진 협력사다. 그 값을 버려야 한다 — 셀렉트박스에 없는
+# 값이 남아 있으면 화면이 아예 뜨지 않는다.
+_want = st.session_state.get(SS_PARTNER_ID)
+if _want and not any(p["id"] == _want for p in partners):
+    load_partners.clear()
+    partners = load_partners()
+    if not any(p["id"] == _want for p in partners):
+        st.session_state.pop(SS_PARTNER_ID, None)
+        st.session_state.pop("partner_pick", None)
+
 # 상단 바를 여기서 그린다. 보관함 개수를 그 전에 세야 이번 실행에 반영된다 —
 # 상단 바가 본문보다 먼저 그려지므로, 본문에서 세면 한 박자 늦게 바뀐다.
 #
@@ -1202,7 +1298,14 @@ with st.container(key="param_card"):
         with c1:
             with st.container(key="partner_box"):
                 # key 를 준다 — 보관함 화면이 이 값으로 어느 협력사인지 안다.
-                pid = st.selectbox("협업 제안 대상", list(labels),
+                #
+                # index 로 기본값을 준다. 다른 화면에서 돌아오면 위젯 key 의 값이
+                # 지워져 있어, 그것 없이는 늘 첫 협력사로 되돌아간다. 파트너
+                # 추천에서 고른 협력사가 여기로 넘어오는 길이 이것이다.
+                ids = list(labels)
+                last = st.session_state.get(SS_PARTNER_ID)
+                pid = st.selectbox("협업 제안 대상", ids,
+                                   index=ids.index(last) if last in ids else 0,
                                    format_func=labels.get, key="partner_pick")
             chosen = next(p for p in partners if p["id"] == pid)
             st.session_state[SS_PARTNER_ID] = pid

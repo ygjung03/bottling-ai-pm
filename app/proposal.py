@@ -205,10 +205,15 @@ def _sections(item: dict, meta: dict) -> list[dict]:
         (beer_label, f"{beer_line}{why}"),
         ("판매 방식", SALE_STYLE.get(approach, "")),
     ]
+    # 「예정」을 붙인다. 완제품을 매입해 바틀링이 되파는 구조라 이 값은
+    # 바틀링이 정하는 값이고, 협력사와 합의해 정하는 값이 아니다. 거래를
+    # 성립시키는 값은 매입가 하나다. 얼마에 팔 예정인지를 협력사에게
+    # 알리는 뜻으로 적는다.
     if listed and set_price:
-        menu_items.append(("바틀링 판매가", f"{set_price:,}원 (따로 사면 {listed:,}원)"))
+        menu_items.append(("바틀링 예정 판매가",
+                           f"{set_price:,}원 (따로 사면 {listed:,}원)"))
     elif set_price:
-        menu_items.append(("바틀링 판매가", f"{set_price:,}원"))
+        menu_items.append(("바틀링 예정 판매가", f"{set_price:,}원"))
     # 값의 근거는 값 바로 아래에 둔다. 제안 이유(3절)로 가면 "왜 이 가게인가" 와 섞인다.
     if item.get("판매가_설명"):
         menu_items.append(("판매가 근거", end_dot(item["판매가_설명"])))
@@ -276,6 +281,10 @@ def _sections(item: dict, meta: dict) -> list[dict]:
             terms.append(("협력사 수익", deal["협력사_수익"]))
         terms += [("보관 조건", item.get("보관_조건") or "협의 필요"),
                   ("1회 납품 수량", item.get("1회_납품_수량") or "협의 필요")]
+        # 안의 접근(단품·세트·포장)과 다른 것이다. 그쪽은 어떤 상품으로 파는가고,
+        # 이것은 그것과 별개로 포장이 가능한 메뉴인지에 대한 것이다. 
+        if meta.get("takeout"):
+            terms.append(("포장 판매", meta["takeout"]))
         out.append({"title": "거래 및 운영 조건", "items": terms, "table": True})
 
         # 「미확인」은 싣지 않는다 (9/30). (4)가 매입가를 **추정할 때** 못 본 것을

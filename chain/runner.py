@@ -137,9 +137,19 @@ def run(context: str, target_date: str, beer_list: str,
         constraints: dict, fewshot: str,
         bottling_sns: str, partner_sns: str, events: str, past_cases: str,
         rec_reason: str, partner: dict | None = None,
-        fixed_menu: bool = False, on_step=None) -> dict:
+        fixed_menu: bool = False, preset: dict | None = None,
+        on_step=None) -> dict:
     """
     on_step: 진행 상황 콜백 (Streamlit st.status 연동용)
+
+    preset: 다시 만들지 않고 가져다 쓸 앞 단계 결과 {"p1": ..., "p2": ...}
+
+      협력사가 「그 메뉴로 하겠다」고 한 2차가 그렇다. 1차에서 고른 그 안이 곧
+      확정안이라 다시 만들면 안 된다. 실제로 다시 만들었더니 세트 판매가가
+      9,000원에서 7,500원으로 바뀌었다 (10/2). 협력사가 동의한 것과 다른 값이
+      서명란 있는 문서로 나간다.
+
+      그 단계는 화면에 그대로 뜨되 바로 끝난다. 보는 사람에게는 같은 4단계다.
 
     fixed_menu: 협의로 메뉴가 하나로 정해진 뒤인가 (9/29)
 
@@ -190,9 +200,21 @@ def run(context: str, target_date: str, beer_list: str,
         total_ms += ms
         return out
 
+    def ready(n, label):
+        """
+        preset 에 그 단계 결과가 있으면 돌려준다. 없으면 None.
+
+        있어도 화면에는 그 단계를 띄운다. 보는 사람에게는 늘 같은 4단계다.
+        """
+        out = (preset or {}).get({1: "p1", 2: "p2"}.get(n))
+        if out is not None and on_step:
+            on_step(n, label)
+        return out
+
     try:
-        result["p1"] = step(1, "상권 분석 중...", "p1_analyst",
-                            context=context, target_date=target_date)
+        result["p1"] = (ready(1, "상권 분석 중...")
+                        or step(1, "상권 분석 중...", "p1_analyst",
+                                context=context, target_date=target_date))
 
         def call_p4(label: str, note: str, prev: dict | None = None) -> dict:
             # 다시 부를 때는 직전 출력을 함께 넘긴다. 걸린 곳만 고치고
@@ -285,11 +307,11 @@ def run(context: str, target_date: str, beer_list: str,
                             prev_output=_j(prev) if prev else NO_ISSUES,
                             issues=note)
 
-            result["p2"] = make(
-                2,
-                "협업 메뉴 개발 중..." if attempt == 0
-                else "실행할 수 없는 안을 빼고 메뉴를 다시 만드는 중...",
-                call_p2, check_p2)
+            # 가져온 안은 검사하지 않는다. 코드가 옮긴 값이라 틀릴 자리가 없다.
+            label2 = ("협업 메뉴 개발 중..." if attempt == 0
+                      else "실행할 수 없는 안을 빼고 메뉴를 다시 만드는 중...")
+            result["p2"] = (ready(2, label2)
+                            or make(2, label2, call_p2, check_p2))
             result["p3"] = make(
                 3, "홍보 기획 중...", call_p3,
                 lambda out: check_promo(out, result["p2"],
