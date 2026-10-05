@@ -196,7 +196,11 @@ def run(context: str, target_date: str, beer_list: str,
             if on_step:
                 on_step(n, f"{label} (호출 한도 도달 — {sec}초 대기 후 재시도)")
 
-        out, ms = call(build(name, **kw), on_wait=on_wait)
+        # 유료 키로 부른다 (10/6). 무료 키는 하루 한도가 있어 기획안을 몇 건
+        # 만들면 더 못 만든다. 한도는 태평양 자정(한국 16시)에 풀리는데 그때까지
+        # 아무것도 못 한다. 협력사 매입가가 들어가는 것도 이쪽이라, 보낸 내용이
+        # 학습에 쓰이지 않는 유료 키로 보내는 것이 맞다.
+        out, ms = call(build(name, **kw), on_wait=on_wait, paid=True)
         total_ms += ms
         return out
 
