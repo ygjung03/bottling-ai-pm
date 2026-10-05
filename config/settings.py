@@ -21,6 +21,18 @@ SEOUL_CULTURE_KEY = os.getenv("SEOUL_CULTURE_KEY", "")
 GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
+# 유료 키. 없으면 무료 키를 쓴다.
+#
+# 블로그 후기에서 메뉴를 모을 때 쓴다. 가게 하나에 제미나이를 30번 부르는데,
+# 무료 키는 분당 한도가 있어 호출마다 20~40초씩 쉰다. 한도가 차면 한 가게에
+# 10분이 넘는다 (10/6 확인). 유료 키로는 51초였다.
+GEMINI_API_KEY_PAID = os.getenv("GEMINI_API_KEY_PAID", "") or GEMINI_API_KEY
+
+# 네이버 검색 API — NCP(API HUB) 키다. 개발자센터 키가 아니라서 주소도 헤더
+# 이름도 다르다 (collectors/menu_reviews.py 참고). 10/5 에 셋 다 호출해 확인했다.
+NAVER_CLIENT_ID     = os.getenv("NAVER_CLIENT_ID", "")
+NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "")
+
 # --- Supabase ---
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")

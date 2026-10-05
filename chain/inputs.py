@@ -334,21 +334,63 @@ def fetch_partner(partner_id: int | None = None) -> dict | None:
     return rows[0] if rows else None
 
 
+MENU_MANUAL = "수동 등록"
+MENU_AUTO = "자동 수집"
+
+# 자동 수집이 「근거」 맨 앞에 적는 말. 이 말이 있는 줄만 자동으로 친다.
+MENU_AUTO_BASIS = "블로그 후기 자동 수집"
+
+
+def menu_source(row: dict) -> str:
+    """
+    이 줄을 누가 넣었나. **「근거」에 적힌 말로 가른다.**
+
+    컬럼으로 가르면 안 된다 — menu_prices_review 에는 사람이 후기를 보고 손으로
+    옮겨 적은 것도 들어 있다 (프레즐 32개, 9/19). 컬럼이 가르는 것은 「누가
+    넣었나」가 아니라 「어디서 온 값인가」다.
+    """
+    return (MENU_AUTO
+            if str(row.get("근거") or "").startswith(MENU_AUTO_BASIS)
+            else MENU_MANUAL)
+
+
+def menu_rows_sourced(partner: dict) -> list[tuple[str, dict]]:
+    """
+    menu_rows 와 같은 목록을 내되 누가 넣은 값인지를 함께 준다.
+
+    화면이 「자동 수집 N개 · 수동 등록 M개」를 세고 표에 출처를 적는 데 쓴다.
+    거르는 규칙을 여기 한 번만 두어 menu_rows 와 어긋나지 않게 한다.
+    """
+    sure = partner.get("menu_prices") or []
+    review = partner.get("menu_prices_review") or []
+    named = {str(r.get("메뉴") or "").strip() for r in sure}
+    rows = sure + [r for r in review
+                   if str(r.get("메뉴") or "").strip() not in named]
+    return [(menu_source(r), r) for r in rows]
+
+
 def menu_rows(partner: dict) -> list[dict]:
     """
-    협력사 메뉴 목록. 확실한 값이 있으면 그것만, 없으면 후기 값을 쓴다.
+    협력사 메뉴 목록. 두 칸을 합친다.
 
       menu_prices          확실  수동 등록 · 메뉴판 사진 → VLM
       menu_prices_review   추측  블로그 후기에서 모은 것 (U17)
 
-    후기는 시점이 과거라 지금 안 파는 메뉴가 섞인다. 그래서 섞지 않고 가른다.
+    **같은 이름의 메뉴가 양쪽에 있으면 수동 쪽을 쓴다.** 후기는 시점이 과거라
+    값이 지금과 다를 수 있다 — 후기에 「5,000원」이 적혀 있어도 지금 6,000원에
+    팔면 사람이 적어 넣은 6,000원이 맞다.
+
+    [전에는 합치지 않았다 (10/5 바꿈)]
+    수동 등록이 하나라도 있으면 후기를 통째로 버렸다. 그때는 수동 등록이
+    「메뉴판 전체를 손으로 옮기는 것」이었기 때문이다. 지금은 후기에 없는
+    메뉴를 한두 개 보태는 자리라, 버리면 후기로 모은 것이 전부 사라진다.
 
     **검사도 이 함수를 쓴다** (chain/checks.py 의 check_menu_sources).
     「AI 에게 보여준 메뉴」와 「검사가 인정하는 메뉴」가 어긋나면 안 된다.
     한 줄로 박아 두었다가 컬럼을 나누면서 검사 쪽만 옛 칸을 보게 된 적이 있다
     (9/29) — 프레즐은 메뉴가 전부 후기라 「파는 메뉴가 없는 가게」로 보였다.
     """
-    return partner.get("menu_prices") or partner.get("menu_prices_review") or []
+    return [r for _, r in menu_rows_sourced(partner)]
 
 
 def _menus(partner: dict) -> str:
@@ -365,24 +407,21 @@ def _menus(partner: dict) -> str:
 
     납품가는 선택 입력이라 비어 있을 수 있다. 그때는 협의로 정한다.
 
-    [확실한 값이 있으면 추측한 값은 싣지 않는다] (9/28)
-
-    메뉴가 들어오는 길이 셋이고 신뢰도가 다르다.
+    [들어오는 길이 둘이고 신뢰도가 다르다]
 
       menu_prices          확실  수동 등록 · 메뉴판 사진 → VLM
       menu_prices_review   추측  블로그 후기에서 모은 것 (U17)
 
+    둘을 합쳐서 싣되 같은 메뉴는 수동 쪽을 쓴다 (menu_rows 참고).
+
     후기는 시점이 과거다. 「후기 5건, 2026-08」은 8월에 누가 그 메뉴를
-    언급했다는 뜻이지 지금 판다는 뜻이 아니다. 그대로 섞으면 지금 안 파는
-    메뉴가 협업 후보로 올라간다. 그래서 확실한 값이 하나라도 있으면 후기
-    쪽은 아예 넘기지 않는다.
+    언급했다는 뜻이지 지금 판다는 뜻이 아니다. 그래서 숨기지 않고 **항목의
+    「근거」를 판매가 뒤에 그대로 실어** (2)가 얼마나 믿을 값인지 가늠하게
+    한다 — 상권 데이터에 관측 건수를 붙이는 것과 같다.
 
-    합치지 않고 컬럼을 나눈 이유는 「사진이 오면 후기를 버린다」가 되돌릴 수
-    없는 동작이어서다 — 사진을 잘못 읽었을 때 후기 값까지 없어진다.
-    나눠 두면 지우지 않고 무시한다.
-
-    어느 쪽이든 항목의 「근거」를 판매가 뒤에 그대로 실어 (2)가 얼마나 믿을
-    값인지 가늠하게 한다 — 상권 데이터에 관측 건수를 붙이는 것과 같다.
+    컬럼을 나눠 둔 이유는 「사진이 오면 후기를 버린다」가 되돌릴 수 없는
+    동작이어서다 — 사진을 잘못 읽었을 때 후기 값까지 없어진다. 나눠 두면
+    사진이 와도 후기 칸은 그대로 남는다.
     """
     rows = menu_rows(partner)
 
@@ -401,6 +440,11 @@ def _menus(partner: dict) -> str:
             bits.append("판매가 미입력")
         bits.append(f"납품가 {int(wholesale):,}원" if wholesale
                     else "납품가 미정 (협의 대상)")
+        # 구성을 적어 둔 메뉴는 그것까지 싣는다. 「커플세트」처럼 이름만으로는
+        # 무엇이 들었는지 모르는 메뉴를 (2)가 지어내지 않게 하려는 것이다.
+        note = str(r.get("설명") or "").strip()
+        if note:
+            bits.append(f"구성 {note}")
         parts.append(" ".join(bits))
     return " / ".join(parts) if parts else NO_DATA
 
