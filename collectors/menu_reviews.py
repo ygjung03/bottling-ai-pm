@@ -188,7 +188,7 @@ def fetch_body(blog_id: str, log_no: str) -> str | None:
     return _strip_html(r.text)[:BODY_LIMIT]
 
 
-def extract_menus(body: str, shop: str) -> list[dict]:
+def extract_menus(body: str, shop: str, title: str = "") -> list[dict]:
     """
     글 하나에서 메뉴와 가격을 뽑는다. [{"메뉴": "...", "가격": 숫자 또는 None}]
 
@@ -225,7 +225,9 @@ def extract_menus(body: str, shop: str) -> list[dict]:
         "6. 메뉴가 하나도 없으면 빈 배열을 낸다.\n\n"
         '출력 — {"메뉴": [{"이름": "...", "가격": 숫자 또는 null,\n'
         '                  "설명": "..." 또는 null}]}\n\n'
-        f"[후기 본문]\n{body}",
+        # 제목에만 메뉴 이름이 있는 글이 있다. 본문만 넘기면 그런 메뉴를
+        # 놓친다 (10/6).
+        f"[후기 제목]\n{title}\n\n[후기 본문]\n{body}",
         # 글에 적힌 것을 그대로 뽑는 일이라 흔들리면 안 된다. 기본값으로 두면
         # 같은 글에서 5개가 나왔다 1개가 나왔다 한다 (10/5 확인).
         temperature=0,
@@ -236,15 +238,31 @@ def extract_menus(body: str, shop: str) -> list[dict]:
         # 가게 하나에 최대 30번을 부르는데 무료 키는 분당 15회가 한도라 2분쯤
         # 걸린다. 유료 키로는 51초였다 (10/6 측정). 느린 쪽을 받아들인다.
         paid=False)
+    # 시킨 모양대로 오지 않을 때가 있다. 가격도 설명도 안 적힌 글에서는
+    # 「메뉴」 칸을 빼고 목록만 보내거나, 묶음 대신 이름만 보내기도 한다.
+    # 전에는 여기서 오류가 나고 그 글이 통째로 버려졌다 — 300건 중 11건이
+    # 그랬고, 그중에는 메뉴가 잘 적힌 후기도 있었다 (10/6 확인).
+    items = out if isinstance(out, list) else (out or {}).get("메뉴") or []
     rows = []
-    for m in (out or {}).get("메뉴") or []:
-        name = str(m.get("이름") or "").strip()
+    for m in items:
+        if isinstance(m, str):
+            name, price, note = m.strip(), None, ""
+        elif isinstance(m, dict):
+            name = str(m.get("이름") or "").strip()
+            price = m.get("가격")
+            note = str(m.get("설명") or "").strip()
+        else:
+            continue
         if not name:
             continue
-        price = m.get("가격")
-        note = str(m.get("설명") or "").strip()
+        # 숫자로 달라고 했지만 「15,000원」처럼 글자로 올 때가 있다.
+        if isinstance(price, str):
+            digits = re.sub(r"[^\d]", "", price)
+            price = int(digits) if digits else None
+        elif not isinstance(price, (int, float)):
+            price = None
         rows.append({"메뉴": name,
-                     "가격": int(price) if isinstance(price, (int, float)) else None,
+                     "가격": int(price) if price else None,
                      "설명": note or None})
     return rows
 
@@ -379,7 +397,7 @@ def collect(shop: str, address: str | None = None, on_step=None) -> dict:
         if not body:
             continue          # 못 읽는 글은 건너뛴다 (작업 원칙 ⑤)
         try:
-            found.append((b, extract_menus(body, shop)))
+            found.append((b, extract_menus(body, shop, b["제목"])))
         except Exception:
             continue
     step(2, "완료")
