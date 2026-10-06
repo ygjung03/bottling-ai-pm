@@ -529,6 +529,7 @@ def generate(partner: dict, target: date, rnd: int,
             fixed_menu=rnd == 2,
             preset=load_preset(partner, sent) if rnd == 2 else None,
             on_step=on_step,
+            usage_note=f"{rnd}차",
         )
 
         sec = result["latency_ms"] / 1000
@@ -1140,7 +1141,8 @@ def run_auto_collect(partner: dict) -> None:
 
     draw()
     try:
-        res = collect(partner["name"], partner.get("address"), on_step=on_step)
+        res = collect(partner["name"], partner.get("address"), on_step=on_step,
+                      partner_id=partner["id"])
     except Exception as e:
         # 여기서도 반드시 다시 그려야 한다. 안 그러면 이미 그려진 진행 표시와
         # 잠긴 버튼이 그대로 남는다 — 토스트만 뜨고 멈춘 것처럼 보였다 (10/6).

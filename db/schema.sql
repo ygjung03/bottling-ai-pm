@@ -263,3 +263,39 @@ CREATE TABLE IF NOT EXISTS plans (
   note              TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_plans_status ON plans (status, created_at DESC);
+
+
+-- ─────────────────────────────────────────────────────────
+-- 제미나이 사용량 (2026-10-07)
+--
+-- 한 번의 일에 대해 **쓴 키마다 한 줄**이다. 「메뉴 수집이니까 무료」로 묶지
+-- 않는다 — 한도에 걸릴 때만 유료로 넘기는 것을 검토 중이고, 그러면 한 가게를
+-- 수집하는 동안 두 키가 섞인다. 자세한 사정은 db/migrate_1007.sql 참고.
+--
+-- 금액은 유료 호출에만 매긴다. 무료는 줄은 남기고 금액만 0 이다.
+-- ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS api_usage (
+  id             BIGSERIAL PRIMARY KEY,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  kind           TEXT    NOT NULL,          -- 기획안 생성 | 메뉴 수집
+  key_kind       TEXT    NOT NULL,          -- 유료 | 무료
+  model          TEXT,                      -- 단가가 모델마다 달라 함께 남긴다
+
+  partner_id     BIGINT REFERENCES partners(id),
+  -- 메뉴 수집은 아직 등록되지 않은 가게로도 돌 수 있어 id 가 없다. 협력사가
+  -- 지워져도 무엇에 썼는지는 남아야 해서 이름을 따로 둔다.
+  partner_name   TEXT,
+
+  calls          INTEGER NOT NULL,          -- 제미나이를 부른 횟수
+  input_tokens   INTEGER NOT NULL,
+  output_tokens  INTEGER NOT NULL,
+
+  usd            NUMERIC(12, 6) NOT NULL DEFAULT 0,
+  krw            INTEGER        NOT NULL DEFAULT 0,
+  krw_per_usd    NUMERIC(10, 2),            -- 그 줄을 넣을 때 쓴 환율
+
+  note           TEXT                       -- 「1차」·「글 30건 중 28건 읽음」 등
+);
+CREATE INDEX IF NOT EXISTS api_usage_created_idx ON api_usage (created_at DESC);
+CREATE INDEX IF NOT EXISTS api_usage_kind_idx    ON api_usage (kind, created_at DESC);

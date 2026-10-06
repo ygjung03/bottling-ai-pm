@@ -28,25 +28,37 @@ _client_paid: genai.Client | None = None
 # 호출마다 토큰을 누적한다. 기획안 1건에 재호출·되감기까지 몇 번을 부르고
 # 얼마가 드는지 재는 용도다. 호출자(runner)의 반환 형식은 그대로 두고,
 # 재고 싶은 쪽이 전후로 읽는다 (tests/test_fixed.py).
-USAGE = {"calls": 0, "input_tokens": 0, "output_tokens": 0}
+#
+# 무료 키와 유료 키를 갈라서 쌓는다. **금액은 유료 호출에만 매겨야 한다.**
+# 합계도 그대로 두어, 키를 가리지 않고 「몇 번 불렀나」를 보던 쪽이 그대로
+# 동작한다.
+USAGE = {"calls": 0, "input_tokens": 0, "output_tokens": 0,
+         "paid": {"calls": 0, "input_tokens": 0, "output_tokens": 0},
+         "free": {"calls": 0, "input_tokens": 0, "output_tokens": 0}}
 
 
 def reset_usage() -> None:
     USAGE.update(calls=0, input_tokens=0, output_tokens=0)
+    for key in ("paid", "free"):
+        USAGE[key].update(calls=0, input_tokens=0, output_tokens=0)
 
 
 def get_client(paid: bool = False) -> genai.Client:
     """
     제미나이를 부를 때 쓰는 객체. paid 를 주면 유료 키로 진행한다.
 
-    지금은 부르는 곳이 모두 유료 키를 쓴다.
+    가르는 기준은 **보낸 내용이 모델 개선에 쓰여도 괜찮은가** 하나다. 무료
+    키로 보낸 입력은 쓰일 수 있다.
 
-      메뉴 수집     가게 하나에 30번을 부른다. 무료 키는 분당 한도에 걸려
-                   호출마다 20~40초씩 쉬고, 한도가 차면 한 가게에 10분이 넘는다
-      기획안 네 단계  무료 키는 하루 한도가 있어 몇 건 만들면 더 못 만든다.
-                   한도는 태평양 자정(한국 16시)에 풀린다. 그리고 협력사
-                   매입가가 들어가는 쪽이라, 보낸 내용이 학습에 쓰이지 않는
-                   유료 키로 보내는 것이 맞다 — 대표님께도 그렇게 안내했다
+      기획안 네 단계  **유료.** 협력사가 알려준 매입가가 들어간다. 유료 키를
+                   쓰자고 제안해 대표님이 동의한 것이다
+      메뉴 수집     **지금은 무료.** 블로그에 공개된 메뉴와 가격만 넘기므로
+                   무료로 보내도 된다. 분당 15회 한도에 걸려 가게 하나에
+                   2분쯤 걸린다. 한도에 여러 번 걸리면 유료로 넘기는 것을
+                   검토 중이라 **언제든 유료로 바뀔 수 있는 쪽**이다
+
+    그래서 사용량을 쌓을 때 「어느 기능인가」로 키를 짐작하지 않는다. 호출
+    하나하나가 실제로 쓴 키를 들고 간다 (USAGE 설명 참고).
     """
     global _client, _client_paid
     if paid:
@@ -94,18 +106,25 @@ def call(prompt: str, retry: int = 2, model: str | None = None,
         **({"temperature": temperature} if temperature is not None else {}))
     model_name = model or GEMINI_MODEL
     last_err = None
+    # **매개변수가 아니라 이 값이 실제로 쓴 키다.** 한 호출 안에서 키를 갈아탈
+    # 수 있고(아래 429 처리 참고), 그때 사용량이 엉뚱한 쪽에 쌓이면 금액이
+    # 틀어진다. 쌓는 곳에서는 이 값만 본다.
+    use_paid = paid
 
     for attempt in range(retry + 1):
         t0 = time.perf_counter()
         try:
-            resp = get_client(paid).models.generate_content(
+            resp = get_client(use_paid).models.generate_content(
                 model=model_name, contents=prompt, config=cfg
             )
             ms = int((time.perf_counter() - t0) * 1000)
             um = getattr(resp, "usage_metadata", None)
-            USAGE["calls"] += 1
-            USAGE["input_tokens"] += getattr(um, "prompt_token_count", 0) or 0
-            USAGE["output_tokens"] += getattr(um, "candidates_token_count", 0) or 0
+            got_in = getattr(um, "prompt_token_count", 0) or 0
+            got_out = getattr(um, "candidates_token_count", 0) or 0
+            for bucket in (USAGE, USAGE["paid" if use_paid else "free"]):
+                bucket["calls"] += 1
+                bucket["input_tokens"] += got_in
+                bucket["output_tokens"] += got_out
             return json.loads(resp.text), ms
 
         except json.JSONDecodeError as e:
@@ -118,6 +137,10 @@ def call(prompt: str, retry: int = 2, model: str | None = None,
             last_err = e
             msg = str(e)
             if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                # [나중에] 한도에 여러 번 걸리면 여기서 유료 키로 갈아타는
+                # 것을 검토 중이다. 그때 할 일은 `use_paid = True` 한 줄이고,
+                # 사용량·금액은 그것만으로 맞게 갈린다 — 쌓는 곳이 매개변수가
+                # 아니라 use_paid 를 보기 때문이다.
                 wait = 20 * (attempt + 1)
                 print(f"[retry {attempt}] 호출 한도 도달 — {wait}초 대기")
                 if on_wait:
