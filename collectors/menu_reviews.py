@@ -34,6 +34,7 @@ import requests
 
 from chain.gemini import call
 from config.settings import NAVER_CLIENT_ID, NAVER_CLIENT_SECRET
+from db import api_usage as usage
 
 KST = timezone(timedelta(hours=9))
 
@@ -231,10 +232,16 @@ def extract_menus(body: str, shop: str) -> list[dict]:
         temperature=0,
         # 무료 키로 부른다. 넘기는 것이 블로그에 공개된 메뉴와 가격뿐이라,
         # 보낸 내용이 모델 개선에 쓰여도 곤란할 것이 없다. 유료 키는 협력사가
-        # 알려준 매입가가 들어가는 기획안 생성에만 쓴다 (`chain/runner.py`).
+        # 알려준 매입가가 들어가는 기획안 생성에 쓴다 (`chain/runner.py`).
         #
         # 가게 하나에 최대 30번을 부르는데 무료 키는 분당 15회가 한도라 2분쯤
-        # 걸린다. 유료 키로는 51초였다 (10/6 측정). 느린 쪽을 받아들인다.
+        # 걸린다. 유료 키로는 51초였다 (10/6 측정).
+        #
+        # **여기는 유료로 바뀔 수 있는 자리다.** 한도에 여러 번 걸리면 그때만
+        # 유료로 넘기는 것을 검토 중이다 (`chain/gemini.py` 의 429 처리).
+        # 그렇게 되면 한 가게를 수집하는 동안 무료와 유료가 섞인다. 사용량
+        # 기록은 그래도 맞게 갈린다 — 「어느 기능인가」로 키를 짐작하지 않고
+        # 호출이 실제로 쓴 키를 기준으로 삼기 때문이다 (`db/api_usage.py`).
         paid=False)
     rows = []
     for m in (out or {}).get("메뉴") or []:
@@ -337,7 +344,8 @@ def _tidy(found: list[tuple[dict, list[dict]]]) -> list[dict]:
     return sorted(out, key=lambda r: r["메뉴"])
 
 
-def collect(shop: str, address: str | None = None, on_step=None) -> dict:
+def collect(shop: str, address: str | None = None, on_step=None,
+            partner_id: int | None = None) -> dict:
     """
     가게 하나의 메뉴·가격을 모은다.
 
@@ -362,10 +370,18 @@ def collect(shop: str, address: str | None = None, on_step=None) -> dict:
 
     9/3 에 네이버 플레이스 메뉴 수집이 캡차로 막힌 적이 있다. 같은 일이 블로그
     쪽에 생기면 이 두 숫자가 벌어지는 것으로 바로 알아챌 수 있다.
+
+    [partner_id]
+    사용량 기록에만 쓴다. 등록된 협력사로 수집하면 앱이 넘겨 주고, 아직 등록
+    안 된 가게로 수집하면 빈다 — 「메뉴로 가게 찾기」는 등록 전에도 돌 수 있다.
+    비어 있어도 가게 이름은 남으므로 집계는 된다 (db/api_usage.py).
     """
     def step(n, state):
         if on_step:
             on_step(n, state)
+
+    # 이 가게에 쓴 것만 세도록 여기서 0 으로 돌린다
+    usage.start()
 
     step(1, "진행 중")
     query = search_query(shop, address)   # 지역검색이 한 번 들어 있다
@@ -387,6 +403,9 @@ def collect(shop: str, address: str | None = None, on_step=None) -> dict:
     step(3, "진행 중")
     menus = _tidy(found)
     step(3, "완료")
+    # 무료·유료가 섞여 있으면 키마다 한 줄씩 남는다 (db/api_usage.py).
+    usage.record(usage.COLLECT, partner_id=partner_id, partner_name=shop,
+                 note=f"글 {len(blogs)}건 중 {len(found)}건 읽음")
     return {"메뉴": menus, "글": len(blogs), "읽음": len(found),
             "검색어": query}
 

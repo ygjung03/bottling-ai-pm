@@ -33,6 +33,7 @@ from chain.checks import (Checked, check_final, check_menu,
                           check_menu_sources, check_promo, is_rank_reason,
                           parse_beer_prices, parse_beers)
 from chain.gemini import call
+from db import api_usage as usage
 from chain.inputs import NO_DATA
 from chain.loader import build
 
@@ -138,7 +139,7 @@ def run(context: str, target_date: str, beer_list: str,
         bottling_sns: str, partner_sns: str, events: str, past_cases: str,
         rec_reason: str, partner: dict | None = None,
         fixed_menu: bool = False, preset: dict | None = None,
-        on_step=None) -> dict:
+        on_step=None, usage_note: str | None = None) -> dict:
     """
     on_step: 진행 상황 콜백 (Streamlit st.status 연동용)
 
@@ -185,6 +186,9 @@ def run(context: str, target_date: str, beer_list: str,
         "latency_ms": 0, "issues": [], "rewinds": [], "restarts": [],
         "error": None,
     }
+    # 여기부터 끝까지 부른 것을 한 묶음으로 센다. 되감기까지 포함해야 기획안
+    # 한 건에 얼마가 들었는지가 나온다.
+    usage.start()
 
     def step(n, label, name, **kw):
         nonlocal total_ms
@@ -389,6 +393,11 @@ def run(context: str, target_date: str, beer_list: str,
 
     settle_deal(result, partner, fixed_menu)
     result["latency_ms"] = total_ms
+    # 끊긴 경우에도 남긴다. 중간까지 부른 것은 이미 돈이 나갔다.
+    usage.record(usage.PLAN,
+                 partner_id=(partner or {}).get("id"),
+                 partner_name=(partner or {}).get("name"),
+                 note=usage_note)
     return result
 
 

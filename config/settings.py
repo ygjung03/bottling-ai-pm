@@ -23,10 +23,24 @@ GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 # 유료 키. 없으면 무료 키를 쓴다.
 #
-# 블로그 후기에서 메뉴를 모을 때 쓴다. 가게 하나에 제미나이를 30번 부르는데,
-# 무료 키는 분당 한도가 있어 호출마다 20~40초씩 쉰다. 한도가 차면 한 가게에
-# 10분이 넘는다 (10/6 확인). 유료 키로는 51초였다.
+# 기획안 생성이 이 키를 쓴다. 보낸 내용이 모델 개선에 쓰이지 않게 하려는
+# 것이다 — 기획안에는 협력사가 알려준 매입가가 들어간다.
+#
+# 메뉴 수집은 블로그에 공개된 메뉴와 가격만 넘기므로 지금은 무료 키다. 다만
+# 분당 한도에 여러 번 걸리면 유료로 넘기는 것을 검토 중이어서, 사용량 기록은
+# 「어느 기능인가」가 아니라 호출이 실제로 쓴 키를 기준으로 삼는다.
 GEMINI_API_KEY_PAID = os.getenv("GEMINI_API_KEY_PAID", "") or GEMINI_API_KEY
+
+# --- 제미나이 단가 (사용량 기록용) ---
+#
+# 100만 토큰당 미국 달러. 공식 단가표에서 옮겼다 (2026-10-06 확인).
+#   https://ai.google.dev/gemini-api/docs/pricing
+#
+# 단가나 환율이 바뀌면 .env 로 덮는다. 이미 남은 기록은 그때 쓴 환율을 함께
+# 들고 있어서 여기 값을 바꿔도 소급되지 않는다 (db/api_usage.py).
+GEMINI_USD_PER_M_INPUT  = float(os.getenv("GEMINI_USD_PER_M_INPUT", "0.30"))
+GEMINI_USD_PER_M_OUTPUT = float(os.getenv("GEMINI_USD_PER_M_OUTPUT", "2.50"))
+KRW_PER_USD             = float(os.getenv("KRW_PER_USD", "1350"))
 
 # 네이버 검색 API — NCP(API HUB) 키다. 개발자센터 키가 아니라서 주소도 헤더
 # 이름도 다르다 (collectors/menu_reviews.py 참고). 10/5 에 셋 다 호출해 확인했다.
