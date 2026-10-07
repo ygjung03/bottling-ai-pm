@@ -56,6 +56,23 @@ UA = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
 #
 # 글이 많을수록 겹침 규칙이 제 일을 한다. 틀린 값도 글이 모이면 걸러진다.
 MAX_POSTS = 30
+
+# 네이버에 글을 몇 건 달라고 할 것인가. 100 건이 한 번에 받을 수 있는 최대다.
+#
+# 30 건만 달라고 하면 그중 20 건쯤은 네이버 블로그가 아니다. 「서울 맛집 리스트」
+# 같은 티스토리 글인데, 본문을 읽는 방법이 네이버 블로그용뿐이라 그냥 버려진다.
+# 100 건을 받으면 읽을 수 있는 글이 훨씬 많이 남는다.
+#
+#   달라고 한 건수    네이버 블로그   제목에 가게 이름이 있는 글
+#        30 건            9 건                2 건
+#       100 건           75 건               39 건
+#
+# 받는 건수를 늘리면 관련도 순서까지 달라졌다. 앞 10 건은 같은데 그 뒤부터
+# 벌어진다. 왜 그런지는 네이버 쪽 사정이라 확인하지 못했다.
+#
+# 많이 받아도 비용은 그대로다. 네이버 검색은 어느 쪽이든 1 회만 부르고, 제미나이는
+# 그중 고른 글을 MAX_POSTS 건까지만 읽는다.
+ASK_POSTS = 100
 # 거르는 기준. 근거가 없는 임계값을 두지 않는다는 원칙(②)과 어긋나 보이지만,
 # 이것은 「겹쳐야 믿는다」는 규칙 자체이고 그 아래로는 교차 확인이 성립하지 않는다.
 #
@@ -127,23 +144,55 @@ def official_name(shop: str, area: str) -> str:
     return shop
 
 
-def search_query(shop: str, address: str | None) -> str:
+def name_only(official: str) -> str:
     """
-    검색어 — 정식 상호 + 구.
+    정식 상호에서 지점 이름을 떼어 낸다.
 
-    가게 이름만 쓰면 전국의 같은 이름 가게가 섞인다. 구를 붙이면 확 좁아진다.
-    동까지 넣어 봤지만 구와 같거나 못했다 (10/6). 지번 주소를 따로 구해 올
-    필요가 없다는 뜻이다.
+      누룽지통닭 뚝섬유원지점  →  누룽지통닭
+      봉평메밀막국수 자양역점  →  봉평메밀막국수
+      라쿤피자 건대 본점      →  라쿤피자 건대
+      프레즐                →  프레즐          (떼어 낼 것이 없다)
+
+    검색할 때 쓰는 이름이 아니다. 네이버에는 지점 이름까지 넣어서 찾고, 받아 온
+    글 가운데 어느 것을 읽을지 고를 때만 이 이름으로 제목을 확인한다.
+
+    제목에 지점 이름까지 있어야 읽는다고 정하면 읽을 글이 크게 줄어든다. 블로그
+    제목에는 「뚝섬유원지 치킨 누룽지통닭 구이 추천」처럼 지점 이름이 빠진 경우가
+    많기 때문이다. 읽은 글이 적으면 여러 글에 겹쳐 나오는 메뉴도 적어지고,
+    결국 등록되는 메뉴가 줄어든다.
+
+    협력사 일곱 곳으로 두 방식을 비교해 봤다. 지점 이름까지 요구하면 메뉴가
+    78개에서 69개로 줄었고, 팔자좀피자는 읽을 글이 1건만 남아 2개에서 0개가
+    됐다 (docs/메뉴수집_검색전략_측정기록.md 4-2 ⑤).
+    """
+    toks = official.split()
+    if len(toks) > 1 and re.search(r"점$", toks[-1]):
+        return " ".join(toks[:-1])
+    return official
+
+
+def search_terms(shop: str, address: str | None) -> tuple[str, str]:
+    """
+    검색어와, 글 제목에서 찾을 가게 이름을 함께 돌려준다.
+
+    지역 검색을 한 번 부른다.
+
+    검색어는 정식 상호에 구를 붙인 것이다. 가게 이름만 넣으면 전국의 같은 이름
+    가게가 섞여 들어온다. 구를 붙이면 그 동네 글로 좁혀진다. 동까지 넣어 봤지만
+    구만 붙인 것과 같거나 못했다 (10/6). 지번 주소를 따로 구해 올 필요가 없다는
+    뜻이다.
     """
     area = area_of(address)
-    return f"{official_name(shop, area)} {area}".strip()
+    official = official_name(shop, area)
+    return f"{official} {area}".strip(), name_only(official)
 
 
-def search_blogs(query: str, limit: int = MAX_POSTS) -> list[dict]:
+def search_blogs(query: str, limit: int = ASK_POSTS) -> list[dict]:
     """
     블로그 글을 찾는다. [{제목, 주소, 날짜}]
 
-    query 는 search_query() 가 만든 말이다.
+    query 와 limit 은 search_terms() 와 ASK_POSTS 에서 온다. 네이버 블로그가
+    아닌 글은 본문을 읽을 수 없어 여기서 뺀다.
 
     최신순이 아니라 관련도순이다. 최신순으로 받으면 그 가게와 상관없는 최근
     글이 먼저 와서 뽑을 것이 없다 (10/5 비교). 대신 글이 오래됐을 수 있어
@@ -170,6 +219,53 @@ def search_blogs(query: str, limit: int = MAX_POSTS) -> list[dict]:
     return out
 
 
+def pick_posts(blogs: list[dict], shop_name: str,
+               limit: int = MAX_POSTS) -> list[dict]:
+    """
+    받아 온 글 가운데 **제목에 가게 이름이 있는 글만** 골라 돌려준다.
+
+    제목에 가게 이름을 적은 글은 그 가게를 다룬 후기일 가능성이 높고, 그런
+    글에 메뉴와 가격이 함께 적혀 있는 경우가 많다. 제목에 가게 이름이 없는
+    글은 가게 이름이 본문 어딘가를 스쳐 가는 글이 많아서, 읽어도 메뉴가 잘
+    안 나온다.
+
+    실제로 재 보니 그 차이가 분명했다. 누룽지통닭뚝섬유원지점은 읽을 수 있는
+    글이 9건이었고 그중 제목에 가게 이름이 있는 글이 2건이었는데, **메뉴가
+    나온 글이 그 2건이었다.** 나머지 7건은 모두 0개였다.
+
+    협력사 일곱 곳으로 기존 방식과 비교한 결과다.
+
+      기존 방식   30건을 받아 네이버 블로그 글을 관련도순으로 그대로 읽는다
+                 제미나이 139회 호출   메뉴 37개 수집   가격 7개 수집
+      이 방식    100건을 받아 그중 제목에 가게 이름이 있는 글만 읽는다
+                 제미나이  98회 호출   메뉴 78개 수집   가격 25개 수집
+
+    제미나이 호출 수는 줄어드는데 뽑히는 메뉴는 두 배가 됐다. 상관없는 글을
+    읽는 데 쓰던 호출이 그 가게 후기를 읽는 쪽으로 옮겨 가기 때문이다. 자세한
+    것은 docs/메뉴수집_검색전략_측정기록.md 3-2·4-2 에 있다.
+
+    [제목에 가게 이름이 있는 글이 하나도 없으면 빈 목록이다]
+    그런 가게는 수집해도 얻을 것이 거의 없다고 보고 건너뛴다. 커피더쏠이
+    그랬는데, 기존 방식으로 글 14건을 읽어도 메뉴가 0개였다. 빈 목록을
+    돌려주면 제미나이를 한 번도 부르지 않으므로 돈이 들지 않는다.
+
+    다만 지역 검색에서 정식 상호를 찾지 못한 가게도 여기서 0건이 될 수 있다. 그
+    경우에는 실제 후기가 있어도 수집을 건너뛰게 된다. 화면에서는 수동 등록으로
+    넘어갈 수 있고, 협력사를 등록할 때 주소를 받으면 이런 경우를 줄일 수 있다
+    (남은_작업 ㉛).
+
+    [띄어쓰기를 떼고 맞춘다]
+    「누룽지 통닭」처럼 가게 이름을 띄어 쓴 제목이 흔하다. 그래서 가게 이름을
+    그대로 비교하지 않고, 띄어쓰기를 뺀 뒤 맞춰서 같은 가게의 글을 놓치지 않는다.
+    """
+    want = re.sub(r"\s", "", shop_name)
+    if not want:
+        return blogs[:limit]
+    hit = [b for b in blogs
+           if want in re.sub(r"\s", "", b.get("제목") or "")]
+    return hit[:limit]
+
+
 def fetch_body(blog_id: str, log_no: str) -> str | None:
     """
     글 본문. 실패하면 None 이고, 그 글은 그냥 건너뛴다 (작업 원칙 ⑤).
@@ -189,7 +285,7 @@ def fetch_body(blog_id: str, log_no: str) -> str | None:
     return _strip_html(r.text)[:BODY_LIMIT]
 
 
-def extract_menus(body: str, shop: str) -> list[dict]:
+def extract_menus(body: str, shop: str, title: str = "") -> list[dict]:
     """
     글 하나에서 메뉴와 가격을 뽑는다. [{"메뉴": "...", "가격": 숫자 또는 None}]
 
@@ -226,7 +322,9 @@ def extract_menus(body: str, shop: str) -> list[dict]:
         "6. 메뉴가 하나도 없으면 빈 배열을 낸다.\n\n"
         '출력 — {"메뉴": [{"이름": "...", "가격": 숫자 또는 null,\n'
         '                  "설명": "..." 또는 null}]}\n\n'
-        f"[후기 본문]\n{body}",
+        # 제목에만 메뉴 이름이 있는 글이 있다. 본문만 넘기면 그런 메뉴를
+        # 놓친다 (10/6).
+        f"[후기 제목]\n{title}\n\n[후기 본문]\n{body}",
         # 글에 적힌 것을 그대로 뽑는 일이라 흔들리면 안 된다. 기본값으로 두면
         # 같은 글에서 5개가 나왔다 1개가 나왔다 한다 (10/5 확인).
         temperature=0,
@@ -243,15 +341,31 @@ def extract_menus(body: str, shop: str) -> list[dict]:
         # 기록은 그래도 맞게 갈린다 — 「어느 기능인가」로 키를 짐작하지 않고
         # 호출이 실제로 쓴 키를 기준으로 삼기 때문이다 (`db/api_usage.py`).
         paid=False)
+    # 시킨 모양대로 오지 않을 때가 있다. 가격도 설명도 안 적힌 글에서는
+    # 「메뉴」 칸을 빼고 목록만 보내거나, 묶음 대신 이름만 보내기도 한다.
+    # 전에는 여기서 오류가 나고 그 글이 통째로 버려졌다 — 300건 중 11건이
+    # 그랬고, 그중에는 메뉴가 잘 적힌 후기도 있었다 (10/6 확인).
+    items = out if isinstance(out, list) else (out or {}).get("메뉴") or []
     rows = []
-    for m in (out or {}).get("메뉴") or []:
-        name = str(m.get("이름") or "").strip()
+    for m in items:
+        if isinstance(m, str):
+            name, price, note = m.strip(), None, ""
+        elif isinstance(m, dict):
+            name = str(m.get("이름") or "").strip()
+            price = m.get("가격")
+            note = str(m.get("설명") or "").strip()
+        else:
+            continue
         if not name:
             continue
-        price = m.get("가격")
-        note = str(m.get("설명") or "").strip()
+        # 숫자로 달라고 했지만 「15,000원」처럼 글자로 올 때가 있다.
+        if isinstance(price, str):
+            digits = re.sub(r"[^\d]", "", price)
+            price = int(digits) if digits else None
+        elif not isinstance(price, (int, float)):
+            price = None
         rows.append({"메뉴": name,
-                     "가격": int(price) if isinstance(price, (int, float)) else None,
+                     "가격": int(price) if price else None,
                      "설명": note or None})
     return rows
 
@@ -353,20 +467,23 @@ def collect(shop: str, address: str | None = None, on_step=None,
 
     돌려주는 것
       메뉴    두 번 걸러서 남은 메뉴들. 그대로 menu_prices_review 에 넣으면 된다
-      글      네이버 검색에서 찾은 글이 몇 개인가
+      찾음    네이버 검색 api 로 받아온 네이버 블로그 글이 몇 개인가
+      글      그중 읽기로 고른 글이 몇 개인가 (제목에 가게 이름이 있는 글)
       읽음    그중 본문까지 실제로 받아온 글이 몇 개인가
       검색어  실제로 검색창에 넣은 말 (가게 이름 + 구)
 
-    [글과 읽음을 따로 세는 이유]
-    본문은 검색 API 가 주는 게 아니라 블로그 페이지를 직접 받아와야 한다.
-    그래서 실패할 수 있다 — 네이버 블로그가 아닌 글, 지워진 글, 페이지 생김새가
-    바뀐 경우다. 실패한 글은 그냥 넘어간다 (작업 원칙 ⑤).
+    [찾음, 글, 읽음을 따로 세는 이유]
+    단계마다 줄어드는 이유가 다르고, 그에 따라 사람이 할 일도 다르다.
 
-    두 숫자를 하나로 합치면 화면이 틀린 말을 하게 된다.
+      찾음 0               그 가게 글이 네이버에 거의 없다
+      찾음 20, 글 0        글은 있지만 제목에 가게 이름을 적은 글이 없다.
+                          이름이 안 맞을 수도 있다 (pick_posts 설명 참고)
+      글 8,  읽음 0        읽을 글은 골랐는데 본문을 하나도 못 받아왔다.
+                          수집이 막힌 것이라 사람이 봐야 한다
 
-      글 0,  읽음 0   후기가 정말 없다        → 다른 협력사를 고르면 된다
-      글 8,  읽음 0   후기는 있는데 못 읽었다  → 협력사를 바꿔도 결과는 같다.
-                                            수집이 막힌 것이라 사람이 봐야 한다
+    본문은 검색 api 가 주는 게 아니라 블로그 페이지를 직접 받아와야 한다.
+    그래서 실패할 수 있다 — 지워진 글, 페이지 생김새가 바뀐 경우다. 실패한
+    글은 그냥 넘어간다 (작업 원칙 ⑤).
 
     9/3 에 네이버 플레이스 메뉴 수집이 캡차로 막힌 적이 있다. 같은 일이 블로그
     쪽에 생기면 이 두 숫자가 벌어지는 것으로 바로 알아챌 수 있다.
@@ -384,8 +501,9 @@ def collect(shop: str, address: str | None = None, on_step=None,
     usage.start()
 
     step(1, "진행 중")
-    query = search_query(shop, address)   # 지역검색이 한 번 들어 있다
-    blogs = search_blogs(query)
+    query, shop_name = search_terms(shop, address)   # 지역검색이 한 번 들어 있다
+    hits = search_blogs(query)
+    blogs = pick_posts(hits, shop_name)
     step(1, "완료")
 
     step(2, "진행 중")
@@ -395,7 +513,7 @@ def collect(shop: str, address: str | None = None, on_step=None,
         if not body:
             continue          # 못 읽는 글은 건너뛴다 (작업 원칙 ⑤)
         try:
-            found.append((b, extract_menus(body, shop)))
+            found.append((b, extract_menus(body, shop, b["제목"])))
         except Exception:
             continue
     step(2, "완료")
@@ -403,11 +521,12 @@ def collect(shop: str, address: str | None = None, on_step=None,
     step(3, "진행 중")
     menus = _tidy(found)
     step(3, "완료")
-    # 무료·유료가 섞여 있으면 키마다 한 줄씩 남는다 (db/api_usage.py).
+    # 무료 키와 유료 키가 섞여 있으면 키마다 한 줄씩 남는다 (db/api_usage.py).
     usage.record(usage.COLLECT, partner_id=partner_id, partner_name=shop,
-                 note=f"글 {len(blogs)}건 중 {len(found)}건 읽음")
-    return {"메뉴": menus, "글": len(blogs), "읽음": len(found),
-            "검색어": query}
+                 note=f"후기 {len(hits)}건 중 {len(blogs)}건 골라 "
+                      f"{len(found)}건 읽음")
+    return {"메뉴": menus, "찾음": len(hits), "글": len(blogs),
+            "읽음": len(found), "검색어": query}
 
 
 if __name__ == "__main__":

@@ -53,7 +53,7 @@ NO_FEWSHOT = "(없음 — 채택 사례가 아직 없다)"
 # 무료 키로 돌리면 실제론 0원이지만 대표님 키(유료)로 돌리면 얼마인지를 본다.
 USD_PER_M_INPUT = 0.30
 USD_PER_M_OUTPUT = 2.50
-KRW_PER_USD = 1400   # 환산용 가정. 정확한 환율이 아니다
+KRW_PER_USD = 1350   # 환산용 가정 (2026-10-06 기준). 정확한 환율이 아니다
 
 
 def cost_usd(tokens_in: int, tokens_out: int) -> float:
