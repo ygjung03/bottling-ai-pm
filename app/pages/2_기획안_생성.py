@@ -477,10 +477,43 @@ def screen_approach(partner: dict, sent: dict | None) -> str | None:
     return (sent or {}).get("접근")
 
 
+def made_preset(result: dict) -> dict | None:
+    """
+    끊긴 기획안에서 **이미 만들어진 단계만** 골라 돌려준다. 없으면 None.
+
+    (4)에서 끊겼으면 (1)(2)(3)을 건너뛰어 10초에 끝나고, 제미나이도 그만큼 덜
+    부른다. 처음부터 다시 돌리면 25초가 또 걸리고 돈도 다시 나간다.
+    """
+    got = {k: result[k] for k in ("p1", "p2", "p3") if result.get(k)}
+    return got or None
+
+
+def resumable(partner: dict, target: date, rnd: int) -> dict | None:
+    """
+    끊긴 기획안을 이어서 만들 수 있으면 그것을 돌려준다. 없으면 None.
+
+    **버튼을 따로 두지 않는다.** 생성 버튼을 다시 누르면 처음부터가 아니라
+    끊긴 자리에서 이어 간다.
+
+    단 **같은 협력사·같은 회차·같은 날짜**일 때만이다. 조건을 바꿔 누르면 앞
+    단계를 그대로 쓸 수 없다 — (1)은 그 날짜의 상권을 분석한 결과이고, (2)는
+    그 협력사의 메뉴로 만든 것이다.
+    """
+    res, meta = st.session_state.get(SS_RESULT), st.session_state.get(SS_META)
+    if not (res and meta and res.get("error")):
+        return None
+    same = (meta.get("partner_id") == partner.get("id")
+            and meta.get("round") == rnd
+            and meta.get("target_date") == target.isoformat())
+    return res if same else None
+
+
 def generate(partner: dict, target: date, rnd: int,
-             sent: dict | None = None) -> None:
+             sent: dict | None = None, resume: dict | None = None) -> None:
     """
     체인을 돌리고 결과를 세션에 남긴다.
+
+    resume 은 끊긴 기획안이다. 주면 거기서 이미 만들어진 단계를 건너뛴다.
 
     rnd 는 사람이 고른 회차다. 전에는 폼 값이 있으면 무조건 2차로 떠서 1차 과정을
     보여줄 수 없었다 (9/24).
@@ -492,7 +525,8 @@ def generate(partner: dict, target: date, rnd: int,
     A 갈래(「네, 그 메뉴로 진행하겠습니다」)는 폼이 메뉴 이름을 묻지 않아 이 값
     말고는 알 길이 없다. 안 넘기면 AI 가 협의 전 목록에서 다른 메뉴를 고른다.
     """
-    with st.status(f"{rnd}차 기획안 생성 중...", expanded=True) as box:
+    head = f"{rnd}차 기획안 {'이어서 만드는 중' if resume else '생성 중'}..."
+    with st.status(head, expanded=True) as box:
         step_slot = st.empty()
 
         def on_step(n: int, label: str) -> None:
@@ -527,9 +561,10 @@ def generate(partner: dict, target: date, rnd: int,
             rec_reason=build_rec_reason(partner),
             partner=partner,
             fixed_menu=rnd == 2,
-            preset=load_preset(partner, sent) if rnd == 2 else None,
+            preset=(made_preset(resume) if resume
+                    else (load_preset(partner, sent) if rnd == 2 else None)),
             on_step=on_step,
-            usage_note=f"{rnd}차",
+            usage_note=f"{rnd}차 이어서" if resume else f"{rnd}차",
         )
 
         sec = result["latency_ms"] / 1000
@@ -1704,8 +1739,10 @@ with st.container(key="param_card"):
             # (data-testid·data-baseweb)에 기대면 버전에 따라 빗나간다 —
             # 실제로 두 번 빗나갔다 (10/5). 내가 지은 key 로만 잡는다.
             with st.container(key="date_box"):
+                # key 가 없으면 그려지는 자리로 키가 정해져, 위아래가 바뀔 때
+                # 고른 날짜가 기본값으로 돌아갈 수 있다.
                 target = st.date_input(
-                    "협업 시작 희망일",
+                    "협업 시작 희망일", key="target_date",
                     value=datetime.now(KST).date() + timedelta(days=7))
 
         # ── 협력사 메뉴·가격 정보 (시안 1쪽) ──
@@ -1854,7 +1891,9 @@ elif st.session_state.pop(SS_MENU_ADD, False):
     _manual_menu(chosen)
 
 if go:
-    generate(chosen, target, rnd, sent)
+    # 끊겼던 기획안이면 그 자리에서 이어 간다 (resumable 설명 참고).
+    generate(chosen, target, rnd, sent,
+             resume=resumable(chosen, target, rnd))
 
 # 생성 조건 상자와 결과 사이는 비워 둔다. 만드는 동안에는 이 자리를 진행 상황이
 # 쓴다 (generate 의 st.status 가 "n차 기획안 생성 중...").
@@ -1863,7 +1902,34 @@ if go:
 # (협력사 선택 › 메뉴 정보 준비 › 기획안 생성)가 그 자리를 대신한다.
 if st.session_state.get(SS_RESULT):
     meta = st.session_state[SS_META]
+    broke = st.session_state[SS_RESULT].get("error")
     n_plans = len((st.session_state[SS_RESULT].get("final") or {}).get("안") or [])
+
+# 끊긴 경우. 전에는 아래 초록 상자가 그대로 떠서 「최적 제안 0종이
+# 도출되었습니다」로 나왔다 (10/9 확인).
+#
+# 왜 끊겼는지와 지금 무엇을 하면 되는지를 함께 알린다. 한도에 걸린 것이면
+# 곧바로 다시 눌러도 또 끊기므로, 기다리라는 말이 함께 있어야 한다.
+#
+# 생성 버튼을 다시 누르면 끊긴 자리에서 이어 간다 (resumable). 그래서 버튼을
+# 따로 두지 않는다.
+if st.session_state.get(SS_RESULT) and broke:
+    says = {
+        "한도": "AI 사용량 한도에 도달했습니다. 1~2분 뒤에 다시 버튼을 눌러 주세요.",
+        "연결": "네트워크 연결이 끊겼습니다. 연결을 확인한 뒤 다시 버튼을 눌러 주세요.",
+        "응답": "AI 응답을 제대로 받지 못했습니다. 잠시 후 다시 시도해 주세요.",
+        "기타": "기획안을 끝까지 만들지 못했습니다. 다시 버튼을 눌러 주세요.",
+    }[st.session_state[SS_RESULT].get("error_kind") or "기타"]
+    st.markdown(
+        f'<div style="margin:18px 0 6px; padding:14px 18px; border:1.5px solid #FBBF24; '
+        f'background:#FFFBEB; border-radius:10px; color:#92400E; font-weight:700; '
+        f'display:flex; align-items:center; gap:10px">'
+        f'<span style="background:#D97706; color:#fff; border-radius:50%; width:20px; height:20px; '
+        f'display:inline-flex; align-items:center; justify-content:center; font-size:13px">!</span>'
+        f'{says}</div>',
+        unsafe_allow_html=True)
+
+if st.session_state.get(SS_RESULT) and not broke:
     st.markdown(
         f'<div style="margin:18px 0 6px; padding:14px 18px; border:1.5px solid #34D399; '
         f'background:#ECFDF5; border-radius:10px; color:#065F46; font-weight:700; '

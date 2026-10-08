@@ -66,6 +66,30 @@ MAX_REDO = 2            # (2)(3) 합쳐서
 MAX_REDO_FINAL = 1      # (4) 따로
 
 
+def error_kind(error: Exception) -> str:
+    """
+    체인이 끊긴 이유를 **사람이 할 일** 기준으로 가른다.
+
+    화면에 「끝까지 만들지 못했습니다」 한 줄만 뜨면, 다시 눌러야 하는 상황인지
+    기다려야 하는 상황인지 알 수 없다. 한도에 걸린 것이라면 다시 눌러도 또
+    끊긴다.
+
+      한도   잠시 기다렸다 다시 누르면 된다
+      연결   인터넷을 확인하고 다시 누르면 된다
+      응답   제미나이가 보낸 것이 깨졌다. 다시 누르면 대개 된다
+      기타   위 어느 것도 아니다. 사람이 봐야 한다
+    """
+    msg = str(error)
+    if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+        return "한도"
+    if any(w in msg for w in ("getaddrinfo", "Connection", "Timeout",
+                              "timed out", "ConnectError")):
+        return "연결"
+    if isinstance(error, json.JSONDecodeError) or "JSON" in msg:
+        return "응답"
+    return "기타"
+
+
 def _j(obj) -> str:
     """
     프롬프트에 넣을 JSON 문자열.
@@ -185,6 +209,8 @@ def run(context: str, target_date: str, beer_list: str,
         "p1": None, "p2": None, "p3": None, "final": None,
         "latency_ms": 0, "issues": [], "rewinds": [], "restarts": [],
         "error": None,
+        # 끊긴 이유를 가른 말. 화면 문구가 이것으로 갈린다 (error_kind 참고).
+        "error_kind": None,
     }
     # 여기부터 끝까지 부른 것을 한 묶음으로 센다. 되감기까지 포함해야 기획안
     # 한 건에 얼마가 들었는지가 나온다.
@@ -213,13 +239,23 @@ def run(context: str, target_date: str, beer_list: str,
         total_ms += ms
         return out
 
-    def ready(n, label):
+    def ready(n, label, fresh=False):
         """
         preset 에 그 단계 결과가 있으면 돌려준다. 없으면 None.
 
         있어도 화면에는 그 단계를 띄운다. 보는 사람에게는 늘 같은 4단계다.
+
+        쓰는 곳이 둘이다.
+
+          2차        협력사가 동의한 1차 안을 그대로 쓴다 (p1·p2)
+          이어서 하기  끊긴 기획안에서 이미 만들어진 단계를 건너뛴다 (p1·p2·p3)
+
+        fresh 를 주면 preset 을 쓰지 않는다. 되감기로 (2)부터 다시 도는 길에서는
+        (3)이 바뀐 메뉴를 보고 다시 짜야 하므로, 가져온 (3)을 쓰면 안 된다.
         """
-        out = (preset or {}).get({1: "p1", 2: "p2"}.get(n))
+        if fresh:
+            return None
+        out = (preset or {}).get({1: "p1", 2: "p2", 3: "p3"}.get(n))
         if out is not None and on_step:
             on_step(n, label)
         return out
@@ -323,14 +359,34 @@ def run(context: str, target_date: str, beer_list: str,
             # 가져온 안은 검사하지 않는다. 코드가 옮긴 값이라 틀릴 자리가 없다.
             label2 = ("협업 메뉴 개발 중..." if attempt == 0
                       else "실행할 수 없는 안을 빼고 메뉴를 다시 만드는 중...")
-            result["p2"] = (ready(2, label2)
+            # 되감는 길에서 가져온 (2)를 그대로 쓸지는 **메뉴가 하나로
+            # 정해졌는가**에 달렸다. fixed_menu 가 그 값이다. 회차도 갈래도
+            # 아니다 — 2차 확정은 A·A2·B/C 가 모두 메뉴 하나로 정해진 상태다.
+            #
+            #   안 정해졌다      (2)는 고를 것을 내미는 후보다. (4)가 퇴짜 놓은
+            #   1차 · 3안 도출   그 안을 또 쓰면 되감기가 헛돈다 → 다시 만든다
+            #
+            #   정해졌다        (2)는 그 메뉴를 전제로 만든 것이다. 다시 만들면
+            #   2차 확정        판매가가 흔들린다 — 10/2 에 9,000원이 7,500원으로
+            #                  바뀌었다 → 그대로 둔다
+            #
+            # [B/C 중간 화면을 만들 때 걸린다]
+            # 메뉴판을 읽어 3안을 내미는 단계는 메뉴가 아직 안 정해졌는데,
+            # 화면이 fixed_menu 를 rnd 로 계산한다(2_기획안_생성.py). B/C 는
+            # 폼 1 만 와도 has_form 이 참이라 rnd 가 2 로 잡히고, 그러면
+            # fixed_menu 가 켜져 안이 1개로 강제된다. **그 호출에는
+            # fixed_menu=False 를 따로 넘겨야 한다.**
+            result["p2"] = (ready(2, label2,
+                                  fresh=attempt > 0 and not fixed_menu)
                             or make(2, label2, call_p2, check_p2))
-            result["p3"] = make(
-                3, "홍보 기획 중...", call_p3,
-                lambda out: check_promo(out, result["p2"],
-                                        date.fromisoformat(target_date),
-                                        partner_sns=NO_DATA not in partner_sns,
-                                        events=events))
+            result["p3"] = (
+                ready(3, "홍보 기획 중...", fresh=attempt > 0)
+                or make(3, "홍보 기획 중...", call_p3,
+                        lambda out: check_promo(
+                            out, result["p2"],
+                            date.fromisoformat(target_date),
+                            partner_sns=NO_DATA not in partner_sns,
+                            events=events)))
             result["final"] = make(
                 4, "최종 검토 중...", call_p4,
                 lambda out: check_final(out, result["p2"], prices))
@@ -395,6 +451,7 @@ def run(context: str, target_date: str, beer_list: str,
 
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
+        result["error_kind"] = error_kind(error)
 
     settle_deal(result, partner, fixed_menu)
     result["latency_ms"] = total_ms
