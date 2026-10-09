@@ -40,7 +40,7 @@ import streamlit as st
 
 from app.auth import require_owner
 from app.proposal import (build_proposal_docx, build_proposal_pdf, end_dot,
-                          missing_fields, pdf_pages, proposal_no)
+                          missing_fields, pdf_pages, proposal_no, ro)
 from app.theme import (ARCHIVE_PARAM, SS_ARCHIVE_COUNT, SS_PARTNER_ID,
                        apply_chrome)
 from app.ui import page_header
@@ -85,6 +85,7 @@ SS_MENU_EDIT = "menu_list_edit"   # 그 창이 고치는 상태다
 SS_ARCHIVE_WARN = "archive_warn"   # 둘 이상 골라 되돌렸다 — 창을 띄울 표시
 SS_ARCHIVE_SWAP = "archive_swap"   # 보낸 안을 바꾸려 한다 — 확인 창에 넘길 값
 SS_ARCHIVE_NOTE = "archive_note"   # 보관함에서 띄울 알림 한 줄
+SS_RESULT_FOR = "result_for"       # 협업 결과를 적을 줄의 key
 
 # 접근마다 색을 둔다. 탭이 셋인데 내용이 비슷해 어느 안을 보고 있는지
 # 놓치기 쉽다 (9/19 화면 확인). 탭 배지와 카드 배지에 같은 색을 쓴다.
@@ -130,7 +131,8 @@ def load_partners() -> list[dict]:
         return (get_client().table("partners").select("*")
                 .order("id").execute().data or [])
     except Exception as e:
-        st.error(f"협력사 조회 실패: {e}")
+        print(f"[load_partners] {e}")
+        st.error("협력사 목록을 불러오지 못했습니다.")
         return []
 
 
@@ -229,7 +231,11 @@ def save_plan(result: dict, meta: dict) -> int | None:
         }).execute().data or []
         return rows[0]["id"] if rows else None
     except Exception as e:
-        st.warning(f"기획안은 만들어졌으나 저장에 실패했습니다 — {e}")
+        # 화면에는 쉬운 말만 내보낸다. 오류 원문은 영문이고 DB 코드가 섞여
+        # 있어서, 대표님이 보는 화면에 나가면 읽을 수 없는 말이 된다.
+        # 원문은 배포 로그에 남겨 둬야 왜 실패했는지 뒤에 찾을 수 있다.
+        print(f"[save_plan] {e}")
+        st.warning("기획안은 만들어졌지만 저장하지 못했습니다.")
         return None
 
 
@@ -259,7 +265,8 @@ def save_adopted(plan_id: int | None, options: list[str]) -> bool:
         load_archive.clear()
         return True
     except Exception as e:
-        st.warning(f"선택을 저장하지 못했습니다 — {e}")
+        print(f"[save_adopted] {e}")
+        st.warning("선택을 저장하지 못했습니다.")
         return False
 
 
@@ -309,7 +316,9 @@ def load_archive(partner_id: int) -> list[dict]:
     try:
         rows = (get_client().table("plans")
                 .select("id,round,adopted_option,sent_option,target_date,"
-                        "created_at,final_output")
+                        "created_at,final_output,final_option,"
+                        "executed_from,executed_to,sold_qty,agreed_wholesale,"
+                        "retail_price,sales_before,sales_after,note")
                 .eq("partner_id", partner_id)
                 .not_.is_("adopted_option", "null")
                 .order("round").order("id", desc=True)
@@ -348,6 +357,13 @@ def sent_options(picks: list[dict]) -> list[dict]:
                 "target_date": p.get("target_date"),
                 "created_at": p.get("created_at"),
                 "보냄": p.get("sent_option") == aid,
+                # 2차에서 실제로 실행하기로 고른 안. 결과 입력 버튼이 이 줄에만
+                # 뜬다. 「보냄」과 뜻이 다르다 — 그쪽은 협력사에게 보낸 1차 안이다.
+                "실행": p.get("final_option") == aid,
+                "결과": {k: p.get(k) for k in
+                         ("executed_from", "executed_to", "sold_qty",
+                          "agreed_wholesale", "retail_price",
+                          "sales_before", "sales_after", "note")},
                 "item": it,        # 미리보기가 쓴다 — 안 내용 통째
             })
     return out
@@ -356,6 +372,16 @@ def sent_options(picks: list[dict]) -> list[dict]:
 def sent_pick(options: list[dict]) -> dict | None:
     """이 협력사의 「보낸 안」. 없으면 None."""
     return next((o for o in options if o["보냄"]), None)
+
+
+def final_pick(options: list[dict]) -> dict | None:
+    """이 협력사의 「실행할 안」. 없으면 None."""
+    return next((o for o in options if o["실행"]), None)
+
+
+def has_result(row: dict) -> bool:
+    """결과가 하나라도 적혀 있나. 「결과 미입력」 표시를 가른다."""
+    return any(v is not None for v in (row.get("결과") or {}).values())
 
 
 def save_sent(partner_id: int, plan_id: int, option_id: str) -> bool:
@@ -382,7 +408,52 @@ def save_sent(partner_id: int, plan_id: int, option_id: str) -> bool:
         load_archive.clear()
         return True
     except Exception as e:
-        st.warning(f"보낸 안을 저장하지 못했습니다 — {e}")
+        print(f"[save_sent] {e}")
+        st.warning("기획안을 저장하지 못했습니다.")
+        return False
+
+
+def save_final(partner_id: int, plan_id: int, option_id: str) -> bool:
+    """
+    「실제로 실행할 2차 안」을 DB 에 남긴다. `save_sent` 와 같은 모양이다.
+
+    한 협력사에 실행하는 안은 하나다. 다른 행에 남아 있던 표시를 먼저 비우고
+    새 행에 적는다.
+
+    이 값이 있는 줄에만 「결과 입력」이 뜬다. 담아만 둔 안에 결과를 적을 일이
+    없기 때문이다.
+    """
+    try:
+        cli = get_client()
+        (cli.table("plans").update({"final_option": None, "final_at": None})
+         .eq("partner_id", partner_id)
+         .not_.is_("final_option", "null").execute())
+        (cli.table("plans")
+         .update({"final_option": option_id,
+                  "final_at": datetime.now(KST).isoformat()})
+         .eq("id", plan_id).execute())
+        load_adopted.clear()
+        load_archive.clear()
+        return True
+    except Exception as e:
+        print(f"[save_final] {e}")
+        st.warning("실행할 안을 저장하지 못했습니다.")
+        return False
+
+
+def save_result(plan_id: int, values: dict) -> bool:
+    """
+    협업 결과를 남긴다. 빈 값은 빈 채로 넣는다 — 모르는 값을 지어내지 않는다.
+
+    나중에 고칠 수 있어야 하므로 덮어쓴다. 한 번 적고 끝나는 값이 아니다.
+    """
+    try:
+        get_client().table("plans").update(values).eq("id", plan_id).execute()
+        load_archive.clear()
+        return True
+    except Exception as e:
+        print(f"[save_result] {e}")
+        st.warning("결과를 저장하지 못했습니다.")
         return False
 
 
@@ -535,8 +606,11 @@ def generate(partner: dict, target: date, rnd: int,
         try:
             ctx = build_context(target, partner_category=partner.get("category"))
         except Exception as e:
+            # 무엇이 안 됐는지는 위 상자 이름이 이미 알려 준다. 여기서는
+            # 다음에 할 일만 적는다 — 같은 말을 두 번 하지 않는다.
+            print(f"[build_context] {e}")
             box.update(label="상권 데이터를 읽지 못했습니다", state="error")
-            st.error(f"컨텍스트 빌더 실패: {e}")
+            st.error("잠시 후 다시 버튼을 눌러 주세요.")
             return
 
         result = run(
@@ -949,12 +1023,24 @@ ARCHIVE_CSS = """
     background:#EEF2FF; color:#4338CA; font-size:14px; font-weight:800; }
   .arch-rnd-2 { background:#FEF3C7; color:#92400E; }
 
-  /* 보낸 안으로 확정한 줄 — 눈에 띄어야 한다 */
+  /* 확정한 줄 — 눈에 띄어야 한다. 두 확정은 뜻이 달라 색도 가른다 (10/9).
+     같은 초록으로 두었더니 어느 쪽인지 헷갈렸다.
+
+       제안 확정   협력사에게 제안서로 보낸 1차 안     초록
+       실행 확정   실제로 그것으로 협업한 2차 안       자주
+
+     줄 배경과 배지를 같은 계열로 맞춘다 — 회차 배지(1차 인디고 / 2차 호박)와
+     같은 방식이다. 자주를 고른 것은 초록과 뚜렷이 갈리고, 실행 확정이 붙는
+     2차 줄의 회차 배지(호박)와도 안 겹치기 때문이다. */
   .st-key-arch_rows [data-testid="stHorizontalBlock"]:has(.arch-sent) {
     background:#F0FDF4; box-shadow:inset 3px 0 0 #16A34A; }
-  .arch-sent-tag { display:inline-block; margin-left:8px; padding:3px 11px;
+  .st-key-arch_rows [data-testid="stHorizontalBlock"]:has(.arch-run) {
+    background:#F5F3FF; box-shadow:inset 3px 0 0 #7C3AED; }
+  /* 배지 모양은 하나로 두고 색만 덧칠한다 */
+  .arch-mark { display:inline-block; margin-left:8px; padding:3px 11px;
     border-radius:999px; background:#16A34A; color:#FFFFFF; font-size:12px;
     font-weight:700; vertical-align:middle; }
+  .arch-mark-run { background:#7C3AED; }
 
   /* 미리보기 — 「기획안 최적 생성 시작」과 같은 파란 버튼 */
   .st-key-arch_rows [data-testid="stHorizontalBlock"] .stButton button {
@@ -972,13 +1058,39 @@ ARCHIVE_CSS = """
 
   /* 하단 가운데 「최종 선택」 — 「기획안 최적 생성 시작」과 같은 모양 */
   .st-key-arch_pick_btn button { height:46px; font-weight:700; }
+
+  /* 결과 입력 — 아직 안 적었으면 흰 바탕에 파란 글씨, 다 적었으면 뒤집는다.
+     한눈에 어느 줄이 끝났는지 보이게 하려는 것이다.
+     키가 줄마다 달라 앞부분으로 잡는데, 두 앞부분이 서로 포함되면 안 된다.
+     `ars_` 와 `ars_done_` 으로 두었더니 둘 다 걸려 색이 섞였다 (10/9). */
+  [class*="st-key-ars_"] button,
+  [class*="st-key-arsdone_"] button { font-weight:700; }
+
+  [class*="st-key-ars_"] button,
+  [class*="st-key-ars_"] button:hover,
+  [class*="st-key-ars_"] button:focus,
+  [class*="st-key-ars_"] button:focus-visible,
+  [class*="st-key-ars_"] button:active {
+    border:1px solid #2563EB; color:#2563EB; background:#FFFFFF;
+    box-shadow:none; }
+  [class*="st-key-ars_"] button:hover { background:#EFF6FF; }
+
+  [class*="st-key-arsdone_"] button,
+  [class*="st-key-arsdone_"] button:hover,
+  [class*="st-key-arsdone_"] button:focus,
+  [class*="st-key-arsdone_"] button:focus-visible,
+  [class*="st-key-arsdone_"] button:active {
+    border:1px solid #2563EB; color:#FFFFFF; background:#2563EB;
+    box-shadow:none; }
+  [class*="st-key-arsdone_"] button:hover { background:#1D4ED8; }
 </style>
 """
 
 
 # 보관함 표의 열 비율. 머리와 본문이 같은 값을 써야 글자가 제 열 위에 선다.
-ARCH_COLS = [0.5, 0.8, 0.9, 5, 1.3, 1.4]
-ARCH_HEAD = ["선택", "회차", "순서", "기획안 정보", "미리보기", "폼 링크"]
+ARCH_COLS = [0.5, 0.8, 0.9, 5, 1.3, 1.3, 1.5]
+ARCH_HEAD = ["선택", "회차", "순서", "기획안 정보", "미리보기", "폼 링크",
+             "협업 결과"]
 
 
 def form_link(partner: dict) -> str | None:
@@ -1440,25 +1552,163 @@ def _menu_list(partner: dict) -> None:
                          column_config=MENU_COLS)
 
 
-@st.dialog("보낸 안을 바꿀까요?")
+@st.dialog("제안할 안을 바꿀까요?")
 def _confirm_swap(old: dict, new: dict, partner_id: int) -> None:
     """
-    이미 확정한 보낸 안이 있는데 다른 것을 고를 때 묻는다.
+    이미 정해 둔 「제안할 안」이 있는데 다른 것을 고를 때 묻는다.
 
-    보낸 안은 협력사에게 실제로 내민 것이라 바꾸면 2차의 메뉴가 통째로
+    그 안이 협력사에게 내미는 것이라, 바꾸면 앞으로 만들 2차의 메뉴가 통째로
     달라진다. 누르면 바로 바뀌는 것보다 한 번 확인하는 편이 맞다.
+
+    창 제목이 「제안할」인 것은, 바꾸는 중이라면 아직 안 보낸 상태라서다.
+    보관함 배지는 보낸 뒤를 가리켜 「제안 확정」이다.
     """
-    st.write(f"지금은 **{old['메뉴명']}** 로 되어 있습니다.")
-    st.write(f"**{new['메뉴명']}** 로 바꾸시겠습니까?")
+    st.write(f"지금은 **{old['메뉴명']}**{ro(old['메뉴명'])} 되어 있습니다.")
+    st.write(f"**{new['메뉴명']}**{ro(new['메뉴명'])} 바꾸시겠습니까?")
+    # 제목만으로는 바꾸면 무엇이 달라지는지 전해지지 않는다.
+    # 2차를 이미 만든 협력사는 이 창까지 오지 못하므로(부르는 쪽에서 막는다),
+    # 「이미 만든 것은 남는다」는 말은 적지 않는다. 그런 경우가 없다.
+    st.caption("바꾸면 앞으로 만들 2차 기획안이 이 안을 기준으로 만들어집니다.")
     c1, c2 = st.columns(2)
     if c1.button("바꾸기", type="primary", use_container_width=True):
         st.session_state.pop(SS_ARCHIVE_SWAP, None)
         if save_sent(partner_id, new["plan_id"], new["안_id"]):
             st.session_state[SS_ARCHIVE_NOTE] = (
-                f"{new['메뉴명']} 로 바꿨습니다 — 그 줄에서 폼 링크를 받으세요")
+                f"{new['메뉴명']}{ro(new['메뉴명'])} 바꿨습니다 — "
+                f"그 줄에서 폼 링크를 받으세요")
         st.rerun()
     if c2.button("그대로 두기", use_container_width=True):
         st.session_state.pop(SS_ARCHIVE_SWAP, None)
+        st.rerun()
+
+
+def _thin_rule() -> None:
+    """
+    묶음 사이를 가르는 흐린 줄.
+
+    `st.divider()` 는 위아래 여백이 커서 창 안에서 묶음이 멀어 보인다.
+    간격을 직접 정하려고 줄을 그대로 그린다.
+    """
+    st.markdown('<hr style="margin:10px 0 14px; border:none; '
+                'border-top:1px solid #E2E8F0">', unsafe_allow_html=True)
+
+
+@st.dialog("협업 결과 입력", width="large")
+def _result_form(partner: dict, row: dict) -> None:
+    """
+    실행 확정한 안의 협업 결과를 적는다. 시안 2쪽.
+
+    **다 비워도 저장된다.** 모르는 값을 지어내지 않는다(작업 원칙 ③). 나중에
+    고칠 수 있어야 해서 적힌 값을 입력칸의 기본값으로 올린다.
+
+    「실행 여부」는 두지 않는다. 실행 확정한 안에만 이 창이 열리고, 실행하지
+    않았으면 결과를 적을 일이 없다 (10/9 결정).
+
+    실행일은 기간으로 받는다. 협업은 하루가 아니라 며칠에 걸쳐 하고, 프롬프트
+    제약에도 「실행 기간은 최소 3일 이상」으로 적혀 있다.
+    """
+    got = row.get("결과") or {}
+    st.caption(f"{partner['name']} · {row['round']}회차 · "
+               f"{row['메뉴명']}")
+
+    st.markdown("**실행 정보**")
+
+    # 기획안에 적힌 예정 기간. 희망일부터 3일인 것은 프롬프트 제약이 「실행 기간
+    # 최소 3일」이기 때문이다 (prompts/constraints.yaml:36).
+    start = (date.fromisoformat(row["target_date"])
+             if row.get("target_date") else datetime.now(KST).date())
+    planned = (start, start + timedelta(days=2))
+    # 전에 적어 둔 기간. 고칠 수 있어야 해서 그대로 올린다.
+    # 이름을 `before` 로 두면 아래 「직전 같은 요일 매출」과 겹친다.
+    saved = tuple(date.fromisoformat(got[k])
+                  for k in ("executed_from", "executed_to") if got.get(k))
+    saved = saved if len(saved) == 2 else None
+
+    # 날짜 칸을 맨 앞에 두면 창이 열릴 때 달력이 저절로 펼쳐져 아래를 다 가린다.
+    # 창이 첫 칸에 저절로 초점을 주고, 그 칸이 달력이면 함께 열리기 때문이다
+    # (Streamlit 문제 #11808). 체크 칸은 펼쳐질 것이 없어 그 일이 안 생긴다.
+    #
+    # 체크 칸을 앞에 세운 것은 그 버그를 피하려는 것만이 아니다. 기획한 기간
+    # 그대로 한 경우가 많을 텐데, 그러면 날짜를 다시 고르지 않아도 된다.
+    #
+    # 전에 적어 둔 기간이 예정과 다르면 체크를 풀어 둔다 — 적어 둔 값이 보여야
+    # 고칠 수 있다.
+    label = (f"기획한 기간({planned[0]:%m/%d}~{planned[1]:%m/%d}) 그대로 했습니다."
+             if row.get("target_date") else
+             f"{planned[0]:%m/%d}~{planned[1]:%m/%d} 에 했습니다.")
+    same = st.checkbox(label, key="res_same",
+                       value=(saved is None or saved == planned))
+
+    # 체크했으면 날짜 칸을 **아무 날짜도 고르지 않은 채 흐리게** 둔다. 달력은
+    # 닫힌 그대로다. 기간은 위 체크 칸 글자에 적혀 있으니 같은 날짜를 칸에 또
+    # 보일 필요가 없고, 흐린 칸은 초점을 받지 못하므로 달력도 열리지 않는다.
+    #
+    # 키를 체크 여부에 따라 바꾼다. 같은 키로 두면 Streamlit 이 먼저 담아 둔
+    # 값을 쓰고 value 를 무시해서, 체크를 켜도 칸이 비워지지 않는다.
+    shown = st.date_input(
+        "실제 실행 기간", value=[] if same else (saved or []),
+        key=f"res_span_{'same' if same else 'pick'}",
+        format="YYYY-MM-DD", disabled=same)
+    # 흐려진 칸을 보고 왜 못 고르는지 몰라 멈출 수 있다.
+    st.caption("기간이 다르면 위 체크를 풀고 실제 실행 기간을 선택해 주세요.")
+    # 빈 칸의 값에 기대지 않고 저장할 값을 여기서 못 박는다.
+    span = planned if same else shown
+
+    # 묶음 사이를 흐린 줄로 나눈다. 칸이 여럿이라 어디까지가 한 묶음인지
+    # 보이지 않으면 눈이 헤맨다.
+    _thin_rule()
+
+    # 비워 두면 ＋－ 가 잠겨 눌리지 않는다 (10/9). 0 을 기본값으로 두고,
+    # 저장할 때 0 은 적지 않은 것으로 본다 — 판매 수량이나 매출이 0 인 협업을
+    # 기록할 일은 없다.
+    st.markdown("**판매 결과**")
+    c1, c2, c3 = st.columns(3)
+    qty = c1.number_input("판매 수량", min_value=0, step=1, format="%d",
+                          value=got.get("sold_qty") or 0)
+    buy = c2.number_input("협의로 확정된 매입가", min_value=0, step=100,
+                          format="%d", value=got.get("agreed_wholesale") or 0)
+    sell = c3.number_input("실제 판매가", min_value=0, step=100, format="%d",
+                           value=got.get("retail_price") or 0)
+    st.caption("제안 가격이 아닌, 협의로 확정된 매입가와 실제 판매한 가격을 "
+               "각각 적어 주세요. 0 으로 두면 적지 않은 것으로 봅니다.")
+
+    _thin_rule()
+    st.markdown("**매출 비교**")
+    c4, c5 = st.columns(2)
+    before = c4.number_input("직전 같은 요일 매출", min_value=0, step=1000,
+                             format="%d", value=got.get("sales_before") or 0)
+    after = c5.number_input("실행일 매출", min_value=0, step=1000, format="%d",
+                            value=got.get("sales_after") or 0)
+
+    _thin_rule()
+    st.markdown("**손님 반응**")
+    note = st.text_area(
+        "손님 반응", value=got.get("note") or "", height=120,
+        label_visibility="collapsed",
+        placeholder="예: 맛과 가격에 대한 반응, 많이 나온 질문, 재구매 의향 등\n"
+                    "기억에 남는 손님 반응을 자유롭게 적어 주세요.")
+
+    st.caption("모르는 값은 빈칸으로 남겨도 됩니다.")
+    c_l, c_r = st.columns([1, 1])
+    if c_l.button("취소", use_container_width=True):
+        st.session_state.pop(SS_RESULT_FOR, None)
+        st.rerun()
+    if c_r.button("결과 저장", type="primary", use_container_width=True):
+        two = span if isinstance(span, (list, tuple)) else (span,)
+        two = [d for d in two if d]
+        ok = save_result(row["plan_id"], {
+            "executed_from": two[0].isoformat() if two else None,
+            "executed_to": two[-1].isoformat() if two else None,
+            "sold_qty": qty or None,
+            "agreed_wholesale": buy or None,
+            "retail_price": sell or None,
+            "sales_before": before or None,
+            "sales_after": after or None,
+            "note": note.strip() or None,
+        })
+        st.session_state.pop(SS_RESULT_FOR, None)
+        if ok:
+            st.session_state[SS_ARCHIVE_NOTE] = "협업 결과를 저장했습니다."
         st.rerun()
 
 
@@ -1497,27 +1747,32 @@ def render_archive(partner: dict, options: list[dict]) -> None:
 
     sent = sent_pick(options)
 
-    # 「최종 선택」으로 고르는 것은 협력사에게 **보낸** 안이라 1차뿐이다.
-    # 그 안의 메뉴가 2차를 만드는 입력이 된다.
+    # 결과 입력 창은 이 함수를 부르는 쪽에서 연다. 창 셋을 한 자리에 모아야
+    # 한 번에 둘이 열리는 것을 막을 수 있다 (부르는 쪽 주석 참고).
     #
-    # 2차도 여러 번 돌려 담아 둘 수 있고 실제로 실행하는 것은 그중 하나인데,
-    # 그 「실행할 안」은 아직 읽는 곳이 없다 — 실행 결과 기록(T23)이 붙을 때
-    # 함께 만든다. 지금은 담기와 미리보기까지만 쓴다.
-    keys = [o["key"] for o in options if o["round"] == 1]
+    # 줄 안에서 열지 않는 이유도 있다 — 그 줄을 다시 그릴 때마다 창이 닫혔다
+    # 열린다 (메뉴 목록 창에서 겪은 것과 같다).
+
+    # 「최종 선택」은 회차에 따라 뜻이 갈린다. 버튼은 하나로 두고, 고른 줄의
+    # 회차를 보고 어느 쪽인지 정한다 (10/9).
+    #
+    #   1차를 고르면   협력사에게 **보낼** 안이 된다. 그 메뉴가 2차의 입력이다
+    #   2차를 고르면   실제로 **실행할** 안이 된다. 그 줄에만 결과 입력이 뜬다
+    #
+    # 둘 다 「여러 개 담아 두고 하나를 고른다」는 같은 구조다.
+    keys = [o["key"] for o in options]
     seq: dict[int, int] = {}        # 회차 안에서의 순서
     with st.container(key="arch_rows"):
         for o in options:
             seq[o["round"]] = seq.get(o["round"], 0) + 1
             is_sent = bool(sent and sent["key"] == o["key"])
+            is_run = bool(o.get("실행"))
             first = o["round"] == 1
-            c_chk, c_rnd, c_no, c_body, c_btn, c_form = st.columns(
+            c_chk, c_rnd, c_no, c_body, c_btn, c_form, c_res = st.columns(
                 ARCH_COLS, vertical_alignment="center")
             with c_chk:
                 st.checkbox("선택", key=f"arch_{o['key']}",
-                            label_visibility="collapsed", disabled=not first,
-                            help=None if first else
-                            "보낸 안은 1차에서 고릅니다. 2차는 그것으로 만든 "
-                            "확정본이라 고를 대상이 아닙니다.",
+                            label_visibility="collapsed",
                             on_change=_only_one, args=(o["key"], keys))
             with c_rnd:
                 cls = "arch-rnd" if first else "arch-rnd arch-rnd-2"
@@ -1534,9 +1789,19 @@ def render_archive(partner: dict, options: list[dict]) -> None:
                         price]
                 if o.get("target_date"):
                     meta.append(f"실행일 {o['target_date']}")
-                # arch-sent 가 있으면 CSS 가 그 줄 배경과 왼쪽 띠를 바꾼다.
-                mark = ('<span class="arch-sent arch-sent-tag">보낸 안</span>'
-                        if is_sent else '')
+                # arch-sent·arch-run 이 있으면 CSS 가 그 줄 배경과 왼쪽 띠를
+                # 바꾼다. 두 표시가 나란히 보이므로 짝을 맞춘다 (10/9).
+                #   제안 확정 — 협력사에게 제안서로 보낸 1차 안    초록
+                #   실행 확정 — 실제로 그것으로 협업한 2차 안      자주
+                # 한 줄이 둘 다일 수는 없다 — 제안 확정은 1차에만, 실행 확정은
+                # 2차에만 붙는다. 그래도 순서를 두어 섞이지 않게 한다.
+                if is_sent:
+                    tag, cls = "제안 확정", "arch-sent arch-mark"
+                elif is_run:
+                    tag, cls = "실행 확정", "arch-run arch-mark arch-mark-run"
+                else:
+                    tag, cls = "", ""
+                mark = f'<span class="{cls}">{tag}</span>' if tag else ''
                 st.markdown(
                     f'<div class="arch-title">{o["메뉴명"]}{mark}</div>'
                     f'<div class="arch-sub">{end_dot(o["선정_사유"]) or ""}</div>'
@@ -1562,6 +1827,23 @@ def render_archive(partner: dict, options: list[dict]) -> None:
                         help=None if is_sent else
                         "협력사에 보낸 안으로 고르면 열립니다."):
                     _form_link(partner)
+            with c_res:
+                # 실행 확정한 줄에만 둔다. 담아만 둔 안이나 1차 줄에 결과를
+                # 적을 일이 없어, 버튼 자체를 그리지 않는다.
+                #
+                # 다 적었으면 버튼 이름과 색이 바뀐다. 키 앞부분이 달라져
+                # CSS 가 그 둘을 가른다 (ARCHIVE_CSS 참고).
+                if is_run:
+                    done = has_result(o)
+                    # 두 앞부분이 서로를 포함하면 CSS 가 둘 다 걸린다.
+                    tag = "arsdone_" if done else "ars_"
+                    if st.button("입력 완료" if done else "결과 입력",
+                                 key=f"{tag}{o['key']}",
+                                 use_container_width=True,
+                                 icon=":material/check:" if done
+                                 else ":material/edit_note:"):
+                        st.session_state[SS_RESULT_FOR] = o["key"]
+                        st.rerun()
 
     st.markdown('<div class="arch-foot">'
                 '<div>보낸 안을 고르면 그 메뉴로 2차 기획안을 만듭니다.</div>'
@@ -1576,17 +1858,41 @@ def render_archive(partner: dict, options: list[dict]) -> None:
             if st.button("최종 선택", type="primary", use_container_width=True,
                          icon=":material/check_circle:", disabled=not now):
                 new = next(o for o in options if o["key"] == now[0])
-                # 이미 확정한 것이 있고 다른 것을 골랐으면 한 번 묻는다.
-                # 보낸 안을 바꾸면 2차의 메뉴가 통째로 달라진다.
+
+                # 2차를 골랐으면 「실행할 안」이다.
+                if new["round"] == 2:
+                    if save_final(partner["id"], new["plan_id"], new["안_id"]):
+                        st.session_state[SS_ARCHIVE_NOTE] = (
+                            f"{new['메뉴명']}{ro(new['메뉴명'])} 실행하는 "
+                            f"것으로 정했습니다 — "
+                            f"협업이 끝나면 그 줄에서 결과를 적어 주세요")
+                    st.rerun()
+
+                # 이미 정해 둔 것이 있고 다른 것을 골랐으면 한 번 묻는다.
+                # 제안할 안을 바꾸면 앞으로 만들 2차의 메뉴가 통째로 달라진다.
+                #
+                # **2차를 이미 만들었으면 바꿀 수 없다.** 1차를 정해야 폼 링크가
+                # 열리고 그 폼으로 2차를 만드는 순서라, 2차가 있다는 것은 1차가
+                # 협력사에게 이미 나갔다는 뜻이다. 그걸 바꾸면 그 2차가 무엇을
+                # 기준으로 만들어진 것인지 알 수 없게 된다.
+                #
+                # 보관함이 최근 20개만 보이므로, 2차가 그 밖으로 밀려 있으면
+                # 여기서 못 알아본다. 20개를 넘길 만큼 돌린 협력사에만 생기는
+                # 일이고, 그때는 확인 창이 한 번 더 뜨는 것으로 끝난다.
                 if sent and sent["key"] != new["key"]:
-                    st.session_state[SS_ARCHIVE_SWAP] = new
+                    if any(o["round"] == 2 for o in options):
+                        st.session_state[SS_ARCHIVE_NOTE] = (
+                            "2차 기획안을 이미 만들어서 바꿀 수 없습니다")
+                    else:
+                        st.session_state[SS_ARCHIVE_SWAP] = new
                     st.rerun()
                 # 여기서 화면을 닫지 않는다. 안을 고른 다음 할 일이 그 줄의
                 # 「폼 링크」를 받는 것이라, 닫아 버리면 다시 들어와야 한다.
                 # 생성 화면으로 돌아가는 일은 폼 링크 창이 맡는다.
                 if save_sent(partner["id"], new["plan_id"], new["안_id"]):
                     st.session_state[SS_ARCHIVE_NOTE] = (
-                        f"{new['메뉴명']} 로 정했습니다 — 그 줄에서 폼 링크를 "
+                        f"{new['메뉴명']}{ro(new['메뉴명'])} 정했습니다 — "
+                        f"그 줄에서 폼 링크를 "
                         f"받으세요")
                 st.rerun()
 
@@ -1647,15 +1953,30 @@ labels = {p["id"]: f"{p['name']} ({p['category']})" for p in partners}
 if _in_archive:
     partner = next((p for p in partners if p["id"] == _pid), partners[0])
     options = sent_options(load_archive(partner["id"]))
-    if st.session_state.pop(SS_ARCHIVE_WARN, False):
-        _one_only()
-    _swap = st.session_state.get(SS_ARCHIVE_SWAP)
+
+    # 창은 한 번에 하나만 열 수 있다. 한 번에 둘을 부르면 Streamlit 이
+    # 「Only one dialog is allowed to be opened at the same time」으로 멈춘다.
+    # 체크 칸을 둘 누르면서 결과 입력 신호가 남아 있을 때 실제로 났다 (10/9).
+    #
+    # 그래서 세 창을 여는 자리를 여기 하나로 모으고, 급한 순서대로 하나만 연다.
+    # 체크를 되돌린 알림이 가장 급하다 — 방금 누른 것에 대한 답이다.
+    #
+    # **신호는 꺼내면서 지운다.** 창을 X 로 닫으면 지울 기회가 없어서, 들고
+    # 있으면 다음에 화면이 그려질 때 그 창이 또 뜬다.
+    _warn = st.session_state.pop(SS_ARCHIVE_WARN, False)
+    _swap = st.session_state.pop(SS_ARCHIVE_SWAP, None)
+    _res = st.session_state.pop(SS_RESULT_FOR, None)
     _old = sent_pick(options)
-    if _swap and _old:
+    # 실행 확정한 줄일 때만 결과 창을 연다. 실행 확정을 지워도 신호는 남는다.
+    _row = next((o for o in options if o["key"] == _res and o.get("실행")),
+                None) if _res else None
+
+    if _warn:
+        _one_only()
+    elif _swap and _old:
         _confirm_swap(_old, _swap, partner["id"])
-    elif _swap:
-        # 바꿀 대상이 사라졌다(무르기 등). 표시만 지운다.
-        st.session_state.pop(SS_ARCHIVE_SWAP, None)
+    elif _row:
+        _result_form(partner, _row)
     render_archive(partner, options)
     st.stop()
 
