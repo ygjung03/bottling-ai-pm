@@ -260,6 +260,12 @@ def run(context: str, target_date: str, beer_list: str,
             on_step(n, label)
         return out
 
+    # 라인업 파싱은 try 밖에 둔다. 안에 두면 앞 단계에서 끊겼을 때 이 줄까지
+    # 오지 못해, 아래 merge_final 이 prices 가 없다고 또 터진다. 글자를 쪼개는
+    # 일뿐이라 밖에 둬도 가려지는 오류가 없다.
+    beers = parse_beers(beer_list)
+    prices = parse_beer_prices(beer_list)
+
     try:
         result["p1"] = (ready(1, "상권 분석 중...")
                         or step(1, "상권 분석 중...", "p1_analyst",
@@ -282,8 +288,6 @@ def run(context: str, target_date: str, beer_list: str,
                         prev_output=_j(prev) if prev else NO_ISSUES,
                         issues=note)
 
-        beers = parse_beers(beer_list)
-        prices = parse_beer_prices(beer_list)
         rejected = NO_REJECTED
         extra = {"early": 0, "final": 0}   # 4콜 위에 더 부른 횟수 — (2)(3) / (4)
         promoed = 0                     # 홍보를 다시 짠 횟수
@@ -389,7 +393,7 @@ def run(context: str, target_date: str, beer_list: str,
                             events=events)))
             result["final"] = make(
                 4, "최종 검토 중...", call_p4,
-                lambda out: check_final(out, result["p2"], prices))
+                lambda out: check_final(out, result["p2"]))
 
             # (4)가 홍보를 물리면 (3)부터 다시 짠다.
             #
@@ -411,7 +415,7 @@ def run(context: str, target_date: str, beer_list: str,
                         partner_sns=NO_DATA not in partner_sns, events=events))
                 result["final"] = make(
                     4, "최종 검토 중...", call_p4,
-                    lambda out: check_final(out, result["p2"], prices))
+                    lambda out: check_final(out, result["p2"]))
             elif result["final"].get("홍보_재생성_필요"):
                 result["issues"].append(f"홍보가 메뉴와 맞지 않는다 — {why}")
 
@@ -453,6 +457,7 @@ def run(context: str, target_date: str, beer_list: str,
         result["error"] = f"{type(error).__name__}: {error}"
         result["error_kind"] = error_kind(error)
 
+    merge_final(result, prices)
     settle_deal(result, partner, fixed_menu)
     result["latency_ms"] = total_ms
     # 끊긴 경우에도 남긴다. 중간까지 부른 것은 이미 돈이 나갔다.
@@ -461,6 +466,81 @@ def run(context: str, target_date: str, beer_list: str,
                  partner_name=(partner or {}).get("name"),
                  note=usage_note)
     return result
+
+
+# (4)가 내지 않고 코드가 채우는 칸 (⑦-0).
+#
+# 전에는 (4)에게 앞 단계 값을 한데 모아 옮겨 적게 했다. 두 가지가 났다.
+#   출력이 길어져 JSON 이 깨졌다 — 3번 다 깨지면 체인이 끊긴다 (9/21·9/26)
+#   옮기다 틀렸다 — 메뉴명을 다듬고, 맥주 상품명을 종류 이름으로 바꾸고,
+#                  단가를 틀리게 적었다
+#
+# 둘 다 코드가 넣으면 사라진다. 원래 우리가 들고 있던 값이다 — (4)에게
+# 읽어 주고 받아 적은 것을 다시 베껴 올 이유가 없었다.
+#
+# (4)는 자기가 만드는 여덟 가지만 낸다 — 선정_사유 · 판매가_설명 ·
+# 예상_리스크 · 추천_근거 · 역할분담 · 상호_이익 · 배경 · 매입.
+FROM_MENU = ["접근", "메뉴명", "구성", "협력사_제공", "바틀링_준비",
+             "협력사희망_매입가", "협력사_정가", "정가_합", "판매가_제안",
+             "보관_조건", "1회_납품_수량", "메뉴_이미지"]
+
+# (3)은 이름이 다르다. 왼쪽이 (4) 출력의 이름, 오른쪽이 (3) 출력의 이름이다.
+FROM_PROMO = {"이벤트": "이벤트안", "홍보_문구": "홍보_문구",
+              "해시태그": "해시태그", "실행_준비물": "준비물"}
+
+
+def merge_final(result: dict, prices: dict[str, float]) -> None:
+    """
+    (4) 출력에 (2)(3) 값을 안_id 로 맞춰 채운다 (⑦-0).
+
+    **되감기가 다 끝난 뒤 한 번만 부른다.** 부를 때마다 채우면, 다음 호출의
+    [직전 출력]이 채워진 것으로 들어가 (4)가 그만큼을 다시 낸다. 줄이려던
+    것이 도로 돌아온다.
+
+    검사도 채우기 전을 본다. 코드가 넣은 값은 (4)가 손댄 적이 없어
+    (4)에게 돌려줘도 고쳐지지 않고, 빠진 칸은 (2)(3) 검사가 이미 본다.
+
+    홍보_일정은 안별이 아니라 공통_홍보축에 있다. 세 안이 같은 일정을
+    쓴다 — (4)에게 시킬 때는 같은 값이 세 번 적혔다.
+    """
+    final = result.get("final")
+    if not isinstance(final, dict):
+        return
+
+    menus = {m.get("안_id"): m
+             for m in (result.get("p2") or {}).get("메뉴안") or []}
+    p3 = result.get("p3") or {}
+    promos = {q.get("안_id"): q for q in p3.get("안별_기획") or []}
+    schedule = (p3.get("공통_홍보축") or {}).get("홍보_일정") or []
+
+    for item in final.get("안") or []:
+        src = menus.get(item.get("안_id")) or {}
+        for key in FROM_MENU:
+            item[key] = src.get(key)
+
+        # 페어링은 두 곳에서 온다. 이름과 이유는 (2)가 고른 것이고 단가는
+        # 라인업에 적힌 값이다. (4)가 옮겨 적다 틀린 자리다 — 카이저돔 16원을
+        # 20원으로, 37디그리스 14원을 8원으로 적은 적이 있다.
+        pair = src.get("페어링_맥주") or {}
+        item["페어링_맥주"] = {
+            "메뉴명": pair.get("메뉴명"),
+            "원_ml": prices.get(pair.get("메뉴명")),
+            "이유": pair.get("선정_이유"),
+        }
+
+        got = promos.get(item.get("안_id")) or {}
+        for key, src_key in FROM_PROMO.items():
+            item[key] = got.get(src_key)
+
+        # 홍보 일정은 세 칸만 가져온다. (3)은 "형식"(릴스·피드)도 내는데
+        # 읽는 곳이 없고, (4)가 옮겨 적을 때도 버리던 칸이다. 넣으면 기존
+        # 기획안들과 모양이 달라져 나중에 함께 읽기 어려워진다. 버리는 것이
+        # 아니라 p3_output 에 그대로 남아 있다.
+        #
+        # 안마다 따로 만든다. 한 리스트를 셋이 나눠 쓰면 한쪽을 고칠 때
+        # 나머지가 함께 바뀐다.
+        item["홍보_일정"] = [
+            {k: s.get(k) for k in ("시점", "채널", "내용")} for s in schedule]
 
 
 def settle_deal(result: dict, partner: dict | None, fixed_menu: bool) -> None:
