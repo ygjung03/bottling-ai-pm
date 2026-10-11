@@ -20,7 +20,7 @@ from chain.gemini import call
 from chain.inputs import (NO_REC_REASON, build_beer_list, build_constraints,
                           build_events, build_partner_resources, fetch_partner)
 from chain.loader import build
-from chain.runner import NO_ISSUES
+from chain.runner import NO_ISSUES, merge_final
 from app.proposal import REQUIRED, missing_fields
 
 SRC = "tests/results_34ad77a.json"
@@ -74,6 +74,11 @@ def one(p1: dict, p2: dict, p3: dict, aid: str, partner: dict,
             print(f"    {x.get('안_id')}: {str(x.get('사유'))[:120]}")
         return
 
+    # 검사는 (4) 원본을 보고, 제안서가 쓰는 값은 코드가 채운 뒤를 본다 (⑦-0).
+    chk = check_final(out, p2_one)
+    merge_final({"final": out, "p2": p2_one, "p3": p3_one},
+                parse_beer_prices(beer_text))
+
     it = items[0]
     miss = missing_fields(it)
     print(f"  REQUIRED {list(REQUIRED)} → "
@@ -83,7 +88,6 @@ def one(p1: dict, p2: dict, p3: dict, aid: str, partner: dict,
     print(f"  제안서가 쓰는 {len(USED)}개 중 빈 것 {len(empty)}개"
           f"{': ' + str(empty) if empty else ''}")
 
-    chk = check_final(out, p2_one, parse_beer_prices(beer_text))
     print(f"  check_final → redo {len(chk.redo)}건 / warn {len(chk.warn)}건")
     for x in chk.redo:
         print(f"    [redo] {x[:150]}")

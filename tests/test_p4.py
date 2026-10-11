@@ -25,7 +25,7 @@ from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           build_partner_resources, build_partner_sns,
                           build_rec_reason, fetch_partner)
 from chain.loader import build
-from chain.runner import NO_ISSUES, NO_REJECTED
+from chain.runner import NO_ISSUES, NO_REJECTED, merge_final
 from context.builder import build as build_context
 
 KST = timezone(timedelta(hours=9))
@@ -134,6 +134,12 @@ def run(label: str, target: date, save: bool = False) -> None:
     print(f"\n소요 {total:.1f}초 (" +
           " + ".join(f"{v/1000:.1f}" for v in ms.values()) + ")")
 
+    # 검사는 (4) 원본을 본다. 그다음 코드가 (2)(3) 값을 채운다 — runner 가
+    # 되감기를 마친 뒤 하는 순서와 같다 (⑦-0).
+    issues = check_final(out, p2).all
+    merge_final({"final": out, "p2": p2, "p3": p3},
+                parse_beer_prices(beer_text))
+
     # 요약 — 대표에게 보이는 형태
     print("-" * 64)
     for r in out.get("안") or []:
@@ -161,7 +167,6 @@ def run(label: str, target: date, save: bool = False) -> None:
     for e in out.get("제외") or []:
         print(f"  제외  {e.get('안_id')} — {str(e.get('제외_사유'))[:60]}")
 
-    issues = check_final(out, p2, parse_beer_prices(beer_text)).all
     print("-" * 64)
     if issues:
         for i in issues:
@@ -219,6 +224,10 @@ def rerun_p4(plan_id: int, times: int = 2) -> None:
             constraints=rules["p4"], fewshot=NO_FEWSHOT,
             prev_output=NO_ISSUES, issues=NO_ISSUES))
 
+        issues = check_final(out, row["p2_output"]).all
+        merge_final({"final": out, "p2": row["p2_output"],
+                     "p3": row["p3_output"]}, parse_beer_prices(beer_text))
+
         print(f"\n[{n}회 · {ms/1000:.1f}초]")
         for e in out.get("제외") or []:
             print(f"  제외 {e.get('안_id')} — {str(e.get('제외_사유'))[:70]}")
@@ -229,7 +238,6 @@ def rerun_p4(plan_id: int, times: int = 2) -> None:
             print(f"     값근거 {r.get('판매가_설명')}")
             print(f"     배경   {r.get('배경')}")
 
-        issues = check_final(out, row["p2_output"], parse_beer_prices(beer_text)).all
         for i in issues:
             print(f"     · {i}")
 

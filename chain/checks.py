@@ -48,15 +48,12 @@ def _won(text) -> int | None:
     m = re.search(r"(\d[\d,]*)", str(text))
     return int(m.group(1).replace(",", "")) if m else None
 
-# 모든 안에 반드시 있어야 하는 것.
-# 대표가 이 문서만 보고 실행할 수 있어야 한다(명세서 4-2).
-REQUIRED = ["접근", "메뉴명", "구성", "협력사_제공", "바틀링_준비", "보관_조건",
-            "1회_납품_수량", "협력사_정가", "판매가_제안", "페어링_맥주",
-            "이벤트", "홍보_일정", "홍보_문구", "실행_준비물",
-            "추천_근거"]
-
-# "정가_합" 은 여기 넣지 않는다. 세트인 안에만 있고 나머지는 null 이다.
-# 맥주는 셀프탭이라 단품·포장에서는 별개 거래다.
+# (4)가 모든 안에 내야 하는 것.
+#
+# 앞 단계 값을 옮겨 적던 칸은 여기 없다 (⑦-0). 코드가 채우므로
+# (runner.merge_final) (4)에게 물을 일이 아니고, 코드가 넣은 값을 검사해
+# 봐야 늘 통과한다. 그 칸이 비었는지는 (2)(3) 검사가 본다.
+REQUIRED = ["선정_사유", "판매가_설명", "예상_리스크", "추천_근거"]
 
 # 협업 제안서 4필드 (명세서 1-4, 자동 검증 A10).
 # 하나라도 없으면 협력사에 보낼 제안서를 만들 수 없다 — T44 를 직접 막는다.
@@ -138,15 +135,20 @@ def parse_beer_prices(text: str) -> dict[str, float]:
 CHECKLIST_ITEMS = frozenset(range(1, 7))
 
 
-def check_final(out: dict, p2: dict, beers: dict) -> Checked:
-    """프롬프트가 지시한 제약을 지켰는지 본다."""
+def check_final(out: dict, p2: dict) -> Checked:
+    """
+    프롬프트가 지시한 제약을 지켰는지 본다.
+
+    **(4)가 만든 것만 본다.** 앞 단계 값은 코드가 채우므로
+    (runner.merge_final) 여기서 볼 것이 없다. 맥주 라인업을 받지 않는 것도
+    그래서다 — 페어링 이름과 단가를 대조하던 자리가 없어졌다.
+    """
     issues: list[str] = []
     warns: list[str] = []
 
     plans = out.get("안") or []
     excluded = out.get("제외") or []
-    p2_menus = p2.get("메뉴안") or []
-    p2_ids = {m.get("안_id") for m in p2_menus}
+    p2_ids = {m.get("안_id") for m in p2.get("메뉴안") or []}
 
     if out.get("재생성_필요"):
         if plans:
@@ -162,6 +164,14 @@ def check_final(out: dict, p2: dict, beers: dict) -> Checked:
     if missing:
         issues.append(f"안·제외 어디에도 없는 안: {sorted(missing)}")
 
+    # (2)에 없는 안_id 를 하나 더 만들어 붙이면, 코드가 채울 원본이 없어
+    # 18칸이 통째로 빈 안이 제안서까지 간다 (runner.merge_final).
+    # 이름을 바꿔 부른 경우는 위 missing 이 잡지만, 더 만든 것은 안 잡힌다.
+    extra = {r.get("안_id") for r in plans} - p2_ids
+    if extra:
+        issues.append(f"[메뉴 3안]에 없는 안: {sorted(map(str, extra))} "
+                      f"— 거기 적힌 안_id 만 쓸 것")
+
     # 제외는 실행 불가(검수 1·2·6)일 때만이다.
     for e in excluded:
         why = str(e.get("제외_사유") or "")
@@ -172,42 +182,17 @@ def check_final(out: dict, p2: dict, beers: dict) -> Checked:
         if not why:
             issues.append(f"{e.get('안_id')}: 제외 사유 없음")
 
-    # (2)의 값을 그대로 옮겼는가. 메뉴명을 다듬거나 맥주 상품명을 종류
-    # 이름으로 바꾼 적이 있다 ("37디그리스라거" → "페일라거").
-    by_id = {m.get("안_id"): m for m in p2_menus}
-    for r in plans:
-        rid = r.get("안_id", "?")
-        src = by_id.get(rid) or {}
-        for k in ("접근", "메뉴명", "구성"):
-            if src.get(k) and r.get(k) != src.get(k):
-                issues.append(f"{rid}: '{k}' 가 (2)와 다르다 — "
-                              f"'{r.get(k)}' ≠ '{src.get(k)}'. 그대로 옮길 것")
-
-        # 단가를 옮겨 적다 틀리는 일이 있다.
-        # 카이저돔 16원을 20원으로, 37디그리스 14원을 8원으로 적은 적이 있다.
-        pair = r.get("페어링_맥주") or {}
-        name, price = pair.get("메뉴명"), pair.get("원_ml")
-        src_name = (src.get("페어링_맥주") or {}).get("메뉴명")
-        if src_name and name != src_name:
-            issues.append(f"{rid}: 페어링 맥주 '{name}' 이 (2)의 '{src_name}' 과 다르다")
-        if name and name not in beers:
-            issues.append(f"{rid}: 라인업에 없는 맥주 '{name}'")
-        elif name and price is not None and float(price) != beers[name]:
-            issues.append(f"{rid}: {name} 단가 틀림 "
-                          f"({price} → {beers[name]:.0f} 이어야 함)")
-
-    # 모든 안이 그대로 실행할 수 있어야 하고, 어느 것이 골라져도 제안서가
-    # 나와야 한다 — 대표가 고르므로 어느 안이 나갈지 모른다.
+    # 옮겨 적기 검사는 ⑦-0 에서 걷어냈다. 접근·메뉴명·구성이 (2)와 같은지,
+    # 페어링 맥주 이름과 단가가 맞는지를 보던 자리인데, 이제 그 값을 코드가
+    # (2)와 라인업에서 그대로 넣으므로 어긋날 수가 없다.
+    #
+    # 어느 안이 골라져도 제안서가 나와야 한다 — 대표가 고르므로 어느 안이
+    # 나갈지 모른다. 그래서 (4)가 만드는 칸은 모든 안에 다 있어야 한다.
     for r in plans:
         rid = r.get("안_id", "?")
         for k in REQUIRED:
             if not r.get(k):
                 issues.append(f"{rid}: '{k}' 없음")
-
-        if not r.get("선정_사유"):
-            issues.append(f"{rid}: 선정 사유 없음")
-        if not (r.get("예상_리스크") or []):
-            issues.append(f"{rid}: 예상 리스크 없음")
 
         basis = r.get("추천_근거") or {}
         for k in ("상권_지표", "자원_매칭"):
@@ -381,6 +366,16 @@ def check_menu(out: dict, beers: dict, p1: dict | None = None,
 
     for m in menus:
         mid = m.get("안_id", "?")
+
+        # 안_id·메뉴명·구성이 비었는지 본다 (⑦-0).
+        #
+        # 전에는 (4)가 이 셋을 옮겨 적었고 거기서 「없음」이 잡혔다. 이제
+        # 코드가 (2)의 값을 그대로 넣으므로, (2)가 빠뜨리면 빈 채로 제안서까지
+        # 간다. 원래부터 여기서 봤어야 하는 것이다 — (4)가 지어내 메우면
+        # 통과해 버리는 길도 함께 막힌다.
+        for key in ("안_id", "메뉴명", "구성"):
+            if not m.get(key):
+                issues.append(f"{mid}: '{key}' 없음")
 
         # 조리가 없어졌는데 필드가 남아 있으면 옛 프롬프트다
         left = [k for k in COOKING_FIELDS if m.get(k)]
