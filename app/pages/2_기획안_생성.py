@@ -72,6 +72,7 @@ SS_META = "plan_meta"          # 협력사·날짜 등 생성 조건
 # 누르면 목록을 닫고 다음 실행에서 등록 창을 연다. 그 신호가 SS_MENU_ADD 다.
 SS_MENU_ADD = "menu_add_open"     # 수동 등록 창을 열어라
 SS_MENU_TOAST = "menu_toast"      # 등록·수집이 끝난 뒤 한 번 띄울 말
+SS_DATE_TOAST = "date_toast"      # 희망일이 지났을 때 한 번 띄울 말
 SS_MENU_RUN = "menu_collecting"   # 지금 후기를 찾는 중이다 (버튼이 잠긴다)
 SS_MENU_VIEW = "menu_list_open"   # 메뉴 목록 창을 열어라
 SS_MENU_EDIT = "menu_list_edit"   # 그 창이 고치는 상태다
@@ -2211,7 +2212,13 @@ if st.session_state.get(SS_MENU_VIEW):
 elif st.session_state.pop(SS_MENU_ADD, False):
     _manual_menu(chosen)
 
-if go:
+if go and target < datetime.now(KST).date():
+    # 지난 날로는 만들지 않는다. 홍보 일정이 전부 과거가 되어 쓸 수 없는
+    # 기획안이 나온다. 달력이 아니라 버튼을 누르는 시점에 본다 — 날짜를
+    # 골라 두고 자정을 넘겨 누르는 경우가 있다.
+    st.session_state[SS_DATE_TOAST] = (
+        f"협업 시작 희망일이 지났습니다 ({target}). 오늘 이후로 다시 골라 주세요.")
+elif go:
     # 끊겼던 기획안이면 그 자리에서 이어 간다 (resumable 설명 참고).
     generate(chosen, target, rnd, sent,
              resume=resumable(chosen, target, rnd))
@@ -2291,3 +2298,6 @@ if flash is not None:
 # 담기 알림(2초)보다 길게 둔다 — 「찾지 못했습니다」처럼 읽고 다음에 뭘 할지
 # 정해야 하는 말이라 2초로는 짧다 (10/6).
 flash_note(st.session_state.pop(SS_MENU_TOAST, None), seconds=3.0)
+
+# 희망일이 지났을 때. 날짜를 다시 고르러 가야 해서 조금 더 길게 둔다.
+flash_note(st.session_state.pop(SS_DATE_TOAST, None), seconds=3.5)

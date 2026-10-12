@@ -25,6 +25,9 @@ from db.client import get_client
 
 NO_DATA = "데이터 없음"
 
+# 협력사가 SNS 를 안 한다고 확인해 준 경우. 미입력과 다르다 (build_partner_sns).
+NO_SNS = "운영하는 SNS 없음 (협력사가 확인해 준 사실)"
+
 # ══════════════════════════════════════════
 # 바틀링 고유 정보 — 테이블이 없어 상수로 둔다
 # ══════════════════════════════════════════
@@ -740,8 +743,19 @@ def build_partner_sns(partner: dict | None) -> str:
     if not ch:
         return f"{NO_DATA} (협력사 미입력)"
     if ch == "안 합니다":
-        return "운영하는 SNS 없음 (협력사가 확인해 준 사실)"
+        return NO_SNS
     return f"{ch} / 주 콘텐츠 {partner.get('sns_content_type') or NO_DATA}"
+
+
+def has_partner_sns(text: str) -> bool:
+    """
+    협력사에 홍보를 요청할 수 있는가. 검사를 켜는 조건이다 (check_promo).
+
+    「없음」과 「미입력」을 모두 뺀다. 미입력만 걸러내던 때는 협력사가
+    「SNS 안 합니다」라고 확인해 준 경우에도 협력사 주체를 요구해
+    헛 되감기가 돌았다 (10/12, C6).
+    """
+    return NO_DATA not in text and NO_SNS not in text
 
 
 if __name__ == "__main__":

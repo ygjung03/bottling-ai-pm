@@ -96,6 +96,9 @@ def run(label: str, target: date, save: bool = False) -> None:
             "p3_marketer",
             p1_output=json.dumps(p1, ensure_ascii=False),
             p2_output=json.dumps(p2, ensure_ascii=False),
+            # 대상일이 지난 요일이라 실제 오늘을 넘기면 (3)에게 모순된
+            # 입력이 된다. 기획을 일주일 전에 한 셈으로 친다.
+            today=(target - timedelta(days=7)).isoformat(),
             target_date=target.isoformat(),
             bottling_sns=BOTTLING_SNS,
             partner_sns=build_partner_sns(partner),

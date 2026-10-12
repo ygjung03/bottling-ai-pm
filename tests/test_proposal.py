@@ -134,6 +134,8 @@ def main() -> None:
     result = run(
         context=ctx,
         target_date=target.isoformat(),
+        # 대상일이 어제라 실제 오늘을 쓰면 홍보 일정이 전부 과거가 된다.
+        today=target - timedelta(days=7),
         beer_list=build_beer_list(),
         partner_res=build_partner_resources(partner),
         partner_blockers=build_partner_blockers(partner),

@@ -20,7 +20,7 @@
 import os
 import re
 import unicodedata
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 KST = timezone(timedelta(hours=9))
@@ -222,9 +222,13 @@ def _sections(item: dict, meta: dict) -> list[dict]:
     menu_items: list = []
     if approach != "단품" and item.get("구성"):
         menu_items.append(("구성", item["구성"]))
+    # 「판매 방식」은 접근별 고정 문구에 (2)의 "내는_방식"을 이어 붙인다.
+    # 데워서 내는지, 포장 주문도 받는지는 메뉴마다 달라 (2)만 안다.
+    way = " ".join([SALE_STYLE.get(approach, "")]
+                   + [end_dot(str(x)) for x in item.get("내는_방식") or [] if x])
     menu_items += [
         (beer_label, f"{beer_line}{why}"),
-        ("판매 방식", SALE_STYLE.get(approach, "")),
+        ("판매 방식", way.strip()),
     ]
     # 「예정」을 붙인다. 완제품을 매입해 바틀링이 되파는 구조라 이 값은
     # 바틀링이 정하는 값이고, 협력사와 합의해 정하는 값이 아니다. 거래를
@@ -328,7 +332,10 @@ def _sections(item: dict, meta: dict) -> list[dict]:
     # 사전 홍보를 못 한다 (9/21 검토). 기한은 홍보 시작일에서 나온다 — 며칠
     # 전이어야 하는지는 정할 근거가 없어 "홍보 시작 전" 으로만 적는다.
     if first:
-        promo_start = _first_date(item.get("홍보_일정") or [])
+        dates = [d for d in
+                 (_when(str(s.get("시점") or ""), _as_date(meta.get("target_date")))
+                  for s in item.get("홍보_일정") or []) if d]
+        promo_start = min(dates) if dates else None
         steps: list = [
             ("회신", f"홍보 시작({promo_start}) 전까지 연락 주시면 일정이 맞습니다."
                     if promo_start else "관심이 있으시면 연락 주십시오."),
@@ -354,14 +361,38 @@ def _sections(item: dict, meta: dict) -> list[dict]:
     return out
 
 
-def _first_date(schedule: list) -> str | None:
-    """홍보 일정에서 가장 이른 날짜(YYYY-MM-DD). 날짜로 적히지 않은 시점은 건너뛴다."""
-    dates = []
-    for s in schedule:
-        m = re.search(r"\d{4}-\d{2}-\d{2}", str(s.get("시점") or ""))
-        if m:
-            dates.append(m.group())
-    return min(dates) if dates else None
+def _as_date(text) -> date | None:
+    """YYYY-MM-DD 문자열을 날짜로. 아니면 None."""
+    try:
+        return datetime.strptime(str(text), "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _when(text: str, base: date | None) -> str | None:
+    """
+    홍보 일정의 "시점" 하나를 날짜(YYYY-MM-DD)로 바꾼다.
+
+    (3)에게 날짜로 적으라고 하지만 "실행 1주 전" 처럼 말로 올 때가 있다.
+    그런 것은 실행일에서 세어 바꾼다. 둘 다 아니면 None 이다 — 못 읽은
+    것을 지어내지 않는다.
+
+    `chain/checks.py` 의 `when_date` 가 같은 일을 한다. 거기는 만들 때
+    거르는 쪽이고 여기는 이미 쌓인 것을 읽는 쪽이라 따로 둔다 — 문서
+    생성기에 DB 의존을 붙이지 않으려는 것이다. 한쪽을 고치면 다른 쪽도 본다.
+    """
+    got = re.search(r"\d{4}-\d{2}-\d{2}", text)
+    if got:
+        return got.group()
+    if base is None:
+        return None
+    if "당일" in text:
+        return base.isoformat()
+    m = re.search(r"(\d+)\s*(주|일)\s*(전|뒤|후)", text)
+    if not m:
+        return None
+    days = int(m.group(1)) * (7 if m.group(2) == "주" else 1)
+    return (base + timedelta(days=-days if m.group(3) == "전" else days)).isoformat()
 
 
 def _contact() -> str:
