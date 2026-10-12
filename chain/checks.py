@@ -199,6 +199,14 @@ def check_final(out: dict, p2: dict) -> Checked:
             if not basis.get(k):
                 issues.append(f"{rid}: 추천 근거에 '{k}' 없음")
 
+        # 객단가를 반올림하지 않고 그대로 옮기는 일이 있다 (p4 지시 4-1).
+        # 협력사가 읽는 문장에 "약 9,705원"처럼 나가면 어수선하다.
+        for m in re.finditer(r"([\d,]+)\s*원", str(r.get("판매가_설명") or "")):
+            won = int(m.group(1).replace(",", ""))
+            if won % 100:
+                issues.append(f"{rid}: 판매가 설명의 {won:,}원 — 100원 단위로 "
+                              f"반올림할 것 (예: {round(won / 100) * 100:,}원)")
+
         # A10 — 협업 제안서 4필드. 없으면 T44 가 만들 것이 없다.
         for k in PROPOSAL:
             if not r.get(k):
@@ -286,6 +294,12 @@ def check_final(out: dict, p2: dict) -> Checked:
 # 완제품 매입 단일화로 사라진 필드 (명세서 1-2).
 # 남아 있으면 프롬프트에 옛 지시가 붙어 있다는 뜻이다.
 COOKING_FIELDS = ["조리_방법", "조리_주체", "조리_난이도", "필요_장비", "필요_재료"]
+
+# 바틀링에 늘 있어서 "바틀링_준비"에 적을 것이 아닌 것 (p2 규칙 11).
+ALWAYS_THERE = re.compile(r"맥주|생맥주|셀프탭|디스펜서|전자레인지|오븐|"
+                          r"에어프라이|화덕|튀김기")
+# 위 낱말이 들어 있어도 이쪽 말이 함께 있으면 챙기는 물건이다.
+PACKAGING = re.compile(r"포장|용기|봉투|포장지|컵|접시|포크|나이프|집기|트레이|상자")
 
 # 「접근」은 조리 방식이 아니라 구성으로 나뉜다 (p2 지시 1).
 # 9/19 에 「원가 절감형」을 뺐다 — 원가가 실제로 줄어드는지 기획 시점에
@@ -401,8 +415,33 @@ def check_menu(out: dict, beers: dict, p1: dict | None = None,
         # 협력사가 완제품을 내지 않으면 매입할 것이 없어 협업이 아니다.
         if not (m.get("협력사_제공") or []):
             issues.append(f"{mid}: 협력사 제공 품목 없음 — 매입할 것이 없다")
-        if not (m.get("바틀링_준비") or []):
-            issues.append(f"{mid}: 바틀링 준비 항목 없음")
+
+        # "바틀링_준비"가 비었는지는 보지 않는다.
+        #
+        # 협력사가 완제품을 그대로 내는 안이면 바틀링이 새로 챙길 것이
+        # 정말 없다. 비면 지적하니 (2)가 무엇이든 적었고, 쌓인 292개 중
+        # 85개가 셀프탭 맥주·잔처럼 늘 있는 것이거나 "데이터 없음"이었다.
+        # 비어서 틀린 안은 그중에 없었다 (10/12).
+        #
+        # 대신 늘 있는 것을 적었는지 본다. 맥주와 잔은 셀프탭이라 언제나
+        # 거기 있고 기구도 매장 것이다. 협업 때문에 챙기는 것이 아니라
+        # 역할분담에 적을 말이 아니다. 포장 관련 말이 섞인 것은 넘긴다 —
+        # "맥주 전용 테이크아웃 컵"의 컵은 실제로 챙기는 것이다.
+        for x in m.get("바틀링_준비") or []:
+            s = str(x)
+            if ALWAYS_THERE.search(s) and not PACKAGING.search(s):
+                issues.append(f"{mid}: 바틀링 준비에 '{s}' — 셀프탭 맥주·잔과 "
+                              f"매장 기구는 늘 있으므로 적지 않는다")
+
+        # "내는_방식"이 "접근"을 되풀이하지 않는가 (p2 규칙 12).
+        # 포장 안에 「포장 주문도 받습니다」가 붙으면 제안서의 「판매 방식」
+        # 줄에 같은 말이 두 번 나간다.
+        way = str(m.get("접근") or "")
+        for x in m.get("내는_방식") or []:
+            s = str(x)
+            if way and way in s:
+                issues.append(f"{mid}: 내는 방식에 '{s}' — '{way}'은 접근에 "
+                              f"이미 있으므로 되풀이하지 않는다")
 
         # 완제품 조건. 보관 방법과 유통 기한이 기획의 전제다 (C006)
         if not m.get("보관_조건"):
@@ -666,7 +705,30 @@ def span_start(text: str, year: int) -> date | None:
         return None
 
 
-def check_promo(out: dict, p2: dict, target: date,
+def when_date(text: str, target: date) -> date | None:
+    """
+    홍보 일정의 "시점" 하나를 날짜로. 못 읽으면 None.
+
+    (3)에게 날짜로 적으라고 하지만 "실행 1주 전" 처럼 말로 올 때가 있다.
+    그런 것은 실행일에서 세어 바꾼다.
+
+    제안서에도 같은 일을 하는 `app/proposal.py` 의 `_when` 이 있다. 거기는
+    이미 쌓인 기획안을 읽는 쪽이라 따로 둔다 — 문서 생성기에 DB 의존을
+    붙이지 않으려는 것이다. 한쪽을 고치면 다른 쪽도 본다.
+    """
+    got = span_start(text, target.year)
+    if got:
+        return got
+    if "당일" in text:
+        return target
+    m = re.search(r"(\d+)\s*(주|일)\s*(전|뒤|후)", text)
+    if not m:
+        return None
+    days = int(m.group(1)) * (7 if m.group(2) == "주" else 1)
+    return target + timedelta(days=-days if m.group(3) == "전" else days)
+
+
+def check_promo(out: dict, p2: dict, target: date, today: date | None = None,
           partner_sns: bool = True, events: str = "") -> Checked:
     """
     프롬프트가 지시한 제약을 지켰는지 본다.
@@ -723,6 +785,19 @@ def check_promo(out: dict, p2: dict, target: date,
             if not any(is_before(s) for s in schedule):
                 when = [str(s.get("시점")) for s in schedule]
                 issues.append(f"홍보 일정에 '실행 전' 항목 없음 — {when}")
+
+            # 기획안을 만든 날보다 이전 날짜에는 홍보를 올릴 수 없다.
+            # 실행 사흘 전에 만들면서 「실행 1주 전」을 집은 적이 있다
+            # (10/6, 여섯 건 모두).
+            if today:
+                gone = [str(s.get("시점")) for s in schedule
+                        if (d := when_date(str(s.get("시점") or ""), target))
+                        and d < today]
+                if gone:
+                    issues.append(
+                        f"이미 지나버린 날에 홍보 일정을 잡았다 — {gone}. "
+                        f"오늘은 {today} 이고 실행일은 {target} 이므로 "
+                        f"그 사이 날짜로 다시 잡을 것")
 
         # A9 — 채널별 전략에 협력사 주체가 하나 이상
         channels = axis.get("채널별_전략") or []

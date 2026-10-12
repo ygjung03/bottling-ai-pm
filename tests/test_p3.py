@@ -15,7 +15,7 @@ from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           NO_DATA, NO_TREND_MENU, PAST_CASES, WEATHER_PREF,
                           build_beer_list, build_constraints, build_events,
                           build_partner_blockers, build_partner_resources,
-                          build_partner_sns, fetch_partner)
+                          build_partner_sns, fetch_partner, has_partner_sns)
 from chain.loader import build
 from chain.runner import NO_ISSUES, NO_REJECTED
 from context.builder import build as build_context
@@ -82,11 +82,17 @@ def run(label: str, target: date) -> None:
     menus = p2.get("메뉴안") or []
     print(f"(2) 완료 {ms2/1000:.1f}초 — 메뉴안 {len(menus)}개")
 
+    # 대상일이 지난 요일이라 실제 오늘을 넘기면 (3)에게 모순된 입력이 된다.
+    # 기획을 일주일 전에 한 셈으로 친다. 프롬프트와 검사가 같은 날을 봐야
+    # 지난 날짜를 잡았는지 걸러진다.
+    made_on = target - timedelta(days=7)
+
     # (3) 마케터
     p3_prompt = build(
         "p3_marketer",
         p1_output=json.dumps(p1, ensure_ascii=False),
         p2_output=json.dumps(p2, ensure_ascii=False),
+        today=made_on.isoformat(),
         target_date=target.isoformat(),
         bottling_sns=BOTTLING_SNS,
         partner_sns=build_partner_sns(partner),
@@ -125,7 +131,9 @@ def run(label: str, target: date) -> None:
         print(f"      \"{p.get('홍보_문구')}\"")
         print(f"      {' '.join(p.get('해시태그') or [])}")
 
-    issues = check_promo(out, p2, target).all
+    issues = check_promo(out, p2, target, made_on,
+                         partner_sns=has_partner_sns(build_partner_sns(partner)),
+                         events=build_events(target)).all
     print("-" * 64)
     if issues:
         for i in issues:

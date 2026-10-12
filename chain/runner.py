@@ -27,14 +27,14 @@
   (docs/검증루프_도입안.md 3장).
 """
 import json
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from chain.checks import (Checked, check_final, check_menu,
                           check_menu_sources, check_promo, is_rank_reason,
                           parse_beer_prices, parse_beers)
 from chain.gemini import call
 from db import api_usage as usage
-from chain.inputs import NO_DATA
+from chain.inputs import has_partner_sns
 from chain.loader import build
 
 
@@ -42,6 +42,9 @@ from chain.loader import build
 # 들어가는 값. 빈 문자열을 넣으면 그 블록이 통째로 비어 보여, 검사를
 # 안 한 것인지 통과한 것인지 구분되지 않는다.
 NO_ISSUES = "(없음 — 첫 생성이다)"
+
+# 배포는 UTC 라 그냥 today() 를 쓰면 새벽에 날짜가 하루 어긋난다.
+KST = timezone(timedelta(hours=9))
 
 # (2)가 첫 생성일 때 [직전에 낸 안과 실행 불가 사유] 자리에 들어가는 값.
 NO_REJECTED = "(없음 — 첫 생성이다)"
@@ -163,7 +166,8 @@ def run(context: str, target_date: str, beer_list: str,
         bottling_sns: str, partner_sns: str, events: str, past_cases: str,
         rec_reason: str, partner: dict | None = None,
         fixed_menu: bool = False, preset: dict | None = None,
-        on_step=None, usage_note: str | None = None) -> dict:
+        on_step=None, usage_note: str | None = None,
+        today: date | None = None) -> dict:
     """
     on_step: 진행 상황 콜백 (Streamlit st.status 연동용)
 
@@ -265,6 +269,8 @@ def run(context: str, target_date: str, beer_list: str,
     # 일뿐이라 밖에 둬도 가려지는 오류가 없다.
     beers = parse_beers(beer_list)
     prices = parse_beer_prices(beer_list)
+    # 고정 테스트는 날짜를 못 박고 돌린다. 안 주면 오늘이다.
+    today = today or datetime.now(KST).date()
 
     try:
         result["p1"] = (ready(1, "상권 분석 중...")
@@ -351,6 +357,8 @@ def run(context: str, target_date: str, beer_list: str,
                 return step(3, label, "p3_marketer",
                             p1_output=_j(result["p1"]),
                             p2_output=_j(result["p2"]),
+                            # 오늘을 알아야 이미 지난 날에 대한 홍보를 잡지 않는다.
+                            today=today.isoformat(),
                             target_date=target_date,
                             bottling_sns=bottling_sns,
                             partner_sns=partner_sns,
@@ -388,8 +396,8 @@ def run(context: str, target_date: str, beer_list: str,
                 or make(3, "홍보 기획 중...", call_p3,
                         lambda out: check_promo(
                             out, result["p2"],
-                            date.fromisoformat(target_date),
-                            partner_sns=NO_DATA not in partner_sns,
+                            date.fromisoformat(target_date), today,
+                            partner_sns=has_partner_sns(partner_sns),
                             events=events)))
             result["final"] = make(
                 4, "최종 검토 중...", call_p4,
@@ -412,7 +420,8 @@ def run(context: str, target_date: str, beer_list: str,
                         label, f"- 메뉴와 맞지 않는다: {why}", prev),
                     lambda out: check_promo(
                         out, result["p2"], date.fromisoformat(target_date),
-                        partner_sns=NO_DATA not in partner_sns, events=events))
+                        today, partner_sns=has_partner_sns(partner_sns),
+                        events=events))
                 result["final"] = make(
                     4, "최종 검토 중...", call_p4,
                     lambda out: check_final(out, result["p2"]))
@@ -481,8 +490,8 @@ def run(context: str, target_date: str, beer_list: str,
 # (4)는 자기가 만드는 여덟 가지만 낸다 — 선정_사유 · 판매가_설명 ·
 # 예상_리스크 · 추천_근거 · 역할분담 · 상호_이익 · 배경 · 매입.
 FROM_MENU = ["접근", "메뉴명", "구성", "협력사_제공", "바틀링_준비",
-             "협력사희망_매입가", "협력사_정가", "정가_합", "판매가_제안",
-             "보관_조건", "1회_납품_수량", "메뉴_이미지"]
+             "내는_방식", "협력사희망_매입가", "협력사_정가", "정가_합",
+             "판매가_제안", "보관_조건", "1회_납품_수량", "메뉴_이미지"]
 
 # (3)은 이름이 다르다. 왼쪽이 (4) 출력의 이름, 오른쪽이 (3) 출력의 이름이다.
 FROM_PROMO = {"이벤트": "이벤트안", "홍보_문구": "홍보_문구",

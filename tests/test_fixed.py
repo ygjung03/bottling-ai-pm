@@ -209,6 +209,7 @@ def run_cases(ids: list[str] | None) -> None:
             past_cases=PAST_CASES,
             rec_reason=NO_REC_REASON,
             partner=partner,
+            today=date.fromisoformat(ts["today"]),
             on_step=lambda n, label: print(f"    ({n}) {label}"),
         )
 

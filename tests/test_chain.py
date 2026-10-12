@@ -70,6 +70,9 @@ def main() -> None:
         past_cases=PAST_CASES,
         rec_reason=NO_REC_REASON,
         partner=partner,
+        # 대상일이 지난 날이라 실제 오늘을 쓰면 홍보 일정이 전부 과거가
+        # 된다. 기획을 일주일 전에 한 셈으로 친다.
+        today=target - timedelta(days=7),
     )
 
     print("입력 크기")
