@@ -35,7 +35,6 @@ from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
 
 import _path  # noqa: F401  (프로젝트 루트를 sys.path 에 추가)
-import pandas as pd
 import streamlit as st
 
 from app.auth import require_owner
@@ -45,11 +44,13 @@ from app.theme import (ARCHIVE_PARAM, SS_ARCHIVE_COUNT, SS_PARTNER_ID,
                        apply_chrome)
 from app.ui import page_header
 from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
-                          MENU_AUTO, MENU_MANUAL, NO_TREND_MENU, PAST_CASES,
+                          MENU_AUTO_BASIS, MENU_EDITED, MENU_MANUAL,
+                          MENU_SEEN, NO_TREND_MENU, PAST_CASES,
                           WEATHER_PREF, build_beer_list, build_constraints,
                           build_events, build_partner_blockers,
                           build_partner_resources, build_partner_sns,
-                          build_rec_reason, menu_rows, menu_rows_sourced)
+                          build_rec_reason, menu_kept, menu_rows,
+                          menu_rows_sourced)
 from chain.runner import run
 from collectors.menu_reviews import collect
 from config.settings import PARTNER_FORM_CODE_ENTRY, PARTNER_FORM_URL
@@ -1205,16 +1206,28 @@ def _form_link(partner: dict) -> None:
         st.rerun()
 
 
-def save_auto_menus(partner: dict, rows: list[dict]) -> None:
+def save_auto_menus(partner: dict, rows: list[dict]) -> list[dict]:
     """후기에서 찾은 메뉴를 partners.menu_prices_review 에 넣는다.
+
+    새로 들어온 줄만 돌려준다 — 알림에 「새로 2개를 찾았습니다」로 적는다.
 
     통째로 바꾼다. 수집은 그때그때 처음부터 다시 찾는 것이라, 예전 것을 남겨
     두면 지난번에 잘못 들어간 값이 계속 남는다. 사람이 직접 넣은 메뉴는
     menu_prices 라는 다른 칸에 있어서 여기서 건드리지 않는다.
+
+    **사람이 확인했거나 고친 줄은 남긴다** (`menu_kept`). 기계가 다시 읽은
+    값보다 사람이 본 값이 맞다. 같은 이름이 새로 들어와도 사람 쪽이 이긴다.
     """
+    old = [dict(r) for r in (partner.get("menu_prices_review") or [])]
+    keep = [r for r in old if menu_kept(r)]
+    kept_names = {str(r.get("메뉴") or "").strip() for r in keep}
+    had = {str(r.get("메뉴") or "").strip() for r in old}
+
+    fresh = [r for r in rows if str(r.get("메뉴") or "").strip() not in kept_names]
     get_client().table("partners").update(
-        {"menu_prices_review": rows}).eq("id", partner["id"]).execute()
+        {"menu_prices_review": keep + fresh}).eq("id", partner["id"]).execute()
     load_partners.clear()
+    return [r for r in fresh if str(r.get("메뉴") or "").strip() not in had]
 
 
 # 수집 세 단계. 시안 3쪽의 칸 셋이다.
@@ -1300,8 +1313,11 @@ def run_auto_collect(partner: dict) -> None:
         return
 
     if res["메뉴"]:
-        save_auto_menus(partner, res["메뉴"])
-        msg = f"후기에서 메뉴 {len(res['메뉴'])}개를 찾았습니다."
+        # 몇 개를 「찾았다」가 아니라 몇 개가 「새로 들어왔다」를 알린다. 이미
+        # 등록된 메뉴를 세어 말하면, 목록에 그만큼 늘지 않아 어긋나 보인다.
+        new = save_auto_menus(partner, res["메뉴"])
+        msg = (f"후기에서 메뉴 {len(new)}개를 새로 찾았습니다." if new
+               else "후기에서 새로 찾은 메뉴가 없습니다.")
     elif res["글"] and not res["읽음"]:
         # 메뉴 0개는 뜻이 여럿이다. 합쳐 말하면 틀린 안내가 된다 (collect 설명).
         # 읽을 글은 골랐는데 본문을 하나도 못 받아온 경우만 따로 알린다 —
@@ -1313,6 +1329,59 @@ def run_auto_collect(partner: dict) -> None:
     st.session_state[SS_MENU_RUN] = False
     st.session_state[SS_MENU_TOAST] = msg
     st.rerun()
+
+
+def edited_basis(basis, today: str) -> str:
+    """
+    고친 줄의 「근거」 문자열을 만든다. 원래 출처 뒤에 「· 수정됨 (날짜)」를 붙인다.
+
+      수동 등록 (2026-10-06)         →  수동 등록 · 수정됨 (2026-10-14)
+      메뉴판 사진 · 수정됨 (10-14)    →  메뉴판 사진 · 수정됨 (10-15)
+
+    **날짜는 최신 하나만 남긴다.** 칸이 넓지 않아 둘을 적으면 잘린다.
+
+    자동 수집만 예외다. 그 날짜는 등록한 때가 아니라 **후기가 쓰인 때**라
+    뜻이 다르다 — 「후기 5건, 2026-08」은 8월에 언급됐다는 뜻이고, 얼마나
+    오래된 값인지를 그것으로 가늠한다 (`db/migrate_0928.sql:99`).
+
+    출처를 「수동 등록」으로 바꾸지 않는 이유는 `chain/inputs.py` 의
+    MENU_EDITED 설명에 있다.
+    """
+    head = re.sub(rf"\s*·\s*{MENU_EDITED}\s*\([^)]*\)\s*$", "",
+                  str(basis or "")).strip()
+    if not head.startswith(MENU_AUTO_BASIS):
+        head = re.sub(r"\s*\([^)]*\)\s*$", "", head).strip()
+    return f"{head} · {MENU_EDITED} ({today})" if head else f"{MENU_EDITED} ({today})"
+
+
+def save_menu_seen(partner: dict, picked: set[str], today: str) -> bool:
+    """
+    메뉴 목록 창에서 체크한 줄에 「확인」 날짜를 넣고 저장한다.
+
+      picked   체크된 메뉴 이름들
+      반환     새로 확인된 줄이 하나라도 있었으면 True
+
+    메뉴는 두 칸에 나뉘어 있다 (`menu_prices`·`menu_prices_review`). 양쪽을
+    훑어 이름이 맞는 줄에 날짜를 넣는다. 이미 확인된 줄은 건드리지 않는다.
+
+    줄을 다른 칸으로 옮기지는 않는다. 확인했다고 그 메뉴가 어디서 왔는지가
+    바뀌는 것은 아니다. 다시 수집해도 안 덮이는 것은 `save_auto_menus` 와
+    `save_photo_menus` 가 `menu_kept` 를 보기 때문이다.
+    """
+    cols, changed = {}, False
+    for col in ("menu_prices", "menu_prices_review"):
+        rows = [dict(r) for r in (partner.get(col) or [])]
+        for r in rows:
+            if str(r.get("메뉴") or "").strip() in picked and not r.get(MENU_SEEN):
+                r[MENU_SEEN] = today
+                changed = True
+        cols[col] = rows
+
+    if not changed:
+        return False
+    get_client().table("partners").update(cols).eq("id", partner["id"]).execute()
+    load_partners.clear()
+    return True
 
 
 def save_menu_edits(partner: dict, before: list[tuple[str, dict]]) -> bool:
@@ -1346,7 +1415,9 @@ def save_menu_edits(partner: dict, before: list[tuple[str, dict]]) -> bool:
             continue                      # 이름을 지웠으면 그 줄은 뺀다
         row = dict(old)
         row["메뉴"], row["가격"] = name, price
-        row["근거"] = f"수동 수정, {today} 확인"
+        row["근거"] = edited_basis(old.get("근거"), today)
+        # 고친 사람은 그 줄을 본 것이다. 따로 또 확인시키지 않는다.
+        row[MENU_SEEN] = today
         hand.append(row)
 
     if not changed:
@@ -1369,8 +1440,10 @@ def save_manual_menu(partner: dict, name: str, price: int) -> None:
     """
     today = datetime.now(KST).date().isoformat()
     rows = [dict(r) for r in (partner.get("menu_prices") or [])]
+    # 「확인」은 사람이 목록을 보고 체크했을 때만 붙는다. 등록한 것만으로
+    # 확인했다고 적으면 거짓이 된다 — 전에는 「수동 등록, 날짜 확인」이었다.
     row = {"메뉴": name, "가격": price, "납품가": None,
-           "근거": f"수동 등록, {today} 확인"}
+           "근거": f"{MENU_MANUAL} ({today})"}
     for i, r in enumerate(rows):
         if str(r.get("메뉴") or "").strip() == name:
             rows[i] = row
@@ -1383,7 +1456,7 @@ def save_manual_menu(partner: dict, name: str, price: int) -> None:
     load_partners.clear()
 
 
-@st.dialog("메뉴 수동 등록")
+@st.dialog("메뉴 직접 입력")
 def _manual_menu(partner: dict) -> None:
     """후기에 없는 메뉴를 사람이 직접 적는 자리 (시안 4쪽)."""
     st.caption("후기에 없는 메뉴와 현재 판매 가격을 직접 등록해 주세요.")
@@ -1425,36 +1498,124 @@ def _manual_menu(partner: dict) -> None:
 
 
 def _menu_table(partner: dict):
-    """메뉴 목록 창 두 개가 함께 쓰는 윗부분. (줄 목록, 표) 를 돌려준다."""
+    """메뉴 목록 창의 윗부분(가게 이름과 개수)을 그리고 줄 목록을 돌려준다."""
     rows = menu_rows_sourced(partner)
-    auto = sum(1 for src, _ in rows if src == MENU_AUTO)
-    hand = len(rows) - auto
 
+    # 출처별 수는 적지 않는다. 메뉴판 사진은 B/C 갈래에서만 쓰므로 A·A2 에서는
+    # 늘 0 으로 남아 안 되는 기능을 계속 보여 주는 꼴이 된다. 어느 줄이
+    # 어디서 왔는지는 표의 「등록 방식」 칸에 줄마다 있다.
     st.markdown(
         f'<div style="background:#F8FAFC; border:1px solid #E5E7EB; '
         f'border-radius:10px; padding:12px 16px; display:flex; '
         f'justify-content:space-between; align-items:center; margin:4px 0 14px">'
-        f'<span><b>{partner["name"]}</b>'
-        f'<span style="color:#2563EB; margin-left:10px">총 {len(rows)}개</span></span>'
-        f'<span style="color:#6B7280; font-size:0.85rem">'
-        f'자동 수집 {auto}개 · 수동 등록 {hand}개</span>'
+        f'<b>{partner["name"]}</b>'
+        f'<span style="color:#2563EB; font-size:0.9rem">'
+        f'총 {len(rows)}개 등록됨</span>'
         f'</div>', unsafe_allow_html=True)
 
-    table = pd.DataFrame([{
-        "메뉴 이름": r.get("메뉴"),
-        "가격 (원)": r.get("가격"),
-        "등록 방식": src,
-        # 어디서 온 값인지는 「근거」에 들어 있다. (2)도 같은 문장을 읽는다.
-        "출처": r.get("근거") or ("직접 입력" if src == MENU_MANUAL else ""),
-    } for src, r in rows])
-    return rows, table
+    return rows
 
 
-# 숫자 형식에 「%,d」처럼 쉼표를 넣으면 Streamlit 이 못 읽는다 (10/6).
-# 단위는 칸 이름에 적는다.
-MENU_COLS = {"가격 (원)": st.column_config.NumberColumn(format="%d", step=100),
-             "등록 방식": st.column_config.TextColumn(disabled=True),
-             "출처": st.column_config.TextColumn(disabled=True, width="large")}
+# 보기 모드의 열 너비. 맨 끝이 「확인」이다.
+MENU_W = [2.6, 1.1, 1.2, 3.0, 0.8]
+MENU_HEAD = ["메뉴 이름", "가격 (원)", "등록 방식", "출처", "확인"]
+
+
+def _menu_rows_view(rows: list[tuple[str, dict]]) -> None:
+    """
+    보기 모드의 표. 줄마다 그린다.
+
+    `st.dataframe` 을 쓰지 않는 이유는 **확인 칸이 체크박스**라서다. 표
+    편집기(`st.data_editor`)도 안 쓴다 — 팝업 안에서 칸을 고칠 때마다
+    조각(fragment)이 어긋나 터졌다 (10/6, 여러 번). 수정 모드가 이미
+    입력 칸만으로 만들어져 있고 그쪽은 한 번도 안 터졌다.
+
+    이미 확인된 줄은 체크가 켜진 채 잠긴다. 확인을 취소할 일이 없다 —
+    값이 틀렸으면 「수정」으로 고치면 되고, 고치면 그 줄은 다시 확인된다.
+    """
+    # 줄 사이에 선을 긋는다. Streamlit 내부 이름(data-testid)에 기대지 않고
+    # 내가 지은 key 로 잡는다 — 버전이 바뀌면 빗나간다 (10/5, 두 번 겪었다).
+    st.markdown(
+        '<style>'
+        # 줄 사이를 붙인다. 컨테이너가 세로 flex 라 기본 간격이 들어가는데,
+        # 그만큼 세로줄이 끊겨 보인다. 안쪽 칸의 여백도 함께 지운다 —
+        # Streamlit 이 글을 감싸면서 아래쪽에 여백을 붙인다.
+        '.st-key-menu_tbl, .st-key-menu_head,'
+        '[class*="st-key-menu_row_"]{gap:0; margin:0; padding:0}'
+        '.st-key-menu_head div, [class*="st-key-menu_row_"] div'
+        '{margin-bottom:0; gap:0}'
+        '[class*="st-key-menu_row_"]{border-bottom:1px solid #C9CFD6}'
+        '.st-key-menu_head{border-bottom:1px solid #9CA3AF}'
+        # 칸 사이 세로줄. 맨 끝(확인)은 체크박스라 .mcell 이 없어 선이 안 붙는다.
+        # height:100% 라야 줄 높이를 다 채워 선이 안 끊긴다.
+        '.mcell{border-right:1px solid #C9CFD6; min-height:34px; height:100%;'
+        ' display:flex; align-items:center; padding:6px 10px; margin:0}'
+        # 체크박스를 칸 가운데로. 컨테이너만 맞추면 그 안의 위젯이 폭을 다
+        # 차지해 체크박스는 왼쪽에 남는다. 위젯이 쓰는 label 을 잡는다.
+        '[class*="st-key-menu_chk_"] label{justify-content:center; width:100%}'
+        '</style>', unsafe_allow_html=True)
+
+    # 머리줄과 데이터 줄을 한 상자에 담는다. 그래야 gap:0 이 둘 사이에도 든다.
+    with st.container(key="menu_tbl"):
+        with st.container(key="menu_head"):
+            head = st.columns(MENU_W, vertical_alignment="center")
+            for n, (col, name) in enumerate(zip(head, MENU_HEAD)):
+                # 맨 끝 「확인」은 아래 체크박스와 맞춰 가운데에 두고, 오른쪽
+                # 선은 뺀다 — 데이터 줄의 그 칸에는 선이 없다.
+                col.markdown(_cell(name, dim=True, last=n == len(MENU_HEAD) - 1),
+                             unsafe_allow_html=True)
+
+        for i, (src, r) in enumerate(rows):
+            with st.container(key=f"menu_row_{i}"):
+                c = st.columns(MENU_W, vertical_alignment="center")
+            price = r.get("가격")
+            c[0].markdown(_cell(r.get("메뉴") or ""), unsafe_allow_html=True)
+            c[1].markdown(_cell(f"{price:,}" if isinstance(price, int) else "—"),
+                          unsafe_allow_html=True)
+            c[2].markdown(_cell(src, dim=True), unsafe_allow_html=True)
+            c[3].markdown(_cell(_basis_tail(src, r.get("근거")), dim=True),
+                          unsafe_allow_html=True)
+            with c[4], st.container(key=f"menu_chk_{i}"):
+                st.checkbox("확인", key=f"mseen_{i}", label_visibility="collapsed",
+                            value=bool(r.get(MENU_SEEN)),
+                            disabled=bool(r.get(MENU_SEEN)))
+
+
+def _basis_tail(src: str, basis) -> str:
+    """
+    출처 칸에 보일 말. 「등록 방식」과 겹치는 앞말을 뗀다.
+
+      직접 입력          직접 입력 (2026-10-06)        →  2026-10-06
+      자동 수집          블로그 후기 자동 수집, 후기 2건…  →  후기 2건…
+      메뉴판 자동 인식    메뉴판 자동 인식 · 수정됨 (10-14) →  수정됨 (10-14)
+
+    **DB 의 「근거」는 안 건드린다.** (2)가 그 문장을 통째로 읽어 얼마나 믿을
+    값인지 가늠하므로 앞말이 거기 있어야 한다. 화면에서만 뗀다.
+    """
+    text = str(basis or "").strip()
+    for head in (src, MENU_AUTO_BASIS):
+        if text.startswith(head):
+            rest = text[len(head):].lstrip(" ,·")
+            # 「(2026-10-06)」처럼 괄호만 남으면 괄호도 뗀다
+            if rest.startswith("(") and rest.endswith(")") and "(" not in rest[1:]:
+                rest = rest[1:-1]
+            return rest or "—"
+    return text or "—"
+
+
+def _cell(text: str, dim: bool = False, last: bool = False) -> str:
+    """
+    표의 글자 칸. 세로줄과 높이는 `.mcell` 이 CSS 로 잡는다.
+
+    머리줄도 이것으로 그린다. `st.caption` 을 쓰면 여백이 달라 세로줄이
+    칸마다 어긋난다.
+
+    last 는 맨 끝 칸이다 — 가운데에 두고 오른쪽 선을 뺀다.
+    """
+    color = "#59606D" if dim else "#1F2933"
+    edge = "border-right:none; justify-content:center;" if last else ""
+    return (f'<div class="mcell" style="color:{color}; font-size:0.86rem; '
+            f'line-height:1.35; {edge}">{text}</div>')
 
 
 @st.dialog("등록된 메뉴·가격", width="large")
@@ -1472,44 +1633,73 @@ def _menu_list(partner: dict) -> None:
     자리를 미리 잡아 둔다(`body`).
     """
     st.caption("기획안에 활용할 메뉴와 가격, 등록 출처를 확인해 주세요.")
-    rows, table = _menu_table(partner)
+    rows = _menu_table(partner)
     body = st.container()        # 표가 들어갈 자리. 내용은 맨 아래에서 채운다
-
-    st.write("")
-    # 「메뉴 수동 추가」가 한 줄에 들어가야 해서 열을 넓히고 줄바꿈도 막는다.
-    with st.container(key="menu_list_btns"):
-        c_add, _gap, c_edit, c_close = st.columns([1.7, 1.4, 1.2, 0.9],
-                                                  vertical_alignment="center")
     editing = st.session_state.get(SS_MENU_EDIT, False)
 
     def shut() -> None:
         """창을 닫는다. 신호와 입력 칸을 지워야 다음에 열 때 깨끗하다."""
         st.session_state.pop(SS_MENU_VIEW, None)
         st.session_state.pop(SS_MENU_EDIT, None)
+        st.session_state.pop("mseen_all", None)
         for k in [k for k in st.session_state
-                  if k.startswith(("mname_", "mprice_"))]:
+                  if k.startswith(("mname_", "mprice_", "mseen_"))]:
             st.session_state.pop(k, None)
 
-    if c_add.button("메뉴 수동 추가", icon=":material/add:",
+    # 「모두 확인」은 켜고 끌 때만 줄 체크박스를 건드린다. 매 실행마다 맞추면
+    # 줄 하나만 체크해 둔 것이 도로 꺼진다. 그래서 바뀔 때만 도는 콜백으로
+    # 둔다 — 콜백은 화면을 그리기 전에 돌아 줄 체크박스에 제때 반영된다.
+    #
+    # 이미 확인된 줄은 건드리지 않는다. 그 줄은 잠겨 있어 끌 수 없다.
+    def toggle_all() -> None:
+        on = st.session_state.get("mseen_all", False)
+        for i, (_src, row) in enumerate(rows):
+            if not row.get(MENU_SEEN):
+                st.session_state[f"mseen_{i}"] = on
+
+    if not editing and rows:
+        st.checkbox("위 메뉴와 가격을 모두 확인하였습니다",
+                    key="mseen_all", on_change=toggle_all)
+
+        # 새로 체크한 줄이 있을 때만 눌린다. 이미 확인된 줄은 세지 않는다.
+        fresh = {str(r.get("메뉴") or "").strip()
+                 for i, (_src, r) in enumerate(rows)
+                 if st.session_state.get(f"mseen_{i}") and not r.get(MENU_SEEN)}
+        if st.button("확인 완료", type="primary", use_container_width=True,
+                     disabled=not fresh, key="menu_seen_btn"):
+            save_menu_seen(partner, fresh, datetime.now(KST).date().isoformat())
+            st.session_state[SS_MENU_TOAST] = (
+                f"메뉴 {len(fresh)}개를 확인하였습니다.")
+            shut()
+            st.rerun()
+
+    st.write("")
+    # 「메뉴 직접 입력」이 한 줄에 들어가야 해서 열을 넓히고 줄바꿈도 막는다.
+    with st.container(key="menu_list_btns"):
+        c_add, _gap, c_edit, c_close = st.columns([1.7, 1.4, 1.2, 0.9],
+                                                  vertical_alignment="center")
+
+    if c_add.button("메뉴 직접 입력", icon=":material/add:",
                     use_container_width=True):
         shut()
         st.session_state[SS_MENU_ADD] = True
         st.rerun()
 
-    # 가운데 버튼은 자리를 잡아 두고 나중에 채운다. 먼저 그려 버리면 「수정」을
-    # 누른 그 실행에서는 글자가 안 바뀐다 (버튼이 이미 그려진 뒤라서).
-    slot = c_edit.empty()
+    # 「수정」은 on_click 으로 상태만 바꾼다. 콜백은 다음 실행이 시작되기 전에
+    # 돌아서, 그 실행에서 바로 「저장하기」로 그려진다.
+    #
+    # 전에는 같은 자리(st.empty)에 두 번 그려 바꿨는데 버튼이 잠깐 겹쳐
+    # 보였다 (10/14). 그 방식은 st.rerun() 을 피하려고 만든 것인데, 위젯을
+    # 눌러 저절로 다시 그려지는 것은 st.rerun() 과 달라 조각이 안 어긋난다.
     save_now = False
     if editing:
-        save_now = slot.button("저장하기", type="primary",
-                               use_container_width=True, key="menu_save")
-    elif slot.button("수정", use_container_width=True, disabled=not rows,
-                     key="menu_edit_btn"):
-        st.session_state[SS_MENU_EDIT] = True
-        editing = True
-        # 같은 자리를 「저장하기」로 덮어 그린다.
-        slot.button("저장하기", type="primary", use_container_width=True,
-                    key="menu_save")
+        save_now = c_edit.button("저장하기", type="primary",
+                                 use_container_width=True, key="menu_save")
+    else:
+        c_edit.button("수정", use_container_width=True, disabled=not rows,
+                      key="menu_edit_btn",
+                      on_click=lambda: st.session_state.update(
+                          {SS_MENU_EDIT: True}))
 
     if save_now:
         if save_menu_edits(partner, rows):
@@ -1547,10 +1737,10 @@ def _menu_list(partner: dict) -> None:
                     f'<div style="color:#59606D; font-size:0.85rem; '
                     f'padding-top:6px">{src}</div>', unsafe_allow_html=True)
         else:
-            st.caption("후기 정보는 현재 판매 메뉴·가격과 다를 수 있습니다. "
-                       "수동 등록 항목도 실제 가격을 확인해 주세요.")
-            st.dataframe(table, hide_index=True, use_container_width=True,
-                         column_config=MENU_COLS)
+            st.caption("후기 정보는 현재 판매 메뉴·가격과 다를 수 있습니다.  \n"
+                       "확인하신 메뉴는 오른쪽 「확인」에 체크하고 "
+                       "「확인 완료」를 눌러 주세요.")
+            _menu_rows_view(rows)
 
 
 @st.dialog("제안할 안을 바꿀까요?")
@@ -2025,7 +2215,7 @@ st.markdown(
     # 수집 중 상자. 가로는 메뉴 상자 안에 머물되 세로는 내용만큼 늘어나야 한다.
     # overflow:hidden 을 걸었더니 아래가 잘렸다 (10/5).
     '.st-key-menu_run { width:100%; max-width:100%; height:auto; }'
-    # 메뉴 목록 창 아래 버튼들. 「메뉴 수동 추가」가 두 줄로 접히면 안 된다.
+    # 메뉴 목록 창 아래 버튼들. 「메뉴 직접 입력」이 두 줄로 접히면 안 된다.
     '.st-key-menu_list_btns button p, .st-key-menu_edit_btns button p'
     ' { white-space:nowrap; }'
     # 상자 안 버튼은 흰 바탕에 얇은 테두리.
@@ -2072,16 +2262,13 @@ with st.container(key="param_card"):
         # 메뉴가 없으면 기획안을 만들 수 없다. 그래서 막히는 자리 바로 옆에
         # 채우는 길 둘을 둔다 — 후기에서 자동으로 가져오기, 직접 적기.
         sourced = menu_rows_sourced(chosen)
-        n_auto = sum(1 for src, _ in sourced if src == MENU_AUTO)
-        n_hand = len(sourced) - n_auto
 
         with st.container(key="menu_box", border=True):
             c_title, c_view = st.columns([3, 1], vertical_alignment="center")
             c_title.markdown(
                 f'<div style="font-weight:700; color:#161A1F">협력사 메뉴·가격 정보</div>'
                 f'<div style="color:#59606D; font-size:0.85rem; margin-top:2px">'
-                f'{chosen["name"]} · 등록 {len(sourced)}개 · '
-                f'자동 수집 {n_auto}개 / 수동 등록 {n_hand}개</div>',
+                f'{chosen["name"]} · 총 {len(sourced)}개 등록됨</div>',
                 unsafe_allow_html=True)
             # 여기서는 신호만 남긴다. 창은 카드 밖 맨 끝에서 연다.
             if c_view.button(f"메뉴·가격 보기  {len(sourced)}개",
@@ -2102,7 +2289,7 @@ with st.container(key="param_card"):
                              key="menu_auto_btn", disabled=collecting):
                 st.session_state[SS_MENU_RUN] = True
                 st.rerun()
-            if c_hand.button("수동 등록", icon=":material/add:",
+            if c_hand.button("직접 입력", icon=":material/add:",
                              use_container_width=True, key="menu_hand_btn",
                              disabled=collecting):
                 st.session_state[SS_MENU_ADD] = True
@@ -2111,7 +2298,7 @@ with st.container(key="param_card"):
                 '네이버 블로그 후기에서 선택한 협력사의 메뉴와 가격을 가져옵니다.</div>'
                 '<div style="color:#9CA3AF; font-size:0.82rem; margin-top:2px">'
                 + ('수집 중에는 다시 실행하거나 메뉴를 등록할 수 없습니다.'
-                   if collecting else '후기에 없는 메뉴는 수동으로 추가할 수 있습니다.')
+                   if collecting else '후기에 없는 메뉴는 직접 입력할 수 있습니다.')
                 + '</div>', unsafe_allow_html=True)
 
             # 수집 중 상태. 버튼을 누른 다음 실행에서 여기서 실제로 돌린다 —
