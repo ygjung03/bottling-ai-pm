@@ -45,13 +45,14 @@ from app.theme import (ARCHIVE_PARAM, SS_ARCHIVE_COUNT, SS_PARTNER_ID,
 from app.ui import page_header
 from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           MENU_AUTO_BASIS, MENU_EDITED, MENU_MANUAL,
-                          MENU_SEEN, NO_TREND_MENU, PAST_CASES,
+                          MENU_PHOTO, MENU_SEEN, NO_TREND_MENU, PAST_CASES,
                           WEATHER_PREF, build_beer_list, build_constraints,
                           build_events, build_partner_blockers,
                           build_partner_resources, build_partner_sns,
                           build_rec_reason, menu_kept, menu_rows,
                           menu_rows_sourced)
 from chain.runner import run
+from collectors.menu_photo import read_photos
 from collectors.menu_reviews import collect
 from config.settings import PARTNER_FORM_CODE_ENTRY, PARTNER_FORM_URL
 from context.builder import build as build_context
@@ -75,6 +76,7 @@ SS_MENU_ADD = "menu_add_open"     # 수동 등록 창을 열어라
 SS_MENU_TOAST = "menu_toast"      # 등록·수집이 끝난 뒤 한 번 띄울 말
 SS_DATE_TOAST = "date_toast"      # 희망일이 지났을 때 한 번 띄울 말
 SS_MENU_RUN = "menu_collecting"   # 지금 후기를 찾는 중이다 (버튼이 잠긴다)
+SS_PHOTO_RUN = "photo_reading"    # 지금 메뉴판 사진을 읽는 중이다
 SS_MENU_VIEW = "menu_list_open"   # 메뉴 목록 창을 열어라
 SS_MENU_EDIT = "menu_list_edit"   # 그 창이 고치는 상태다
 
@@ -1230,15 +1232,132 @@ def save_auto_menus(partner: dict, rows: list[dict]) -> list[dict]:
     return [r for r in fresh if str(r.get("메뉴") or "").strip() not in had]
 
 
+# 단계마다 쓰는 색 — (글자, 바탕, 테두리)
+STEP_TONE = {"완료": ("#059669", "#ECFDF5", "#A7F3D0"),
+             "진행 중": ("#2563EB", "#EFF6FF", "#BFDBFE"),
+             "대기": ("#9CA3AF", "#FFFFFF", "#E2E6EB")}
+
+# 메뉴판 자동 인식 세 단계. 가운데 칸이 거의 전부를 쓴다 — 장당 5~10초다.
+PHOTO_STEPS = [("사진 가져오기", "메뉴판 사진을 가져오는 중"),
+               ("메뉴·가격 읽기", "사진에서 메뉴와 가격을 읽는 중"),
+               ("겹치는 메뉴 정리", "여러 사진에서 중복된 메뉴를 정리하는 중")]
+
+
+def draw_steps(slot, steps: list, state: dict, title: str, note: str,
+               badge: str) -> None:
+    """
+    진행 칸 셋을 한 상자에 그린다. 자동 수집과 메뉴판 자동 인식이 함께 쓴다.
+
+      slot    st.empty(). 같은 자리를 고쳐 그린다
+      state   {1: "대기"|"진행 중"|"완료", 2: …, 3: …}
+      badge   오른쪽 위 배지. 「수집 중」·「2/3장」처럼 지금 상태를 적는다
+    """
+    def mark(now: str, ink: str) -> str:
+        """칸 왼쪽의 표시 — 끝났으면 체크, 하는 중이면 도는 원, 아니면 빈 원."""
+        if now == "완료":
+            return f'<span style="color:{ink}; font-size:0.95rem">✓</span>'
+        if now == "진행 중":
+            return (f'<span class="mcspin" style="border-color:{ink}; '
+                    f'border-top-color:transparent"></span>')
+        return (f'<span style="display:inline-block; width:11px; height:11px; '
+                f'border:2px solid {ink}; border-radius:50%"></span>')
+
+    cards = ""
+    for i, (head, desc) in enumerate(steps, 1):
+        ink, back, line = STEP_TONE[state[i]]
+        cards += (
+            f'<div style="flex:1; min-width:0; border:1px solid {line}; '
+            f'background:{back}; border-radius:10px; padding:11px 13px">'
+            f'<div style="display:flex; align-items:center; gap:8px">'
+            f'{mark(state[i], ink)}'
+            f'<b style="color:{ink}; font-size:0.88rem; flex:1">{head}</b>'
+            f'<span style="color:{ink}; font-size:0.76rem">{state[i]}</span>'
+            f'</div><div style="color:#59606D; font-size:0.78rem; '
+            f'margin:3px 0 0 19px">{desc}</div></div>')
+
+    slot.markdown(
+        '<style>@keyframes mcspin{to{transform:rotate(360deg)}}'
+        '.mcspin{display:inline-block; width:13px; height:13px; flex:none;'
+        ' border:2px solid; border-radius:50%;'
+        ' animation:mcspin .8s linear infinite}</style>'
+        f'<div style="background:#FFFFFF; border:1px solid #E2E6EB; '
+        f'border-radius:10px; padding:14px 16px; margin-top:12px">'
+        f'<div style="display:flex; align-items:center; gap:10px">'
+        f'<span class="mcspin" style="border-color:#2563EB; '
+        f'border-top-color:transparent"></span>'
+        f'<b style="color:#161A1F; flex:1">{title}</b>'
+        f'<span style="background:#EFF6FF; color:#2563EB; font-size:0.78rem; '
+        f'font-weight:700; border-radius:6px; padding:3px 9px">{badge}</span>'
+        f'</div>'
+        f'<div style="color:#59606D; font-size:0.85rem; margin:4px 0 12px 23px">'
+        f'{note}</div>'
+        f'<div style="display:flex; gap:10px">{cards}</div></div>',
+        unsafe_allow_html=True)
+
+
 # 수집 세 단계. 시안 3쪽의 칸 셋이다.
 COLLECT_STEPS = [("블로그 후기 검색", "협력사 관련 후기 검색"),
                  ("메뉴·가격 추출", "후기 속 메뉴와 가격 확인 중"),
                  ("중복 정리", "여러 글에 겹쳐 나온 메뉴만 남기는 중")]
 
-# 단계마다 쓰는 색 — (글자, 바탕, 테두리)
-STEP_TONE = {"완료": ("#059669", "#ECFDF5", "#A7F3D0"),
-             "진행 중": ("#2563EB", "#EFF6FF", "#BFDBFE"),
-             "대기": ("#9CA3AF", "#FFFFFF", "#E2E6EB")}
+
+def run_photo_read(partner: dict) -> None:
+    """
+    메뉴판 사진을 읽어 메뉴·가격을 넣는다 (③-c).
+
+    자동 수집과 같은 꼴로 돈다 — 버튼을 누른 다음 실행에서 여기로 들어오고,
+    끝나면 알림을 남기고 다시 그린다.
+
+    끝나면 메뉴 목록 창을 연다. 읽은 값을 사람이 확인하는 것이 이 기능의
+    절반이다 (작업 원칙 ③).
+    """
+    slot = st.empty()
+    total = len(partner.get("menu_photo_url") or [])
+    state = {1: "진행 중", 2: "대기", 3: "대기"}
+
+    def draw(badge: str) -> None:
+        draw_steps(slot, PHOTO_STEPS, state,
+                   f'{partner["name"]}의 메뉴판을 읽고 있어요',
+                   "잠시만 기다려 주세요. 다 읽으면 메뉴 목록이 열립니다.",
+                   badge)
+
+    def on_photo(now: int, n: int) -> None:
+        """사진 한 장을 읽기 시작할 때. 몇 장 중 몇 장인지가 여기서만 보인다."""
+        state[1], state[2] = "완료", "진행 중"
+        draw(f"{now}/{n}장")
+
+    draw(f"0/{total}장")
+    try:
+        res = read_photos(partner, on_step=on_photo)
+    except Exception as e:
+        # 진행 표시와 잠긴 버튼이 그대로 남지 않게 반드시 다시 그린다 (10/6).
+        print(f"[메뉴판 읽기 실패] {partner['name']}: {type(e).__name__}: {e}")
+        st.session_state[SS_PHOTO_RUN] = False
+        st.session_state[SS_MENU_TOAST] = "메뉴판 사진을 읽지 못했습니다."
+        st.rerun()
+        return
+
+    state[1] = state[2] = "완료"
+    state[3] = "진행 중"
+    draw(f"{res['읽은_사진']}/{total}장")
+
+    st.session_state[SS_PHOTO_RUN] = False
+    if res["메뉴"]:
+        new = save_photo_menus(partner, res["메뉴"],
+                               datetime.now(KST).date().isoformat())
+        if new:
+            msg = f"메뉴판에서 메뉴 {new}개를 새로 찾았습니다. 확인해 주세요."
+            # 읽은 값을 바로 보여 준다. 확인하는 것이 이 기능의 절반이고,
+            # 그 확인이 다음 단계의 관문이다.
+            st.session_state[SS_MENU_VIEW] = True
+        else:
+            msg = "메뉴판에서 새로 찾은 메뉴가 없습니다."
+    elif not res["읽은_사진"]:
+        msg = "메뉴판 사진을 가져오지 못했습니다."
+    else:
+        msg = "사진에서 메뉴를 읽지 못했습니다. 메뉴판이 보이는 사진인지 확인해 주세요."
+    st.session_state[SS_MENU_TOAST] = msg
+    st.rerun()
 
 
 def run_auto_collect(partner: dict) -> None:
@@ -1253,48 +1372,11 @@ def run_auto_collect(partner: dict) -> None:
     slot = st.empty()
     state = {1: "대기", 2: "대기", 3: "대기"}
 
-    def mark(now: str, ink: str) -> str:
-        """칸 왼쪽의 표시 — 끝났으면 체크, 하는 중이면 도는 원, 아니면 빈 원."""
-        if now == "완료":
-            return f'<span style="color:{ink}; font-size:0.95rem">✓</span>'
-        if now == "진행 중":
-            return (f'<span class="mcspin" style="border-color:{ink}; '
-                    f'border-top-color:transparent"></span>')
-        return (f'<span style="display:inline-block; width:11px; height:11px; '
-                f'border:2px solid {ink}; border-radius:50%"></span>')
-
     def draw() -> None:
-        cards = ""
-        for i, (title, desc) in enumerate(COLLECT_STEPS, 1):
-            ink, back, line = STEP_TONE[state[i]]
-            cards += (
-                f'<div style="flex:1; min-width:0; border:1px solid {line}; '
-                f'background:{back}; border-radius:10px; padding:11px 13px">'
-                f'<div style="display:flex; align-items:center; gap:8px">'
-                f'{mark(state[i], ink)}'
-                f'<b style="color:{ink}; font-size:0.88rem; flex:1">{title}</b>'
-                f'<span style="color:{ink}; font-size:0.76rem">{state[i]}</span>'
-                f'</div><div style="color:#59606D; font-size:0.78rem; '
-                f'margin:3px 0 0 19px">{desc}</div></div>')
-        slot.markdown(
-            '<style>@keyframes mcspin{to{transform:rotate(360deg)}}'
-            '.mcspin{display:inline-block; width:13px; height:13px; flex:none;'
-            ' border:2px solid; border-radius:50%;'
-            ' animation:mcspin .8s linear infinite}</style>'
-            f'<div style="background:#FFFFFF; border:1px solid #E2E6EB; '
-            f'border-radius:10px; padding:14px 16px; margin-top:12px">'
-            f'<div style="display:flex; align-items:center; gap:10px">'
-            f'<span class="mcspin" style="border-color:#2563EB; '
-            f'border-top-color:transparent"></span>'
-            f'<b style="color:#161A1F; flex:1">'
-            f'{partner["name"]}의 메뉴·가격을 찾고 있어요</b>'
-            f'<span style="background:#EFF6FF; color:#2563EB; font-size:0.78rem; '
-            f'font-weight:700; border-radius:6px; padding:3px 9px">수집 중</span>'
-            f'</div>'
-            f'<div style="color:#59606D; font-size:0.85rem; margin:4px 0 12px 23px">'
-            f'잠시만 기다려 주세요. 다 찾으면 메뉴 목록에서 볼 수 있습니다.</div>'
-            f'<div style="display:flex; gap:10px">{cards}</div></div>',
-            unsafe_allow_html=True)
+        draw_steps(slot, COLLECT_STEPS, state,
+                   f'{partner["name"]}의 메뉴·가격을 찾고 있어요',
+                   "잠시만 기다려 주세요. 다 찾으면 메뉴 목록에서 볼 수 있습니다.",
+                   "수집 중")
 
     def on_step(n: int, how: str) -> None:
         state[n] = how
@@ -1335,8 +1417,8 @@ def edited_basis(basis, today: str) -> str:
     """
     고친 줄의 「근거」 문자열을 만든다. 원래 출처 뒤에 「· 수정됨 (날짜)」를 붙인다.
 
-      수동 등록 (2026-10-06)         →  수동 등록 · 수정됨 (2026-10-14)
-      메뉴판 사진 · 수정됨 (10-14)    →  메뉴판 사진 · 수정됨 (10-15)
+      직접 입력 (2026-10-06)              →  직접 입력 · 수정됨 (2026-10-14)
+      메뉴판 자동 인식 · 수정됨 (10-14)    →  메뉴판 자동 인식 · 수정됨 (10-15)
 
     **날짜는 최신 하나만 남긴다.** 칸이 넓지 않아 둘을 적으면 잘린다.
 
@@ -1344,7 +1426,7 @@ def edited_basis(basis, today: str) -> str:
     뜻이 다르다 — 「후기 5건, 2026-08」은 8월에 언급됐다는 뜻이고, 얼마나
     오래된 값인지를 그것으로 가늠한다 (`db/migrate_0928.sql:99`).
 
-    출처를 「수동 등록」으로 바꾸지 않는 이유는 `chain/inputs.py` 의
+    출처를 「직접 입력」으로 바꾸지 않는 이유는 `chain/inputs.py` 의
     MENU_EDITED 설명에 있다.
     """
     head = re.sub(rf"\s*·\s*{MENU_EDITED}\s*\([^)]*\)\s*$", "",
@@ -1382,6 +1464,51 @@ def save_menu_seen(partner: dict, picked: set[str], today: str) -> bool:
     get_client().table("partners").update(cols).eq("id", partner["id"]).execute()
     load_partners.clear()
     return True
+
+
+def save_photo_menus(partner: dict, rows: list[dict], today: str) -> int:
+    """
+    메뉴판에서 읽은 메뉴를 넣는다. 새로 들어온 수를 돌려준다.
+
+    **덮지 않고 합친다.** 이미 있는 이름은 비켜 가고 없는 이름만 새로 넣는다.
+    겹치면 기존 값이 이긴다.
+
+    사진은 기계가 읽은 것이라 틀릴 수 있어서다 — 두 메뉴를 한 줄로 읽은 적이
+    있다(「팥붕, 슈붕 1개 700」, 10/13). 사람이 넣었거나 확인한 값을 그것으로
+    덮으면 되돌릴 수 없다.
+
+    [교체가 아니어도 전체가 담긴다]
+    `db/migrate_0928.sql:117` 은 「사진이 들어오면 교체한다 — 손으로 3개를
+    넣었는데 사진에 12개가 있으면 12개가 맞다」고 적었다. 합쳐도 12개가 된다.
+    겹치는 3개의 값을 누구 것으로 하느냐만 다르고, 사람 쪽을 둔다.
+
+    [읽는 범위와 쓰는 범위가 다르다]
+    겹치는지는 두 칸을 다 보고, 넣는 것은 `menu_prices` 에만 한다. 후기 칸은
+    읽기만 하고 바꾸지 않는다.
+
+      menu_prices          붕어빵 2,000
+      menu_prices_review   떡볶이 7,000
+      사진이 읽은 것        붕어빵 · 떡볶이 · 김말이
+
+      붕어빵  menu_prices 에 있다         → 비켜 간다
+      떡볶이  menu_prices_review 에 있다  → 비켜 간다
+      김말이  어디에도 없다               → menu_prices 에 넣는다
+    """
+    old = [dict(r) for r in (partner.get("menu_prices") or [])]
+    have = {str(r.get("메뉴") or "").strip()
+            for col in ("menu_prices", "menu_prices_review")
+            for r in (partner.get(col) or [])}
+
+    fresh = [{"메뉴": r["메뉴"], "가격": r["가격"], "납품가": None,
+              "근거": f"{MENU_PHOTO} ({today})"}
+             for r in rows if str(r.get("메뉴") or "").strip() not in have]
+    if not fresh:
+        return 0
+
+    get_client().table("partners").update(
+        {"menu_prices": old + fresh}).eq("id", partner["id"]).execute()
+    load_partners.clear()
+    return len(fresh)
 
 
 def save_menu_edits(partner: dict, before: list[tuple[str, dict]]) -> bool:
@@ -2281,27 +2408,48 @@ with st.container(key="param_card"):
             # 수집하는 동안에는 두 버튼을 잠근다. 수집은 1분 넘게 걸리는데
             # 그 사이에 또 누르면 같은 일을 두 번 하게 된다 (시안 3쪽).
             collecting = st.session_state.get(SS_MENU_RUN, False)
+            reading = st.session_state.get(SS_PHOTO_RUN, False)
+            busy = collecting or reading
 
-            c_auto, c_hand, c_desc = st.columns([1, 1, 3],
-                                                vertical_alignment="center")
+            # 메뉴판 자동 인식은 B·C 갈래에서만 쓴다. 메뉴를 다시 정하겠다고
+            # 폼 1 에 답한 경우이고, 그때만 사진이 올라온다.
+            branch = (chosen.get("reply_choice") or "").strip().upper()
+            photos = len(chosen.get("menu_photo_url") or [])
+            can_photo = branch in ("B", "C")
+
+            cols = [1, 1, 1.2, 3] if can_photo else [1, 1, 3]
+            c = st.columns(cols, vertical_alignment="center")
+            c_auto, c_hand, c_desc = c[0], c[1], c[-1]
+
             if c_auto.button("자동 수집 중" if collecting else "메뉴 자동 수집",
                              icon=":material/download:", use_container_width=True,
-                             key="menu_auto_btn", disabled=collecting):
+                             key="menu_auto_btn", disabled=busy):
                 st.session_state[SS_MENU_RUN] = True
                 st.rerun()
             if c_hand.button("직접 입력", icon=":material/add:",
                              use_container_width=True, key="menu_hand_btn",
-                             disabled=collecting):
+                             disabled=busy):
                 st.session_state[SS_MENU_ADD] = True
+            if can_photo and c[2].button(
+                    "인식 중" if reading else "메뉴판 자동 인식",
+                    icon=":material/photo_camera:", use_container_width=True,
+                    key="menu_photo_btn", disabled=busy or not photos):
+                st.session_state[SS_PHOTO_RUN] = True
+                st.rerun()
+
+            if busy:
+                note = "진행 중에는 다시 실행하거나 메뉴를 등록할 수 없습니다."
+            elif can_photo and not photos:
+                note = "올려 주신 메뉴판 사진이 없어 자동 인식을 쓸 수 없습니다."
+            else:
+                note = "후기에 없는 메뉴는 직접 입력할 수 있습니다."
             c_desc.markdown(
                 '<div style="color:#374151; font-size:0.88rem">'
                 '네이버 블로그 후기에서 선택한 협력사의 메뉴와 가격을 가져옵니다.</div>'
-                '<div style="color:#9CA3AF; font-size:0.82rem; margin-top:2px">'
-                + ('수집 중에는 다시 실행하거나 메뉴를 등록할 수 없습니다.'
-                   if collecting else '후기에 없는 메뉴는 직접 입력할 수 있습니다.')
-                + '</div>', unsafe_allow_html=True)
+                f'<div style="color:#9CA3AF; font-size:0.82rem; margin-top:2px">'
+                f'{note}</div>', unsafe_allow_html=True)
 
-            # 수집 중 상태. 버튼을 누른 다음 실행에서 여기서 실제로 돌린다 —
+            # 돌리는 중인 상태. 버튼을 누른 다음 실행에서 여기서 실제로 돌린다 —
             # 누른 그 실행에서 바로 돌리면 버튼이 잠긴 모습을 못 보여 준다.
             #
             # 자기 상자를 준다. 수집이 1분 넘게 걸리는데 그동안 화면을 고쳐
@@ -2309,6 +2457,9 @@ with st.container(key="param_card"):
             if collecting:
                 with st.container(key="menu_run"):
                     run_auto_collect(chosen)
+            elif reading:
+                with st.container(key="menu_run"):
+                    run_photo_read(chosen)
 
             st.markdown(
                 '<div style="color:#59606D; font-size:0.85rem; display:flex; '
