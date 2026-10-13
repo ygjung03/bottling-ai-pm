@@ -158,6 +158,13 @@ PAST_CASES = """- 제과·디저트 협업 (2025, 대형 행사 기간): 유동�
 # 아님을 구분하기 위해서다.
 NO_TREND_MENU = f"{NO_DATA} (메뉴 검색 경로로 시작하지 않음)"
 
+# (2) 입력 — 추천받기 에이전트가 낸 메뉴 방향. 「대표님이 지정한 메뉴」와 다르다.
+#
+# 에이전트는 가게의 실제 메뉴를 모른 채 업종만 보고 지어낸다 (recommender/agent.py
+# 규칙 4). 그래서 **참고일 뿐 확정이 아니다.** 지정한 메뉴 자리에 넣으면 (2)가
+# 그 메뉴 하나로 안을 만드는데, 협력사가 안 파는 메뉴일 수 있다.
+NO_REC_MENU = f"{NO_DATA} (추천받기로 시작하지 않음)"
+
 
 # 바틀링 SNS 자산 — (3) 마케터 입력.
 #
@@ -494,6 +501,22 @@ def fixed_approach(partner: dict | None, approach: str | None = None) -> str | N
     return picked if picked in APPROACH.values() else None
 
 
+def agreed_menu_name(partner: dict | None,
+                     fallback: str | None = None) -> str | None:
+    """
+    협의로 정한 협업 메뉴 이름. 없으면 None.
+
+    폼 값이 먼저다. 폼에 없으면 넘겨 준 값을 쓴다 — A 갈래는 제안받은 그
+    메뉴라서 폼이 묻지 않고, 1차에서 고른 안에서 가져와야 한다.
+
+    같은 이름을 (2)의 입력(build_partner_resources)과 출력 검사(check_menu)가
+    함께 봐야 해서 따로 뒀다. 두 곳에서 다르게 고르면 검사가 헛돈다.
+    """
+    if not partner:
+        return None
+    return str(partner.get("agreed_menu") or fallback or "").strip() or None
+
+
 def _agreed_menu_line(partner: dict, name: str) -> str:
     """
     확정된 메뉴 한 줄. 「판매 중인 메뉴」 자리에 이것만 들어간다.
@@ -596,7 +619,7 @@ def build_partner_resources(partner: dict | None,
     if partner is None:
         return f"{NO_DATA} (협력사 미선택)"
 
-    name = (partner.get("agreed_menu") or agreed_menu) if confirmed else None
+    name = agreed_menu_name(partner, agreed_menu) if confirmed else None
     head = f"{partner.get('name', '?')} / {partner.get('category') or NO_DATA}"
     lines = [head]
 

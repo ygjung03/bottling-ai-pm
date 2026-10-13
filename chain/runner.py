@@ -34,7 +34,7 @@ from chain.checks import (Checked, check_final, check_menu,
                           parse_beer_prices, parse_beers)
 from chain.gemini import call
 from db import api_usage as usage
-from chain.inputs import has_partner_sns
+from chain.inputs import NO_REC_MENU, agreed_menu_name, has_partner_sns
 from chain.loader import build
 
 
@@ -167,7 +167,9 @@ def run(context: str, target_date: str, beer_list: str,
         rec_reason: str, partner: dict | None = None,
         fixed_menu: bool = False, preset: dict | None = None,
         on_step=None, usage_note: str | None = None,
-        today: date | None = None) -> dict:
+        today: date | None = None,
+        rec_menu_hint: str = NO_REC_MENU,
+        agreed_menu: str | None = None) -> dict:
     """
     on_step: 진행 상황 콜백 (Streamlit st.status 연동용)
 
@@ -180,11 +182,14 @@ def run(context: str, target_date: str, beer_list: str,
 
       그 단계는 화면에 그대로 뜨되 바로 끝난다. 보는 사람에게는 같은 4단계다.
 
-    fixed_menu: 협의로 메뉴가 하나로 정해진 뒤인가 (9/29)
+    fixed_menu: 협의로 메뉴가 하나로 정해진 뒤인가
 
-      그때는 세 안이 같은 안주인 것이 정상이라 그 검사를 끈다. 접근(단품·세트·
-      포장)만 다르다. 끄지 않으면 재호출이 헛돌고, (2)가 협력사와 정하지 않은
-      메뉴를 끌어온다.
+      그때는 안이 하나다. 고를 것을 내미는 자리가 아니다. 끄면 안이 셋이어야
+      한다고 보아 재호출이 헛돌고, (2)가 협력사와 정하지 않은 메뉴를 끌어온다.
+
+    agreed_menu: 협의로 정한 메뉴 이름. 폼에 있으면 안 넘겨도 된다 —
+      폼이 묻지 않는 A 갈래만 1차에서 고른 안에서 가져와 넘긴다
+      (chain.inputs.agreed_menu_name). 그 이름이 메뉴명에 남았는지 검사한다.
 
       build_partner_resources(confirmed=...) 와 같은 값을 넘긴다. 둘 다
       「협의 결과를 반영하는 자리인가」를 뜻한다. 데이터로 판정하지 않는 이유는
@@ -322,9 +327,13 @@ def run(context: str, target_date: str, beer_list: str,
             result["issues"] += found.all
             return out
 
+        # 확정 메뉴 이름. 협의 전이면 없다.
+        agreed = agreed_menu_name(partner, agreed_menu) if fixed_menu else None
+
         def check_p2(out) -> Checked:
             # (1)의 소비_수준을 같이 넘긴다 — 객단가를 판매가로 베꼈는지 보려면
-            found = check_menu(out, beers, result["p1"], fixed_menu=fixed_menu)
+            found = check_menu(out, beers, result["p1"], fixed_menu=fixed_menu,
+                               agreed_menu=agreed)
             if not partner:
                 # 메뉴명에 나온 것이 어디서 오는지 보려면 협력사가 파는
                 # 메뉴를 알아야 한다. 안 넘겼으면 이 검사만 건너뛴다.
@@ -348,6 +357,7 @@ def run(context: str, target_date: str, beer_list: str,
                     bottling_ingredients=bottling_ingredients,
                     margin_ref=margin_ref, weather_pref=weather_pref,
                     trend_menu=trend_menu,
+                    rec_menu_hint=rec_menu_hint,
                     constraints=constraints["p2"], fewshot=fewshot,
                     rejected=rejected,
                     prev_output=_j(prev) if prev else NO_ISSUES,
