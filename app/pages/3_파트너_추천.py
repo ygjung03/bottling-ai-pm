@@ -287,8 +287,13 @@ def render_map(df: pd.DataFrame, highlight_store_id: str | None = None, top_n: i
 
 SS_REC_AI = "rec_ai_result"
 # 고른 날짜·행사·메뉴 아이디어를 기획안 생성 화면으로 넘기는 자리.
-# {"date": "YYYY-MM-DD", "event": str | None, "menu": str, "store_id": str}
-# 기획안 생성 화면이 menu 를 trend_menu 자리에 읽는다 (B 와 맞춘 이름 — 바꾸면 조용히 빠진다).
+# {"date": "YYYY-MM-DD", "event": str | None, "menu": str,
+#  "store_id": str, "name": str}
+#
+# 기획안 생성 화면은 date 를 희망일 첫 값으로, menu 를 메뉴 방향 참고로 읽는다
+# (rec_menu_hint). name 은 그 화면에서 고른 협력사와 같은 가게인지 보는 데 쓴다 —
+# 추천을 받고 나서 목록에서 다른 협력사로 바꿀 수 있다. 이름을 맞춰 둔 자리라
+# 바꾸면 조용히 빠진다.
 SS_REC_PLAN = "rec_plan"
 WEEKDAY = "월화수목금토일"
 REC_MAX_DAYS = 60       # 뉴스 행사를 60일까지 모은다 (ingest/events.py NEWS_LOOKAHEAD_DAYS)
@@ -368,6 +373,7 @@ def render_ai_recommend(candidates: pd.DataFrame) -> None:
                 st.session_state[SS_REC_PLAN] = {
                     "date": p["date"].isoformat(), "event": p["event"],
                     "menu": p["menu"], "store_id": store["store_id"],
+                    "name": store["name"],
                 }
                 # 아래 점수 표에서 같은 가게가 체크된 상태로 다시 그린다
                 st.session_state["rec_pick_id"] = store["store_id"]

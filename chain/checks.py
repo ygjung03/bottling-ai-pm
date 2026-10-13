@@ -323,15 +323,24 @@ def _spend_levels(p1: dict | None) -> set[int]:
     return out
 
 
+def _squeeze(text) -> str:
+    """띄어쓰기만 다른 이름을 같게 본다 — 「팥 붕어빵」과 「팥붕어빵」."""
+    return re.sub(r"\s+", "", str(text or ""))
+
+
 def check_menu(out: dict, beers: dict, p1: dict | None = None,
-               fixed_menu: bool = False) -> Checked:
+               fixed_menu: bool = False,
+               agreed_menu: str | None = None) -> Checked:
     """
     프롬프트가 지시한 제약을 지켰는지 본다.
 
-    fixed_menu — 협의로 메뉴가 하나로 정해진 뒤인가 (9/29)
+    fixed_menu — 협의로 메뉴가 하나로 정해진 뒤인가
 
-    그때는 세 안이 같은 안주인 것이 정상이다. 접근(단품·세트·포장)만 다르다.
-    끄지 않으면 재호출이 헛돌고, (2)가 협력사와 정하지 않은 메뉴를 끌어온다.
+    그때는 안이 하나다. 고를 것을 내미는 자리가 아니다. 끄면 안이 셋이어야
+    한다고 보아 재호출이 헛돌고, (2)가 협력사와 정하지 않은 메뉴를 끌어온다.
+
+    agreed_menu — 협의로 정한 메뉴 이름 (chain.inputs.agreed_menu_name).
+      fixed_menu 일 때 그 이름이 메뉴명에 남아 있는지 본다.
     """
     issues: list[str] = []
     warns: list[str] = []
@@ -348,6 +357,16 @@ def check_menu(out: dict, beers: dict, p1: dict | None = None,
         # 모든 안이 같은 메뉴에 대해 나와 이상해보였다 (10/1 시연).
         if len(menus) != 1:
             issues.append(f"메뉴안 {len(menus)}개 — 메뉴가 정해졌으므로 1개여야 함")
+        # 확정한 이름이 메뉴명에 그대로 남아 있어야 한다. 「팥붕어빵」으로
+        # 정했는데 「붕어빵」으로 뭉개 적은 적이 있다 (10/14). 그 메뉴명이
+        # 제안서 제목으로 나가므로, 협력사가 동의한 것과 다른 문서가 된다.
+        # 세트·수량 같은 말이 뒤에 붙는 것은 정상이라 포함만 본다.
+        want = _squeeze(agreed_menu)
+        for m in menus if want else []:
+            if want not in _squeeze(m.get("메뉴명")):
+                issues.append(f"{m.get('안_id')}: 메뉴명이 확정 메뉴와 다름 — "
+                              f"확정 '{agreed_menu}' / 메뉴명 "
+                              f"'{m.get('메뉴명')}'. 확정한 이름을 그대로 쓸 것")
     elif len(menus) == 2 and "포장" not in approaches and "포장" in notes:
         pass
     elif len(menus) != 3:
