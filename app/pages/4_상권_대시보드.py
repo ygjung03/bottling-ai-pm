@@ -12,6 +12,10 @@
 import math
 import sys
 from datetime import date, datetime, timedelta, timezone
+
+# 배포는 UTC 라 그냥 today() 를 쓰면 새벽에 날짜가 하루 어긋나, 이미 끝난
+# 행사가 「앞으로 열릴 행사」에 남는다.
+KST = timezone(timedelta(hours=9))
 from pathlib import Path
 
 # Streamlit이 app/pages/*.py를 실행할 때는 프로젝트 루트가 sys.path에 없어서
@@ -565,7 +569,7 @@ def render_weekday_heatmap(spot, color):
 
 @st.cache_data(ttl=3600)
 def load_upcoming_events(limit=20):
-    today = date.today().isoformat()
+    today = datetime.now(KST).date().isoformat()
     res = (
         client.table("events")
         .select("*")

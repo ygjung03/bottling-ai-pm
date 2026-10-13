@@ -12,7 +12,10 @@
 """
 import secrets
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+
+# 배포는 UTC 라 그냥 today() 를 쓰면 새벽에 캘린더 기본값이 어제로 뜬다.
+KST = timezone(timedelta(hours=9))
 from pathlib import Path
 from urllib.parse import quote
 
@@ -306,7 +309,7 @@ def render_ai_recommend(candidates: pd.DataFrame) -> None:
     st.caption("협업할 수 있는 기간을 고르면, 그 기간의 근처 행사와 추천 점수 상위 가게를 보고 "
                "AI 가 날짜·가게·협업 메뉴 아이디어를 제안합니다.")
 
-    today = date.today()
+    today = datetime.now(KST).date()
     picked = st.date_input(
         "협업 가능 기간", value=rec_agent.default_range(today),
         min_value=today, max_value=today + timedelta(days=REC_MAX_DAYS),
