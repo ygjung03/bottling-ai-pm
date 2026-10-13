@@ -1788,6 +1788,21 @@ def _cell(text: str, dim: bool = False, last: bool = False) -> str:
             f'line-height:1.35; {edge}">{text}</div>')
 
 
+def menu_list_reset() -> None:
+    """
+    메뉴 목록 창의 수정 상태와 입력 칸을 치운다.
+
+    창을 닫을 때와 열 때 모두 부른다. 팝업 오른쪽 위 X 로 닫으면 코드를 아무것도
+    거치지 않아, 닫을 때만 치우면 수정 중이던 상태와 고치던 값이 그대로 남아
+    다음에 열 때 되살아난다.
+    """
+    st.session_state.pop(SS_MENU_EDIT, None)
+    st.session_state.pop("mseen_all", None)
+    for k in [k for k in st.session_state
+              if k.startswith(("mname_", "mprice_", "mseen_"))]:
+        st.session_state.pop(k, None)
+
+
 @st.dialog("등록된 메뉴·가격", width="large")
 def _menu_list(partner: dict) -> None:
     """
@@ -1808,13 +1823,9 @@ def _menu_list(partner: dict) -> None:
     editing = st.session_state.get(SS_MENU_EDIT, False)
 
     def shut() -> None:
-        """창을 닫는다. 신호와 입력 칸을 지워야 다음에 열 때 깨끗하다."""
+        """창을 닫는다. 신호도 함께 지워야 닫은 뒤에 다시 뜨지 않는다."""
         st.session_state.pop(SS_MENU_VIEW, None)
-        st.session_state.pop(SS_MENU_EDIT, None)
-        st.session_state.pop("mseen_all", None)
-        for k in [k for k in st.session_state
-                  if k.startswith(("mname_", "mprice_", "mseen_"))]:
-            st.session_state.pop(k, None)
+        menu_list_reset()
 
     # 「모두 확인」은 켜고 끌 때만 줄 체크박스를 건드린다. 매 실행마다 맞추면
     # 줄 하나만 체크해 둔 것이 도로 꺼진다. 그래서 바뀔 때만 도는 콜백으로
@@ -2592,14 +2603,19 @@ with st.container(key="param_card"):
                       use_container_width=True,
                       disabled=not has_menus or not allowed or collecting)
 
-# 창은 여기 한 곳에서만 연다.
+# 창은 여기 한 곳에서만 연다. 신호는 둘 다 꺼내면서 지운다.
 #
-# 메뉴 목록 창은 **닫을 때까지 신호를 지우지 않는다.** 그 안의 표는 칸을 고칠
-# 때마다 화면 전체를 다시 그리는데, 그때 신호가 없으면 창이 다시 안 열리고
-# 화면에만 남은 창이 없어진 조각을 불러 터진다 (10/6).
+# 메뉴 목록 창의 신호를 남겨 두었더니, 팝업 오른쪽 위 X 로 닫을 때 신호가
+# 그대로 남았다. 창을 닫는 길 넷(「닫기」·「확인 완료」·「저장하기」·「메뉴 직접
+# 입력」)만 신호를 지우고 X 는 아무 코드도 안 거친다. 세션 값은 화면을 옮겨도
+# 남으니, 홈을 거쳐 이 화면에 들어올 때마다 창이 다시 떴다 (10/14).
 #
-# 수동 등록 창은 입력만 받고 끝나므로 꺼내면서 지운다.
-if st.session_state.get(SS_MENU_VIEW):
+# 신호를 지워도 창은 열려 있다. st.dialog 는 조각(fragment)이라 창 안의
+# 체크박스·입력칸을 눌러도 이 줄이 다시 돌지 않는다. 10/6 에 남겨 두기로 한
+# 것은 그때 창 안에 st.data_editor 가 있어 화면 전체가 다시 그려졌기 때문이고,
+# 그 표는 지금 없다.
+if st.session_state.pop(SS_MENU_VIEW, False):
+    menu_list_reset()        # 지난번에 X 로 닫았을 때 남은 수정 상태를 치운다
     _menu_list(chosen)
 elif st.session_state.pop(SS_MENU_ADD, False):
     _manual_menu(chosen)
