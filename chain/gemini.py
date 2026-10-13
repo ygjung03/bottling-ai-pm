@@ -76,13 +76,19 @@ def get_client(paid: bool = False) -> genai.Client:
 
 def call(prompt: str, retry: int = 2, model: str | None = None,
          on_wait=None, temperature: float | None = None,
-         paid: bool = False) -> tuple[dict, int]:
+         paid: bool = False,
+         images: list[tuple[bytes, str]] | None = None) -> tuple[dict, int]:
     """
     JSON 응답을 강제하고 파싱해서 돌려준다.
 
     반환: (파싱된 dict, 소요 ms)
 
     paid 를 주면 유료 키로 부른다 (get_client 설명 참고).
+
+    images 는 (파일 내용, 종류) 쌍의 목록이다. 메뉴판 사진을 읽을 때 쓴다
+    (③-c). 종류는 "image/jpeg" 처럼 적는다 — 짐작하지 않고 내려받을 때 서버가
+    알려준 값을 그대로 넘긴다(`db.storage.download`). 사진이 글보다 앞에 간다.
+    모델이 이미지를 받는 것은 `tests/probe_vlm.py` 로 확인했다.
 
     temperature 를 주면 그 값으로 부른다. 안 주면 모델 기본값이다.
       글에 적힌 사실을 그대로 뽑아 오는 일에는 0 을 준다. 기본값으로 두면
@@ -105,6 +111,8 @@ def call(prompt: str, retry: int = 2, model: str | None = None,
         response_mime_type="application/json",
         **({"temperature": temperature} if temperature is not None else {}))
     model_name = model or GEMINI_MODEL
+    contents = ([types.Part.from_bytes(data=data, mime_type=mime)
+                 for data, mime in images or []] + [prompt])
     last_err = None
     # **매개변수가 아니라 이 값이 실제로 쓴 키다.** 한 호출 안에서 키를 갈아탈
     # 수 있고(아래 429 처리 참고), 그때 사용량이 엉뚱한 쪽에 쌓이면 금액이
@@ -115,7 +123,7 @@ def call(prompt: str, retry: int = 2, model: str | None = None,
         t0 = time.perf_counter()
         try:
             resp = get_client(use_paid).models.generate_content(
-                model=model_name, contents=prompt, config=cfg
+                model=model_name, contents=contents, config=cfg
             )
             ms = int((time.perf_counter() - t0) * 1000)
             um = getattr(resp, "usage_metadata", None)

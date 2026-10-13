@@ -339,9 +339,11 @@ def fetch_partner(partner_id: int | None = None) -> dict | None:
 
 MENU_MANUAL = "수동 등록"
 MENU_AUTO = "자동 수집"
+MENU_PHOTO = "메뉴판 사진"
 
-# 자동 수집이 「근거」 맨 앞에 적는 말. 이 말이 있는 줄만 자동으로 친다.
+# 「근거」 맨 앞에 적는 말. 이 말이 있는 줄만 그 출처로 친다.
 MENU_AUTO_BASIS = "블로그 후기 자동 수집"
+MENU_PHOTO_BASIS = MENU_PHOTO       # "메뉴판 사진 (2026-10-13)" 꼴로 적는다
 
 
 def menu_source(row: dict) -> str:
@@ -351,10 +353,17 @@ def menu_source(row: dict) -> str:
     컬럼으로 가르면 안 된다 — menu_prices_review 에는 사람이 후기를 보고 손으로
     옮겨 적은 것도 들어 있다 (프레즐 32개, 9/19). 컬럼이 가르는 것은 「누가
     넣었나」가 아니라 「어디서 온 값인가」다.
+
+    셋으로 가른다. 사진으로 읽은 것을 「수동 등록」으로 묶으면 안 된다 —
+    사람이 적은 것이 아니고, 「메뉴판 사진이 수동 등록보다 최신이고 전체를
+    담는다」는 판단이 거기에 걸려 있다 (`db/migrate_0928.sql:117`).
     """
-    return (MENU_AUTO
-            if str(row.get("근거") or "").startswith(MENU_AUTO_BASIS)
-            else MENU_MANUAL)
+    basis = str(row.get("근거") or "")
+    if basis.startswith(MENU_AUTO_BASIS):
+        return MENU_AUTO
+    if basis.startswith(MENU_PHOTO_BASIS):
+        return MENU_PHOTO
+    return MENU_MANUAL
 
 
 def menu_rows_sourced(partner: dict) -> list[tuple[str, dict]]:
