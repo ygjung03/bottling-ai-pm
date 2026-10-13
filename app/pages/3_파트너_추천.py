@@ -12,6 +12,7 @@
 """
 import secrets
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -29,6 +30,7 @@ from context.builder import INDUSTRY_MAP
 from db.client import get_client
 from recommender.complement import TIER_LABELS, guess_industry_category, tier_label
 from recommender.scoring import score_store
+from recommender import agent as rec_agent
 
 st.set_page_config(page_title="파트너 추천", page_icon="🔍", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -278,6 +280,108 @@ def render_map(df: pd.DataFrame, highlight_store_id: str | None = None, top_n: i
     st.markdown(f'<div style="font-size:0.8rem;color:#6B7280;">{legend}</div>', unsafe_allow_html=True)
 
 
+# ───────────────────────── 추천받기 — AI 에이전트 ─────────────────────────
+
+SS_REC_AI = "rec_ai_result"
+# 고른 날짜·행사·메뉴 아이디어를 기획안 생성 화면으로 넘기는 자리.
+# {"date": "YYYY-MM-DD", "event": str | None, "menu": str, "store_id": str}
+# 기획안 생성 화면이 menu 를 trend_menu 자리에 읽는다 (B 와 맞춘 이름 — 바꾸면 조용히 빠진다).
+SS_REC_PLAN = "rec_plan"
+WEEKDAY = "월화수목금토일"
+REC_MAX_DAYS = 60       # 뉴스 행사를 60일까지 모은다 (ingest/events.py NEWS_LOOKAHEAD_DAYS)
+
+
+def _fmt_day(d: date) -> str:
+    return f"{d.month}/{d.day}({WEEKDAY[d.weekday()]})"
+
+
+def render_ai_recommend(candidates: pd.DataFrame) -> None:
+    """
+    기간을 받아 AI 가 날짜·가게·메뉴 아이디어를 1~5위로 제안한다 (recommender/agent.py).
+
+    카드에서 「이 안으로 진행」을 누르면 아래 점수 표의 같은 가게가 선택된 상태가 되어,
+    기존 상세 → 협력사 등록 → 기획안 생성 흐름을 그대로 탄다.
+    """
+    st.markdown("#### AI 추천 — 언제 · 누구와 · 무엇을")
+    st.caption("협업할 수 있는 기간을 고르면, 그 기간의 근처 행사와 추천 점수 상위 가게를 보고 "
+               "AI 가 날짜·가게·협업 메뉴 아이디어를 제안합니다.")
+
+    today = date.today()
+    picked = st.date_input(
+        "협업 가능 기간", value=rec_agent.default_range(today),
+        min_value=today, max_value=today + timedelta(days=REC_MAX_DAYS),
+        format="YYYY-MM-DD", key="rec_ai_range",
+        help=f"행사는 오늘부터 {REC_MAX_DAYS}일 안의 것만 모아 둡니다.",
+    )
+    ready = isinstance(picked, (tuple, list)) and len(picked) == 2
+    if not ready:
+        st.caption("시작일과 종료일을 모두 골라 주세요.")
+
+    if st.button("AI 추천받기", type="primary", disabled=not ready, key="rec_ai_btn"):
+        start, end = picked
+        pool = candidates[~candidates["등록됨"]].head(rec_agent.MAX_CANDIDATES)
+        wait_box = st.empty()
+
+        def on_wait(sec, _attempt):
+            wait_box.caption(f"AI 호출 한도에 걸려 {sec}초 기다렸다가 다시 부릅니다…")
+
+        with st.spinner("행사와 후보 가게를 보고 추천을 만드는 중… (10~30초)"):
+            try:
+                from chain.inputs import build_beer_list
+                picks, events = rec_agent.recommend(
+                    start, end, pool.to_dict("records"), build_beer_list(), on_wait=on_wait)
+            except Exception as e:
+                st.error(f"추천을 만들지 못했습니다 — {e}")
+                picks, events = None, []
+        wait_box.empty()
+        if picks is not None:
+            st.session_state[SS_REC_AI] = {"range": (start, end), "picks": picks,
+                                           "events": events}
+
+    result = st.session_state.get(SS_REC_AI)
+    if not result:
+        return
+
+    start, end = result["range"]
+    picks = result["picks"]
+    if not picks:
+        st.warning("쓸 수 있는 추천이 나오지 않았습니다. 기간을 바꾸거나 다시 눌러 주세요.")
+        return
+
+    st.caption(f"{_fmt_day(start)} ~ {_fmt_day(end)} 기준 · 메뉴는 업종으로 낸 아이디어입니다 "
+               f"(가게의 실제 메뉴는 협력사 등록 뒤에 모읍니다).")
+    for p in picks:
+        store = p["store"]
+        with st.container(border=True):
+            st.markdown(f"**{p['rank']}위 · {_fmt_day(p['date'])} · {store['name']}**")
+            st.caption(f"{store.get('tier') or '업종 미상'} · 도보 약 "
+                       f"{round(store['distance_m'] / 67)}분 ({int(store['distance_m'])}m) · "
+                       f"점수 {float(store['score']):.2f}")
+            st.markdown(f"연계 행사 — {p['event'] or '없음'}  \n"
+                        f"메뉴 아이디어 — {p['menu'] or '-'}")
+            for i, r in enumerate(p["reasons"], 1):
+                st.markdown(f"{i}. {r}")
+            if st.button("이 안으로 진행", key=f"rec_ai_go_{p['rank']}"):
+                st.session_state[SS_REC_PLAN] = {
+                    "date": p["date"].isoformat(), "event": p["event"],
+                    "menu": p["menu"], "store_id": store["store_id"],
+                }
+                # 아래 점수 표에서 같은 가게가 체크된 상태로 다시 그린다
+                st.session_state["rec_pick_id"] = store["store_id"]
+                st.session_state["rec_table_ver"] = st.session_state.get("rec_table_ver", 0) + 1
+                st.session_state["rec_ai_went"] = store["name"]
+                st.rerun()
+
+    went = st.session_state.pop("rec_ai_went", None)
+    if went:
+        st.success(f"'{went}'을(를) 골랐습니다. 아래 표에서 상세를 확인하고 진행하세요.")
+
+    if result["events"]:
+        with st.expander(f"AI 가 본 행사 {len(result['events'])}건"):
+            for e in result["events"]:
+                st.caption(f"{e['start_date']} ~ {e.get('end_date')} · {e.get('title')}")
+
+
 # ───────────────────────── 화면 ─────────────────────────
 
 st.title("파트너 추천")
@@ -298,6 +402,10 @@ with tab_rec:
         candidates["등록됨"] = candidates["name"].apply(
             lambda n: (n or "").strip().lower() in partner_names
         )
+
+        render_ai_recommend(candidates)
+        st.divider()
+        st.markdown("#### 점수 순 전체 후보")
 
         c1, c2 = st.columns([1, 3])
         with c1:
