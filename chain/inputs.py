@@ -344,13 +344,38 @@ def fetch_partner(partner_id: int | None = None) -> dict | None:
     return rows[0] if rows else None
 
 
-MENU_MANUAL = "수동 등록"
+MENU_MANUAL = "직접 입력"
 MENU_AUTO = "자동 수집"
-MENU_PHOTO = "메뉴판 사진"
+MENU_PHOTO = "메뉴판 자동 인식"
 
 # 「근거」 맨 앞에 적는 말. 이 말이 있는 줄만 그 출처로 친다.
 MENU_AUTO_BASIS = "블로그 후기 자동 수집"
-MENU_PHOTO_BASIS = MENU_PHOTO       # "메뉴판 사진 (2026-10-13)" 꼴로 적는다
+MENU_PHOTO_BASIS = MENU_PHOTO       # "메뉴판 자동 인식 (2026-10-13)" 꼴로 적는다
+
+# 사람이 고친 줄은 「근거」 끝에 이 말이 붙는다 — 「메뉴판 자동 인식 · 수정됨 (10-14)」.
+# 출처는 그대로 둔다. 「직접 입력」으로 바꾸면 어디서 온 메뉴인지가 사라지고,
+# 사진으로 9개를 읽었는데 세는 줄이 7개로 줄어 보인다.
+MENU_EDITED = "수정됨"
+
+# 사람이 눈으로 확인한 줄에 들어가는 칸. 메뉴 목록 창에서 체크하고 「확인」을
+# 누르면 날짜가 들어간다. 날짜는 화면에 안 보이고 체크 표시로만 나간다.
+#
+# 협력사가 아니라 **줄마다** 둔다. 새 메뉴가 들어와도 이미 본 줄의 확인이
+# 풀리지 않는다.
+MENU_SEEN = "확인"
+
+
+def menu_kept(row: dict) -> bool:
+    """
+    다시 수집해도 덮지 말아야 할 줄인가.
+
+    사람이 고쳤거나 눈으로 확인한 줄이다. 기계가 읽은 값보다 사람이 맞다.
+    자동 수집과 메뉴판 사진이 이 값을 보고 남길 줄을 가린다.
+
+    둘 중 하나만 있어도 남긴다. 「확인만 있고 안 고친 줄」이 흔한 쪽이다 —
+    목록을 보고 맞으면 체크만 하고 넘어간다.
+    """
+    return bool(row.get(MENU_SEEN)) or MENU_EDITED in str(row.get("근거") or "")
 
 
 def menu_source(row: dict) -> str:
@@ -361,9 +386,9 @@ def menu_source(row: dict) -> str:
     옮겨 적은 것도 들어 있다 (프레즐 32개, 9/19). 컬럼이 가르는 것은 「누가
     넣었나」가 아니라 「어디서 온 값인가」다.
 
-    셋으로 가른다. 사진으로 읽은 것을 「수동 등록」으로 묶으면 안 된다 —
-    사람이 적은 것이 아니고, 「메뉴판 사진이 수동 등록보다 최신이고 전체를
-    담는다」는 판단이 거기에 걸려 있다 (`db/migrate_0928.sql:117`).
+    셋으로 가른다. 사진으로 읽은 것을 「직접 입력」으로 묶으면 안 된다 —
+    사람이 적은 것이 아니고, 「메뉴판 사진이 손으로 넣은 것보다 최신이고
+    전체를 담는다」는 판단이 거기에 걸려 있다 (`db/migrate_0928.sql:117`).
     """
     basis = str(row.get("근거") or "")
     if basis.startswith(MENU_AUTO_BASIS):
