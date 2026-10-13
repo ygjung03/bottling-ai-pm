@@ -45,12 +45,12 @@ from app.theme import (ARCHIVE_PARAM, SS_ARCHIVE_COUNT, SS_PARTNER_ID,
 from app.ui import page_header
 from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           MENU_AUTO_BASIS, MENU_EDITED, MENU_MANUAL,
-                          MENU_PHOTO, MENU_SEEN, NO_TREND_MENU, PAST_CASES,
-                          WEATHER_PREF, build_beer_list, build_constraints,
-                          build_events, build_partner_blockers,
-                          build_partner_resources, build_partner_sns,
-                          build_rec_reason, menu_kept, menu_rows,
-                          menu_rows_sourced)
+                          MENU_PHOTO, MENU_SEEN, NO_REC_MENU, NO_TREND_MENU,
+                          PAST_CASES, WEATHER_PREF, build_beer_list,
+                          build_constraints, build_events,
+                          build_partner_blockers, build_partner_resources,
+                          build_partner_sns, build_rec_reason, menu_kept,
+                          menu_rows, menu_rows_sourced)
 from chain.runner import run
 from collectors.menu_photo import read_photos
 from collectors.menu_reviews import collect
@@ -79,6 +79,10 @@ SS_MENU_RUN = "menu_collecting"   # 지금 후기를 찾는 중이다 (버튼이
 SS_PHOTO_RUN = "photo_reading"    # 지금 메뉴판 사진을 읽는 중이다
 SS_MENU_VIEW = "menu_list_open"   # 메뉴 목록 창을 열어라
 SS_MENU_EDIT = "menu_list_edit"   # 그 창이 고치는 상태다
+
+# 추천받기에서 「이 안으로 진행」을 누르고 왔을 때 그 화면이 남겨 둔 값.
+# 담기는 것은 app/pages/3_파트너_추천.py 의 SS_REC_PLAN 설명에 있다.
+SS_REC_PLAN = "rec_plan"
 
 
 # 보관함. 열렸는지는 주소의 질의 문자열이 정한다 (app/theme.ARCHIVE_PARAM).
@@ -583,15 +587,39 @@ def resumable(partner: dict, target: date, rnd: int) -> dict | None:
     return res if same else None
 
 
+def rec_plan_for(partner: dict) -> dict:
+    """
+    추천받기에서 「이 안으로 진행」을 누르고 온 경우의 날짜·메뉴 방향.
+    그렇게 오지 않았거나 다른 협력사를 보고 있으면 빈 dict 다.
+
+    **고른 가게와 지금 화면의 협력사가 같을 때만 쓴다.** 추천을 받고 나서
+    협력사 목록에서 다른 곳으로 바꿀 수 있어, 확인하지 않으면 남의 추천에서
+    나온 날짜와 메뉴 방향이 그대로 붙는다.
+
+    가게 번호가 아니라 이름으로 맞춘다 — partners 행에는 추천 쪽 가게 번호를
+    담는 칸이 없다 (build_rec_reason 과 같은 이유다).
+
+    1차 기획안을 다 만들면 generate 가 이 값을 지운다. 한 추천은 한 번만 쓴다.
+    """
+    plan = st.session_state.get(SS_REC_PLAN) or {}
+    if not plan:
+        return {}
+    same = (str(plan.get("name") or "").strip()
+            == str(partner.get("name") or "").strip())
+    return plan if same else {}
+
+
 def generate(partner: dict, target: date, rnd: int,
-             sent: dict | None = None, resume: dict | None = None) -> None:
+             sent: dict | None = None, resume: dict | None = None,
+             rec_menu: str = "") -> None:
     """
     체인을 돌리고 결과를 세션에 남긴다.
 
     resume 은 끊긴 기획안이다. 주면 거기서 이미 만들어진 단계를 건너뛴다.
 
-    rnd 는 사람이 고른 회차다. 전에는 폼 값이 있으면 무조건 2차로 떠서 1차 과정을
-    보여줄 수 없었다 (9/24).
+    rnd 는 회차다. 고르게 하지 않고 데이터가 정한다 — 폼이 오기 전이면 1차,
+    폼이 왔고 1차에서 고른 안이 있으면 2차다. 두 회차가 동시에 가능한 적이 없다.
+    정하는 곳은 화면 아래쪽(can_1st·can_2nd)이다.
 
     2차면 협의 결과를 AI 에게 넘긴다 (9/29). 안 넘기면 협력사가 폼에 적은 매입가를
     AI 가 못 봐서 2차가 1차와 같은 값을 낸다.
@@ -599,6 +627,10 @@ def generate(partner: dict, target: date, rnd: int,
     sent 는 보관함에서 고른 「협력사에 보낸 안」이다. 그 안의 메뉴가 협업 메뉴다.
     A 갈래(「네, 그 메뉴로 진행하겠습니다」)는 폼이 메뉴 이름을 묻지 않아 이 값
     말고는 알 길이 없다. 안 넘기면 AI 가 협의 전 목록에서 다른 메뉴를 고른다.
+
+    rec_menu 는 추천받기에서 넘어온 메뉴 방향이다 (rec_plan_for). 확정 메뉴가
+    아니라 참고이고, (2)는 협력사가 실제로 파는 메뉴 중에서 그 방향에 가까운
+    것을 고른다. 세 안은 그대로 나온다.
     """
     head = f"{rnd}차 기획안 {'이어서 만드는 중' if resume else '생성 중'}..."
     with st.status(head, expanded=True) as box:
@@ -630,6 +662,10 @@ def generate(partner: dict, target: date, rnd: int,
             margin_ref=MARGIN_REF,
             weather_pref=WEATHER_PREF,
             trend_menu=NO_TREND_MENU,
+            # 2차는 협의로 메뉴를 정하고 돌리는 회차라 1차에만 넘긴다. 2차에
+            # 넘겨 보니 안은 하나로 나오면서 접근이 확정값을 벗어났다 —
+            # 「단품」으로 정했는데 세트가 나왔다.
+            rec_menu_hint=(rec_menu or NO_REC_MENU) if rnd == 1 else NO_REC_MENU,
             constraints=build_constraints(),
             fewshot="(없음 — 채택 사례가 아직 없다)",
             bottling_sns=BOTTLING_SNS,
@@ -639,6 +675,7 @@ def generate(partner: dict, target: date, rnd: int,
             rec_reason=build_rec_reason(partner),
             partner=partner,
             fixed_menu=rnd == 2,
+            agreed_menu=(sent or {}).get("메뉴명"),
             preset=(made_preset(resume) if resume
                     else (load_preset(partner, sent) if rnd == 2 else None)),
             on_step=on_step,
@@ -650,6 +687,12 @@ def generate(partner: dict, target: date, rnd: int,
             box.update(label=f"{rnd}차 기획안을 끝까지 만들지 못했습니다", state="error")
         else:
             box.update(label=f"{rnd}차 기획안 완료 — {sec:.0f}초", state="complete")
+            # 추천에서 온 방향은 **한 번 쓰고 지운다.** 남겨 두면 나중에 같은
+            # 협력사로 다시 만들 때, 추천을 거치지 않았는데도 그 방향이 또
+            # 붙는다. 끝까지 못 만들었으면 남겨 둔다 — 다시 누르면 그 방향으로
+            # 이어 만들어야 한다.
+            if rec_menu:
+                st.session_state.pop(SS_REC_PLAN, None)
 
     meta = {
         "partner_id": partner["id"],
@@ -2374,6 +2417,13 @@ with st.container(key="param_card"):
             # 회차·협의 가능 시간·납품 요일 캡션은 화면에 두지 않는다 (9/22).
             # 회차는 결과의 「생성 조건」에 있고, 납품 요일은 체인 입력에 그대로 들어간다.
         with c2:
+            # 추천 에이전트가 제안한 날짜를 달력 첫 값으로 쓴다. 위젯이 그려진 뒤에
+            # 넣으면 늦어서, 그리기 전에 넣는다. 이미 값이 있으면 건드리지
+            # 않는다 — 사람이 고친 날짜를 되돌리면 안 된다.
+            plan = rec_plan_for(chosen)
+            if plan.get("date") and "target_date" not in st.session_state:
+                st.session_state["target_date"] = date.fromisoformat(plan["date"])
+
             # 달력 표시를 그리려고 상자로 감싼다. Streamlit 내부 이름
             # (data-testid·data-baseweb)에 기대면 버전에 따라 빗나간다 —
             # 실제로 두 번 빗나갔다 (10/5). 내가 지은 key 로만 잡는다.
@@ -2383,6 +2433,10 @@ with st.container(key="param_card"):
                 target = st.date_input(
                     "협업 시작 희망일", key="target_date",
                     value=datetime.now(KST).date() + timedelta(days=7))
+            if plan:
+                hint = f" · 메뉴 방향 「{plan['menu']}」" if plan.get("menu") else ""
+                st.caption(f"추천 에이전트가 제안한 날짜입니다{hint}. 날짜는 "
+                           "바꿀 수 있고, 메뉴 방향은 참고로만 들어갑니다.")
 
         # ── 협력사 메뉴·가격 정보 (시안 1쪽) ──
         #
@@ -2559,7 +2613,8 @@ if go and target < datetime.now(KST).date():
 elif go:
     # 끊겼던 기획안이면 그 자리에서 이어 간다 (resumable 설명 참고).
     generate(chosen, target, rnd, sent,
-             resume=resumable(chosen, target, rnd))
+             resume=resumable(chosen, target, rnd),
+             rec_menu=rec_plan_for(chosen).get("menu") or "")
 
 # 생성 조건 상자와 결과 사이는 비워 둔다. 만드는 동안에는 이 자리를 진행 상황이
 # 쓴다 (generate 의 st.status 가 "n차 기획안 생성 중...").
