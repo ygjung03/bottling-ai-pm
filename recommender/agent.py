@@ -17,10 +17,13 @@
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from chain.gemini import call
 from db.client import get_client
+
+# 배포는 UTC 라 그냥 today() 를 쓰면 새벽에 캘린더 기본값이 어제로 뜬다.
+KST = timezone(timedelta(hours=9))
 
 MAX_PICKS = 5
 MAX_CANDIDATES = 30     # 점수 상위 몇 곳까지 AI 에게 보여줄지
@@ -172,5 +175,5 @@ def recommend(start: date, end: date, cands: list[dict], beers: str,
 
 def default_range(today: date | None = None) -> tuple[date, date]:
     """캘린더 처음 값 — 오늘부터 2주."""
-    today = today or date.today()
+    today = today or datetime.now(KST).date()
     return today, today + timedelta(days=14)

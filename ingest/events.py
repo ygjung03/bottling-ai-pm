@@ -26,10 +26,14 @@ import math
 import os
 import re
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import requests
 from bs4 import BeautifulSoup
+
+# 배포는 UTC 라 그냥 today() 를 쓰면 새벽에 날짜가 하루 어긋난다. 오늘 끝나는
+# 행사가 남거나 마지막 날 행사가 빠진다.
+KST = timezone(timedelta(hours=9))
 from dotenv import load_dotenv
 
 from config.settings import NAVER_CLIENT_ID, NAVER_CLIENT_SECRET
@@ -107,7 +111,7 @@ def fetch_all_seoul_events():
 
 
 def filter_and_map(raw_rows):
-    today = date.today()
+    today = datetime.now(KST).date()
     horizon = today + timedelta(days=LOOKAHEAD_DAYS)
 
     rows = []
@@ -222,7 +226,7 @@ def parse_gwangjin_post(ntt_id, post_title):
             continue
         end_date = end_date or start_date
 
-        today = date.today()
+        today = datetime.now(KST).date()
         horizon = today + timedelta(days=LOOKAHEAD_DAYS)
         if end_date < today or start_date > horizon:
             continue  # 향후 30일과 겹치지 않음 (과거 행사 등)
@@ -427,7 +431,7 @@ def fetch_naver_news_events():
         return []
     headers = {"X-NCP-APIGW-API-KEY-ID": NAVER_CLIENT_ID,
                "X-NCP-APIGW-API-KEY": NAVER_CLIENT_SECRET}
-    today = date.today()
+    today = datetime.now(KST).date()
     horizon = today + timedelta(days=NEWS_LOOKAHEAD_DAYS)
 
     # (1) 후보 — 싸게 먼저 거른다
