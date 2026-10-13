@@ -7,6 +7,13 @@ V9 — 서울시 문화행사 정보
     - 좌표: LOT=경도, LAT=위도 (LON 아님. 실제 응답으로 확인됨)
     - 필터 기준: 바틀링 반경 3km + 오늘부터 향후 30일과 겹치는 일정만
 
+V11 — 네이버 뉴스 검색 (NCP API HUB)
+    GET https://naverapihub.apigw.ntruss.com/search/v1/news
+    - 헤더 X-NCP-APIGW-API-KEY-ID / X-NCP-APIGW-API-KEY (개발자센터 주소·헤더는 401)
+    - 장기 전시 위주인 V9·V10 을 보완해 드론쇼·축제 같은 단기 행사를 찾는다
+    - 지역명만으로는 엉뚱한 기사가 섞여, 제목+요약에 LOCATION_KEYWORDS 가 있고
+      행사 날짜가 글에서 뽑히는 기사만 남긴다. pubDate 는 기사 날짜라 연도 기준으로만 쓴다
+
 V10 — 광진구청 새소식 게시판(B0000001) 크롤링
     - "문화행사" 검색 시 4건("다음주(N~M) 문화행사 안내" 주간 안내글)만 나옴
     - 게시글 1개 안에 여러 표(행사 여러 건)가 들어있음. 표마다:
@@ -25,6 +32,7 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
+from config.settings import NAVER_CLIENT_ID, NAVER_CLIENT_SECRET
 from db.client import upsert
 
 load_dotenv()
@@ -251,6 +259,106 @@ def fetch_gwangjin_events():
     return all_rows
 
 
+NEWS_URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
+NEWS_QUERIES = ["뚝섬 드론쇼", "뚝섬한강공원 축제", "뚝섬한강공원 행사",
+                "자양동 축제", "광진구 축제", "한강공원 페스티벌 뚝섬"]
+
+# 「2026년 10월 18일」「10월 18일」「2026.10.24」 + 「~25일」「부터 3일까지」 같은 끝 날짜
+# (?![\d억만천%]) 는 「3.5억」 같은 숫자를 날짜로 잡지 않기 위함
+_KDATE_RE = re.compile(
+    r"(?:(\d{4})\s*[년.]\s*)?(\d{1,2})\s*[월.]\s*(\d{1,2})(?![\d억만천%])\s*일?"
+    r"(?:\s*\([^)]*\))?"
+    r"(?:\s*(?:~|-|부터)\s*(?:(\d{1,2})\s*[월.]\s*)?(\d{1,2})\s*일?)?")
+
+
+def _strip_html(t: str) -> str:
+    """검색 결과 제목·요약의 <b> 태그를 뗀다 (collectors/menu_reviews.py 것을 옮김).
+    그 모듈을 import 하면 제미나이 설정까지 따라 읽혀서 옮겼다. 태그 자리를 빈칸으로
+    두면 「<b>뚝섬</b>한강공원」이 「뚝섬 한강공원」이 돼서 그냥 지운다."""
+    t = re.sub(r"<[^>]+>", "", t)
+    t = t.replace("&quot;", '"').replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def extract_event_dates(text, pub):
+    """기사 글에서 행사 시작·끝 날짜. 연도가 없으면 기사 날짜(pub)의 연도를 쓴다."""
+    found = []
+    for y, m, d, m2, d2 in _KDATE_RE.findall(text):
+        yr = int(y) if y else pub.year
+        try:
+            s = date(yr, int(m), int(d))
+            if not y and pub.month >= 11 and s.month <= 2:   # 12월 기사의 「1월 5일」
+                s = s.replace(year=yr + 1)
+            e = s
+            if d2:
+                e = date(s.year, int(m2 or m), int(d2))
+                if e < s:
+                    e = e.replace(year=e.year + 1)
+        except ValueError:
+            continue
+        if -7 <= (s - pub).days <= 180:      # 기사보다 한참 전 날짜(지난 행사)는 버린다
+            found.append((s, e))
+    if not found:
+        return None, None
+    return min(f[0] for f in found), max(f[1] for f in found)
+
+
+def fetch_naver_news_events():
+    if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
+        print("[건너뜀] 네이버 키 없음 (NAVER_CLIENT_ID / NAVER_CLIENT_SECRET)")
+        return []
+    headers = {"X-NCP-APIGW-API-KEY-ID": NAVER_CLIENT_ID,
+               "X-NCP-APIGW-API-KEY": NAVER_CLIENT_SECRET}
+    today = date.today()
+    horizon = today + timedelta(days=LOOKAHEAD_DAYS)
+
+    rows, seen, seen_ranges = [], set(), set()
+    for q in NEWS_QUERIES:
+        r = requests.get(NEWS_URL, headers=headers, timeout=15,
+                         params={"query": q, "display": 100, "sort": "sim"})
+        r.raise_for_status()
+        items = r.json().get("items", [])
+        kept = 0
+        for it in items:
+            link = it.get("originallink") or it.get("link")
+            if link in seen:                     # 검색어끼리 같은 기사 중복
+                continue
+            seen.add(link)
+
+            title = _strip_html(it.get("title", ""))
+            desc = _strip_html(it.get("description", ""))
+            text = f"{title} {desc}"
+            if not any(kw in text for kw in LOCATION_KEYWORDS):
+                continue                         # 지역과 무관한 기사
+
+            pub = datetime.strptime(it["pubDate"], "%a, %d %b %Y %H:%M:%S %z").date()
+            start, end = extract_event_dates(text, pub)
+            if not start:
+                continue                         # 행사 날짜를 못 뽑은 기사
+            if end < today or start > horizon:
+                continue  
+            if (start, end) in seen_ranges:
+                continue                         # 같은 기간 = 같은 행사를 다룬 다른 기사
+            seen_ranges.add((start, end))               
+
+            rows.append({
+                "source": "naver_news",
+                "title": title,
+                "place": None,
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+                "lat": None,
+                "lng": None,
+                "distance_m": None,
+                "is_free": None,
+                "url": link,
+            })
+            kept += 1
+            print(f"    + {start}~{end}  {title}")
+        print(f"  [{q}] {len(items)}건 중 {kept}건 채택")
+    return rows
+
+
 def load():
     print("서울시 문화행사 전체 수집 중 (페이지당 1000건)...")
     seoul_raw = fetch_all_seoul_events()
@@ -265,10 +373,15 @@ def load():
     gwangjin_rows = fetch_gwangjin_events()
     print(f"광진구청 관련 행사: {len(gwangjin_rows)}건")
 
-    all_rows = seoul_rows + gwangjin_rows
+    print("네이버 뉴스 검색 중...")
+    news_rows = fetch_naver_news_events()
+    print(f"네이버 뉴스 관련 행사: {len(news_rows)}건")
+
+    all_rows = seoul_rows + gwangjin_rows + news_rows
     if all_rows:
         upsert("events", all_rows, on_conflict="source,title,start_date")
-    print(f"총 {len(all_rows)}건 적재 완료 (V9 {len(seoul_rows)} + V10 {len(gwangjin_rows)})")
+    print(f"총 {len(all_rows)}건 적재 완료 "
+          f"(V9 {len(seoul_rows)} + V10 {len(gwangjin_rows)} + V11 {len(news_rows)})")
 
 
 if __name__ == "__main__":
