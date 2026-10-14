@@ -52,6 +52,38 @@ tab_beer, tab_usage = st.tabs(["맥주 라인업", "API 사용량"])
 SS_BEER_ADD = "beer_add_open"
 SS_BEER_NOTE = "beer_note"
 
+# 표를 시안만큼 촘촘하게 만드는 것.
+#
+# [줄 사이 선을 요소로 두지 않는다]
+#   st.divider() 는 위아래 여백이 커서 행이 늘어진다. 그렇다고 얇은 선을
+#   st.markdown 으로 그려 넣으면 그 요소가 **16px 을 차지한다** — 빈 요소가
+#   그보다 작아지지 않는 것을 재서 확인했다. 그래서 선은 요소가 아니라 행
+#   상자의 윗 테두리로 그린다.
+#
+# [상자 이름으로 잡는다]
+#   st.container(key=...) 를 쓰면 그 상자에 `st-key-<이름>` 이 붙는다. 상단
+#   내비게이션이 이미 쓰는 방식이다 (app/theme.py). 행마다 id 가 달라 앞부분만
+#   맞춘다.
+BEER_CSS = """
+<style>
+/* 행 사이에 Streamlit 이 16px 을 넣는다. 그만큼 벌어지면 시안보다 성겨진다 */
+.st-key-beer_rows { gap: 0 !important; }
+div[class*="st-key-beer_row_"] {
+    border-top: 1px solid #F1F2F4;
+    padding: 6px 0;
+}
+/* 「＋ 맥주 추가」 — 시안의 파란 글씨·파란 테두리 */
+.st-key-beer_add_row { border-top: 1px solid #F1F2F4; padding-top: 10px; }
+.st-key-beer_add_btn button {
+    color: #2563EB !important;
+    border: 1px solid #2563EB !important;
+    background: #FFFFFF !important;
+    font-weight: 700 !important;
+}
+.st-key-beer_add_btn button:hover { background: #EFF4FF !important; }
+</style>
+"""
+
 
 def load_lineup() -> list[dict]:
     """판매 중(valid_to 가 빈) 맥주. 고정 메뉴 먼저, 그다음 싼 순."""
@@ -159,11 +191,16 @@ def render_lineup() -> None:
         return
 
     with st.container(border=True):
-        h1, h2 = st.columns([3, 2])
-        h1.markdown(f"#### 현재 맥주 라인업 &nbsp;<span style='font-size:0.8rem;"
+        # 시안처럼 제목과 같은 줄, 카드 오른쪽 끝에 붙인다. st.caption 은 칸
+        # 왼쪽에서 시작해 가운데 띄엄하게 놓인다.
+        h1, h2 = st.columns([3, 2], vertical_alignment="center")
+        h1.markdown(BEER_CSS +
+                    f"#### 현재 맥주 라인업 &nbsp;<span style='font-size:0.8rem;"
                     f"background:#EEF0F3;padding:2px 8px;border-radius:6px'>{len(beers)}종</span>",
                     unsafe_allow_html=True)
-        h2.caption("✕ 판매를 종료한 맥주는 오른쪽 ✕로 라인업에서 내리세요.")
+        h2.markdown('<div style="text-align:right; color:#6B7280;'
+                    ' font-size:0.85rem">✕ 판매를 종료한 맥주는 오른쪽 ✕로'
+                    ' 라인업에서 내리세요.</div>', unsafe_allow_html=True)
 
         widths = [2.4, 1.1, 1.6, 0.8, 3.4, 0.6]
         head = st.columns(widths)
@@ -172,30 +209,33 @@ def render_lineup() -> None:
 
         if not beers:
             st.caption("판매 중인 맥주가 없습니다. 아래에서 추가해 주세요.")
+        rows_box = st.container(key="beer_rows")
         for b in beers:
-            st.divider()
-            row = st.columns(widths, vertical_alignment="center")
-            tag = " &nbsp;<span style='font-size:0.72rem;color:#2F6FE0;background:#EAF2FE;" \
-                  "padding:1px 6px;border-radius:4px'>고정</span>" if b.get("is_fixed") else ""
-            row[0].markdown(f"**{b['name']}**{tag}", unsafe_allow_html=True)
-            row[1].markdown(f"{_num(b['price_per_ml'])} <span style='color:#6B7280'>원/ml</span>",
-                            unsafe_allow_html=True)
-            row[2].markdown(b.get("style") or "—")
-            abv = b.get("abv")
-            row[3].markdown("—" if abv is None else ("논알콜" if float(abv) == 0 else f"{_num(abv)} %"))
-            row[4].markdown(" · ".join(b.get("flavor_notes") or []) or "—")
-            if row[5].button("✕", key=f"beer_del_{b['id']}", help="라인업에서 내리기"):
-                confirm_retire(b)
+            # 줄 사이 선은 st.divider() 가 아니라 행 상자의 윗 테두리로 그린다
+            # (BEER_CSS 설명 참고).
+            with rows_box, st.container(key=f"beer_row_{b['id']}"):
+                row = st.columns(widths, vertical_alignment="center")
+                tag = " &nbsp;<span style='font-size:0.72rem;color:#2F6FE0;background:#EAF2FE;" \
+                      "padding:1px 6px;border-radius:4px'>고정</span>" if b.get("is_fixed") else ""
+                row[0].markdown(f"**{b['name']}**{tag}", unsafe_allow_html=True)
+                row[1].markdown(f"{_num(b['price_per_ml'])} <span style='color:#6B7280'>원/ml</span>",
+                                unsafe_allow_html=True)
+                row[2].markdown(b.get("style") or "—")
+                abv = b.get("abv")
+                row[3].markdown("—" if abv is None else ("논알콜" if float(abv) == 0 else f"{_num(abv)} %"))
+                row[4].markdown(" · ".join(b.get("flavor_notes") or []) or "—")
+                if row[5].button("✕", key=f"beer_del_{b['id']}", help="라인업에서 내리기"):
+                    confirm_retire(b)
 
-        st.divider()
-        if not st.session_state.get(SS_BEER_ADD):
-            a1, a2 = st.columns([1, 5], vertical_alignment="center")
-            if a1.button("＋ 맥주 추가", use_container_width=True):
-                st.session_state[SS_BEER_ADD] = True
-                st.rerun()
-            a2.caption("월 1회 교체되는 맥주를 여기서 넣고 내립니다.")
-        else:
-            render_add_form({(b["name"] or "").strip().lower() for b in beers})
+        with st.container(key="beer_add_row"):
+            if not st.session_state.get(SS_BEER_ADD):
+                a1, a2 = st.columns([1, 5], vertical_alignment="center")
+                if a1.button("＋ 맥주 추가", key="beer_add_btn", use_container_width=True):
+                    st.session_state[SS_BEER_ADD] = True
+                    st.rerun()
+                a2.caption("월 1회 교체되는 맥주를 여기서 넣고 내립니다.")
+            else:
+                render_add_form({(b["name"] or "").strip().lower() for b in beers})
 
     # 「비면 페어링이 추측으로 채워집니다」는 지웠다. 추가 폼이 다섯 항목을 다
     # 받으므로 비는 경우가 없다. 일어나지 않는 일을 알리면 읽는 쪽이 비워도
