@@ -2238,13 +2238,10 @@ def render_archive(partner: dict, options: list[dict]) -> None:
     # 이미 정한 것이고, 다음에 할 일은 그 줄의 폼 링크를 받는 것이다. 고를 수
     # 있게 두면 그 줄이 round 2 라서 「실행할 안」으로 저장된다.
     keys = [o["key"] for o in options if not o.get("메뉴확정")]
-    # 같은 배지끼리 순서를 센다. 회차로만 세면 메뉴 확정 줄이 2차와 번호를
-    # 나눠 써서, 2차가 하나뿐인데 02 로 적히는 일이 생긴다.
-    seq: dict[str, int] = {}
     with st.container(key="arch_rows"):
-        for o in options:
-            kind = "메뉴" if o.get("메뉴확정") else str(o["round"])
-            seq[kind] = seq.get(kind, 0) + 1
+        # 순서는 보이는 그대로 하나로 센다. 배지별로 따로 세면 같은 번호가
+        # 두 줄에 적혀 「01 이 둘이네」로 읽힌다.
+        for no, o in enumerate(options, 1):
             is_sent = bool(sent and sent["key"] == o["key"])
             is_run = bool(o.get("실행"))
             first = o["round"] == 1 and not o.get("메뉴확정")
@@ -2265,7 +2262,7 @@ def render_archive(partner: dict, options: list[dict]) -> None:
                 st.markdown(f'<div class="{cls}">{text}</div>',
                             unsafe_allow_html=True)
             with c_no:
-                st.markdown(f'<div class="arch-no">{seq[kind]:02d}'
+                st.markdown(f'<div class="arch-no">{no:02d}'
                             f'<span>저장 순서</span></div>',
                             unsafe_allow_html=True)
             with c_body:
@@ -2715,9 +2712,6 @@ with st.container(key="param_card"):
         if rnd == 2 and not sent:
             st.caption("상단 「보관함」에서 협력사에 보낼 안을 골라 주세요.")
 
-    if blocked:
-        st.warning(blocked)
-
     # 메뉴가 없으면 생성 버튼이 잠긴다. 따로 알리지 않는다 — 바로 위 상자가
     # 등록 개수와 채우는 길 둘을 이미 보여 준다 (10/5).
     has_menus = bool(menu_rows(chosen))
@@ -2767,6 +2761,12 @@ elif go:
     generate(chosen, target, rnd, sent,
              resume=resumable(chosen, target, rnd),
              rec_menu=rec_plan_for(chosen).get("menu") or "")
+
+# 2차를 막은 이유는 상자 **밖**에 적는다. 상자 안에 두면 노란 경고가 카드
+# 테두리를 뚫고 나간다. 만드는 동안 진행 상황이 쓰는 자리와 같은 자리다 —
+# 버튼이 잠겨 있을 때만 뜨므로 둘이 함께 보이는 일은 없다.
+if blocked:
+    st.warning(blocked)
 
 # 생성 조건 상자와 결과 사이는 비워 둔다. 만드는 동안에는 이 자리를 진행 상황이
 # 쓴다 (generate 의 st.status 가 "n차 기획안 생성 중...").
