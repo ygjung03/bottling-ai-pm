@@ -3,15 +3,20 @@
 
 프롬프트를 코드에서 분리해 비개발자가 수정할 수 있게 한다. 
 """
-import _path 
+import _path
 import re
-from datetime import date
+from datetime import datetime, timedelta, timezone
 
 import streamlit as st
 
 from app.auth import require_owner
 from app.theme import apply_chrome
 from db.client import get_client
+
+# 배포는 UTC 라 그냥 today() 를 쓰면 새벽에 하루 전 날짜가 들어간다. 이 날짜가
+# 맥주를 올리고 내린 날로 DB 에 남아, 지난 라인업을 되짚는 근거가 된다
+# (scripts/update_beers.py 와 같은 이유).
+KST = timezone(timedelta(hours=9))
 
 st.set_page_config(page_title="관리", page_icon="⚙️", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -71,7 +76,7 @@ def confirm_retire(beer: dict) -> None:
     if c2.button("내리기", type="primary", use_container_width=True):
         try:
             (get_client().table("beers")
-             .update({"valid_to": date.today().isoformat()})
+             .update({"valid_to": datetime.now(KST).date().isoformat()})
              .eq("id", beer["id"]).execute())
             st.session_state[SS_BEER_NOTE] = f"'{beer['name']}'을(를) 라인업에서 내렸습니다."
         except Exception as e:
@@ -122,7 +127,7 @@ def render_add_form(names: set[str]) -> None:
             "name": name, "price_per_ml": float(price), "style": style,
             "abv": float(abv), "flavor_notes": flavor,
             "is_alcohol": float(abv) > 0, "is_fixed": fixed,
-            "valid_from": date.today().isoformat(), "valid_to": None,
+            "valid_from": datetime.now(KST).date().isoformat(), "valid_to": None,
         }).execute()
     except Exception as e:
         st.error(f"등록하지 못했습니다 — {e}")
