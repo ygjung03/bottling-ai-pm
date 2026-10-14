@@ -36,8 +36,13 @@
 기록이 안 돼도 기획안과 수집은 그대로 끝나야 한다 (작업 원칙 ⑤). 넣기가
 실패하면 콘솔에만 적고 넘어간다.
 """
+from datetime import date, datetime, timedelta, timezone
+
 from chain.gemini import USAGE, reset_usage
-from config.settings import (GEMINI_MODEL, GEMINI_USD_PER_M_INPUT,
+from config.settings import (GEMINI_MODEL, GEMINI_PREPAID_USD,
+                             GEMINI_SPENT_BEFORE_KRW,
+                             GEMINI_SPENT_BEFORE_MONTH,
+                             GEMINI_USD_PER_M_INPUT,
                              GEMINI_USD_PER_M_OUTPUT, KRW_PER_USD)
 from db.client import get_client
 
@@ -119,3 +124,87 @@ def record(kind: str, partner_id: int | None = None,
     except Exception as e:
         print(f"[사용량 기록 실패] {kind}: {type(e).__name__}: {e}")
         return []
+
+
+# ══════════════════════════════════════════
+# 집계 — 관리 화면의 사용량 탭이 쓴다
+# ══════════════════════════════════════════
+#
+# 화면이 아니라 여기 둔다. 숫자가 맞는지는 화면을 띄우지 않고도 확인할 수 있어야
+# 한다.
+#
+# **created_at 은 UTC 다.** 「오늘」과 「이번 달」을 UTC 로 자르면 한국 새벽에
+# 쓴 것이 전날로 넘어간다. 읽자마자 한국 시간으로 바꿔 둔다.
+
+KST = timezone(timedelta(hours=9))
+
+
+def fetch(limit: int = 2000) -> list[dict]:
+    """사용량 기록. 시각을 한국 시간으로 바꿔 「때」 칸에 함께 담는다."""
+    try:
+        rows_ = (get_client().table(TABLE).select("*")
+                 .order("created_at", desc=True).limit(limit).execute().data or [])
+    except Exception as e:
+        print(f"[사용량 조회 실패] {type(e).__name__}: {e}")
+        return []
+    for r in rows_:
+        r["때"] = datetime.fromisoformat(r["created_at"]).astimezone(KST)
+    return rows_
+
+
+def summarize(rows_: list[dict], today: date | None = None) -> dict:
+    """
+    사용량 탭에 올릴 값들.
+
+      쓴_금액      기록 이전 금액 + 기록된 유료 금액. 선불 잔액을 견주는 값이다
+      기록_금액    기록된 유료 금액만
+      이번달       한국 날짜로 자른다. **기록 이전 금액을 쓴 달이면 그것까지 더한다**
+      오늘         기록된 것만. 한국 날짜로 자른다
+      종류별       {종류: {건수, 호출, 금액, 평균}}. **평균은 유료 줄만으로 낸다**
+      날짜별       [(날짜, 금액)] 최근 것부터. 무료만 쓴 날도 0원으로 들어간다
+      최근         최근 10건
+
+    **평균을 무료와 섞지 않는다.** 무료는 금액이 0 이라 함께 평균을 내면 값이
+    희석된다 — 유료 6건 210원인데 무료 17건을 섞으면 9원이 된다.
+    """
+    today = today or datetime.now(KST).date()
+    paid = [r for r in rows_ if r.get("key_kind") == "유료"]
+    logged = sum(r.get("krw") or 0 for r in paid)
+
+    by_kind: dict[str, dict] = {}
+    for r in rows_:
+        k = by_kind.setdefault(r["kind"], {"건수": 0, "호출": 0, "금액": 0,
+                                           "유료건수": 0})
+        k["건수"] += 1
+        k["호출"] += r.get("calls") or 0
+        k["금액"] += r.get("krw") or 0
+        if r.get("key_kind") == "유료":
+            k["유료건수"] += 1
+    for k in by_kind.values():
+        k["평균"] = round(k["금액"] / k["유료건수"]) if k["유료건수"] else 0
+
+    # 날짜는 유료·무료를 가리지 않고 센다. 무료만 쓴 날이 빠지면 「쓴 날」과
+    # 「돈이 나간 날」이 같은 것처럼 보인다 — 무료로 몇 번을 돌렸는지도 봐야 한다.
+    by_day: dict[date, int] = {}
+    for r in rows_:
+        d = r["때"].date()
+        by_day[d] = by_day.get(d, 0) + (r.get("krw") or 0)
+
+    # 기록 이전 금액을 쓴 달에는 그 금액도 「이번 달」에 든다. 빼면 10월에
+    # 210원 쓴 것으로 보인다 — 실제로는 1,221원이다. 다음 달부터는 달이 달라
+    # 저절로 0 이 되고, 그때는 쓴 것이 전부 기록에 남는다.
+    이전달치 = (GEMINI_SPENT_BEFORE_KRW
+             if f"{today:%Y-%m}" == GEMINI_SPENT_BEFORE_MONTH else 0)
+
+    return {
+        "쓴_금액": GEMINI_SPENT_BEFORE_KRW + logged,
+        "기록_금액": logged,
+        "이전_금액": GEMINI_SPENT_BEFORE_KRW,
+        "충전_금액": round(GEMINI_PREPAID_USD * KRW_PER_USD),
+        "이번달": 이전달치 + sum(r.get("krw") or 0 for r in paid
+                          if (r["때"].year, r["때"].month) == (today.year, today.month)),
+        "오늘": sum(r.get("krw") or 0 for r in paid if r["때"].date() == today),
+        "종류별": by_kind,
+        "날짜별": sorted(by_day.items(), reverse=True),
+        "최근": rows_[:10],
+    }
