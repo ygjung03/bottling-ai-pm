@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
+from collectors.menu_reviews import area_of
 from config.settings import NAVER_CLIENT_ID, NAVER_CLIENT_SECRET
 
 BLOG_URL = "https://naverapihub.apigw.ntruss.com/search/v1/blog"
@@ -64,7 +65,20 @@ def name_keys(store_name: str) -> list[str]:
 
 def count_mentions(store: dict, menu: str) -> dict:
     """
-    한 가게의 후기 중 가게 이름과 메뉴가 함께 나오는 글 수.
+    한 가게의 후기 중 그 가게를 다루면서 메뉴가 나오는 글 수.
+
+    **가게 이름은 제목에서만 본다** (10/14). 글 어디에든 나오기만 하면 세었더니
+    여러 가게를 한꺼번에 다루는 글이 전부 걸렸다 — 「붕어빵」으로 찾았는데
+    카페 「저스트런잇」이 3건이었고, 그 셋이 「2024.05.월 일상」·「러닝 난이도별
+    가기 좋은 맛집 & 카페」 같은 일상 글과 모음 글이었다. 한 가게를 다룬 후기는
+    제목에 그 가게 이름을 적는다.
+
+    메뉴는 제목과 본문 어디에 있어도 센다. 제목은 가게 이름으로 채우고 메뉴는
+    본문에서 말하는 글이 많다.
+
+    놓치는 것도 있다 — 「뚝섬 붕어빵 맛집 다녀왔어요」처럼 제목에 가게 이름을
+    안 쓴 후기는 0건이 된다. 0건이어도 목록에서 지우지 않고 접어 두므로
+    (search 설명) 그 가게가 사라지지는 않는다.
 
     반환: {"store_id", "mentions", "sample_url", "error"}
     실패해도 0건으로 돌려 나머지 가게는 계속 본다 — 한 곳 때문에 전체가 멈추면 안 된다.
@@ -73,16 +87,23 @@ def count_mentions(store: dict, menu: str) -> dict:
     keys, want = name_keys(store.get("name") or ""), _plain(menu)
     if not keys or not want:
         return out
+    # 검색어에 구를 붙인다. 상호가 일반명사이면 전국의 같은 낱말 글이 걸린다 —
+    # 「프레즐 피자」로 7건이 걸렸는데 전부 다른 브랜드의 「앤티앤스 프레즐」
+    # 글이었고, 「광진구」를 붙이니 1건으로 줄었다 (10/14). 수집 쪽이 같은 이유로
+    # 이미 쓰는 방법이다 (collectors/menu_reviews.area_of).
+    query = " ".join(x for x in (area_of(store.get("address")),
+                                 store["name"], menu) if x)
     try:
         r = requests.get(BLOG_URL, timeout=15,
-                         params={"query": f"{store['name']} {menu}",
+                         params={"query": query,
                                  "display": POSTS_PER_STORE, "sort": "sim"},
                          headers={"X-NCP-APIGW-API-KEY-ID": NAVER_CLIENT_ID,
                                   "X-NCP-APIGW-API-KEY": NAVER_CLIENT_SECRET})
         r.raise_for_status()
         for it in r.json().get("items") or []:
+            title = _plain(it.get("title", ""))
             text = _plain(f"{it.get('title', '')} {it.get('description', '')}")
-            if want in text and any(k in text for k in keys):
+            if want in text and any(k in title for k in keys):
                 out["mentions"] += 1
                 out["sample_url"] = out["sample_url"] or it.get("link")
     except Exception as e:
