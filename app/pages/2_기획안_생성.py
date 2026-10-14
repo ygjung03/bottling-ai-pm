@@ -50,7 +50,8 @@ from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           PAST_CASES, WEATHER_PREF, build_beer_list,
                           build_constraints, build_events,
                           build_partner_blockers, build_partner_resources,
-                          build_partner_sns, build_rec_reason, menu_protected,
+                          build_partner_sns, build_rec_reason, menu_kept,
+                          menu_protected,
                           menu_rows, menu_rows_sourced, menu_source,
                           note_menus)
 from chain.runner import run
@@ -205,7 +206,7 @@ def menu_block(partner: dict, menu_fixed: bool = False) -> str | None:
             return ("보관함의 「폼 링크」로 협력사와 함께 조건을 채워 "
                     "제출하면 2차(최종) 기획안을 생성할 수 있습니다.")
         return ("협력사가 메뉴를 다시 추천받고 싶다고 했습니다. "
-                "메뉴 3안을 만들어 하나를 정해 주세요.")
+                "메뉴 정보를 확인하고 메뉴를 다시 추천받으세요.")
     if branch == "A2":
         return ("협의로 정한 메뉴가 폼에 들어오지 않았습니다. "
                 "폼을 다시 제출해야 합니다.")
@@ -697,8 +698,12 @@ def generate(partner: dict, target: date, rnd: int,
             context=ctx,
             target_date=target.isoformat(),
             beer_list=build_beer_list(),
+            # confirmed 와 fixed_menu 는 같은 값이어야 한다 (runner 설명). 둘 다
+            # 「협의 결과를 반영하는 자리인가」를 뜻하는데, 메뉴 3안은 메뉴를
+            # 아직 안 정한 자리다. 켜 두면 프롬프트에 「확정된 협업 메뉴」가
+            # 실려 안이 하나만 나온다.
             partner_res=build_partner_resources(
-                partner, confirmed=rnd == 2,
+                partner, confirmed=rnd == 2 and stop_after == 4,
                 agreed_menu=(sent or {}).get("메뉴명"),
                 agreed_approach=screen_approach(partner, sent)),
             partner_blockers=build_partner_blockers(partner),
@@ -978,6 +983,112 @@ def render_plan(item: dict, meta: dict) -> None:
             st.markdown(body, unsafe_allow_html=True)
 
     render_proposal(item, meta)
+
+
+def render_menu_options(result: dict, meta: dict) -> None:
+    """
+    메뉴 3안을 카드로 보이고 하나를 고르게 한다 (시안 1쪽).
+
+    제안서 탭을 쓰지 않는다. 홍보도 제안서도 아직 만들지 않았고, 여기서 할 일은
+    **협력사와 정할 메뉴 하나를 고르는 것**뿐이다.
+
+    고르면 그 안을 보관함에 담는다 (`adopted_option`). 1차의 「담기」와 같은
+    배선이고 다른 것은 하나만 담는다는 것뿐이다 — 보관함에 「메뉴 확정」 줄로
+    올라가고, 그 줄의 폼 링크로 조건을 받는다.
+    """
+    menus = (result.get("p2") or {}).get("메뉴안") or []
+    if not menus:
+        st.info("메뉴안이 비어 있습니다. 다시 추천받아 주세요.")
+        return
+
+    # 세 안을 나란히 둔다. 글이 많지 않아 세로로 쌓으면 카드만 길어지고,
+    # 셋을 견주는 자리라 한 화면에 함께 보여야 한다.
+    #
+    # st.columns 를 쓰지 않고 내 상자를 격자로 만든다. 격자 칸은 기본으로 같은
+    # 높이로 늘어나 가장 긴 내용에 맞춰 셋이 함께 자란다. 열로 하면 Streamlit 이
+    # 끼워 넣는 중간 상자에도 높이를 줘야 하는데, 그 상자는 내부 이름으로만
+    # 잡혀 버전을 탄다 (10/5 에 두 번 겪음).
+    #
+    # **버튼은 카드 밖 같은 격자의 다음 줄에 둔다.** 카드 안에 두고 바닥으로
+    # 밀어 보았으나, 테두리 상자 안에 상자가 몇 겹 더 있어 어디에 세로 정렬을
+    # 걸어야 하는지가 버전마다 달랐다. 줄을 나누면 셋의 y 가 저절로 같다.
+    grid = (f'display:grid; gap:16px;'
+            f' grid-template-columns:repeat({len(menus)}, 1fr)')
+    st.markdown(
+        f'<style>'
+        f'.st-key-menuopts, .st-key-menupick{{{grid}}}'
+        f'.st-key-menuopts > div{{height:100%}}'
+        f'[class*="st-key-mopt_"]{{height:100%}}'
+        f'</style>', unsafe_allow_html=True)
+
+    # 칸 이름의 폭을 고정하고 줄바꿈을 막는다. 폭이 모자라면 「판매가 제안」이
+    # 두 줄로 찢어지면서 그 줄의 값만 다른 자리에서 시작한다.
+    label_css = ("color:#94A3B8; font-size:13px; width:88px; flex:none;"
+                 " white-space:nowrap")
+    row = st.container(key="menuopts")
+    for m in menus:
+        aid = m.get("안_id") or ""
+        way = m.get("접근") or ""
+        edge, ink, bg = TAB_COLOR.get(way, ("#D1D5DB", "#4B5563", "#F3F4F6"))
+        pair = m.get("페어링_맥주") or {}
+        price = m.get("판매가_제안")
+        full = m.get("정가_합")
+
+        with row, st.container(key=f"mopt_{aid}", border=True):
+            st.markdown(
+                f'<div style="display:flex; align-items:center; gap:10px">'
+                f'<span style="border:1px solid {edge}; color:{ink}; '
+                f'background:{bg}; border-radius:7px; padding:3px 11px; '
+                f'font-size:13px; font-weight:800; flex:none">{way}</span>'
+                f'<span style="font-size:19px; font-weight:800; color:#0F172A;'
+                f' line-height:1.3; word-break:keep-all">'
+                f'{m.get("메뉴명") or f"{aid}안"}</span></div>',
+                unsafe_allow_html=True)
+
+            desc = [str(m.get("구성") or "")]
+            if pair.get("메뉴명"):
+                tail = f' — {end_dot(pair.get("이유"))}' if pair.get("이유") else ""
+                desc.append(f'추천 맥주: {pair["메뉴명"]}{tail}')
+            lines = [("선정 배경", end_dot(m.get("선정_사유")) or ""),
+                     ("메뉴 설명", "<br>".join(x for x in desc if x))]
+            st.markdown(
+                "".join(
+                    f'<div style="display:flex; gap:14px; margin-top:14px">'
+                    f'<div style="{label_css}; padding-top:2px">{label}</div>'
+                    f'<div style="color:#334155; font-size:15px;'
+                    f' line-height:1.6; word-break:keep-all;'
+                    f' overflow-wrap:break-word">{text}</div></div>'
+                    for label, text in lines if text),
+                unsafe_allow_html=True)
+            if price:
+                extra = (f'<div style="color:#94A3B8; font-size:13px;'
+                         f' font-weight:500; margin-top:2px">'
+                         f'따로 사면 {int(full):,}원</div>'
+                         if full and way == "세트" else "")
+                st.markdown(
+                    f'<div style="display:flex; gap:14px; margin-top:14px">'
+                    f'<div style="{label_css}; padding-top:6px">판매가 제안</div>'
+                    f'<div><div style="color:#0F172A; font-size:24px;'
+                    f' font-weight:800; line-height:1.2">{int(price):,}원</div>'
+                    f'{extra}</div></div>', unsafe_allow_html=True)
+
+    pick = st.container(key="menupick")
+    for m in menus:
+        aid = m.get("안_id") or ""
+        with pick:
+            # 가운데 칸만 쓴다. 버튼이 카드 폭을 다 차지하지 않으면서 가운데 선다.
+            _, c_mid, _ = st.columns([1, 2, 1])
+            if not c_mid.button("이 메뉴로 하기", key=f"mpick_{aid}",
+                                type="primary", use_container_width=True):
+                continue
+        if save_adopted(meta.get("plan_id"), [aid]):
+            st.session_state[SS_MENU_TOAST] = (
+                f'{m.get("메뉴명")}{ro(m.get("메뉴명"))} 협업 메뉴로 '
+                f'정했습니다 — 보관함의 「폼 링크」로 조건을 받아 주세요')
+            st.session_state.pop(SS_RESULT, None)
+            st.session_state.pop(SS_META, None)
+            load_archive.clear()
+        st.rerun()
 
 
 def render_result(result: dict, meta: dict) -> None:
@@ -2817,20 +2928,54 @@ with st.container(key="param_card"):
 
     allowed = (can_1st if rnd == 1
                else (can_2nd and bool(sent) and not blocked))
-    # 걸리는 시간을 버튼 바로 옆에 적는다 (시안 1쪽). 전에는 카드 밖에 있어
-    # 누르기 전에 눈에 안 들어왔다.
+
+    # B/C 는 2차로 바로 못 간다. 메뉴부터 다시 골라야 해서, 그 자리에서 버튼이
+    # 「메뉴 추천받기」로 바뀐다 — 버튼을 하나 더 두면 둘 중 무엇을 누를지
+    # 생각해야 한다.
+    #
+    # 메뉴를 확정하고 나면 이 상태를 빠져나간다. 그 뒤로는 폼 2 를 기다리는
+    # 자리이고, 그것은 blocked 가 안내한다.
+    pick_menu = (rnd == 2 and not chosen.get("agreed_menu")
+                 and (chosen.get("reply_choice") or "").strip().upper()
+                 in ("B", "C")
+                 and not has_menu_fixed(chosen["id"]))
+
+    # 메뉴를 다 확인해야 열린다. 협력사가 적어 준 줄은 가격이 비어 있고 (2)는
+    # 그런 줄을 고르지 않으므로, 확인을 거치지 않으면 쓸 수 없는 메뉴로 안을
+    # 만들게 된다.
+    unseen = [r for r in menu_rows(chosen) if not menu_kept(r)]
+
+    # 추천받기가 열렸으면 경고를 내린다. 막힌 것이 없는데 노란 상자가 남아
+    # 있으면 무엇이 문제인지 찾게 된다. 할 일은 버튼이 말해 준다.
+    if pick_menu and not unseen:
+        blocked = None
+
     c_wait, c_btn = st.columns([3, 1], vertical_alignment="center")
+    if pick_menu:
+        # 아직 확인할 것이 남았으면 그 말이 먼저 눈에 들어와야 한다 — 버튼이
+        # 왜 잠겼는지가 거기 적혀 있다.
+        wait = ("<b>메뉴를 확인하면 추천을 받을 수 있습니다.</b>" if unseen else
+                "<b>약 10초 뒤, 메뉴 3안을 확인할 수 있습니다.</b>")
+    else:
+        # 걸리는 시간을 버튼 바로 옆에 적는다 (시안 1쪽). 전에는 카드 밖에 있어
+        # 누르기 전에 눈에 안 들어왔다.
+        wait = "약 30초 뒤, 기획안 3안을 확인할 수 있습니다."
     c_wait.markdown(
         '<div style="color:#59606D; font-size:0.9rem; display:flex; '
         'align-items:center; gap:7px">'
         '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" '
         'stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/>'
-        '<path d="M12 7v5l3 2"/></svg>'
-        '약 30초 뒤, 기획안 3안을 확인할 수 있습니다.</div>',
+        f'<path d="M12 7v5l3 2"/></svg>{wait}</div>',
         unsafe_allow_html=True)
-    go = c_btn.button("기획안 최적 생성 시작", type="primary", icon=":material/auto_awesome:",
-                      use_container_width=True,
-                      disabled=not has_menus or not allowed or collecting)
+    go = c_btn.button(
+        "메뉴 추천받기" if pick_menu else "기획안 최적 생성 시작",
+        type="primary",
+        icon=":material/restaurant_menu:" if pick_menu else ":material/auto_awesome:",
+        use_container_width=True,
+        disabled=(not has_menus or collecting
+                  or (bool(unseen) if pick_menu else not allowed)),
+        help=f"확인하지 않은 메뉴가 {len(unseen)}개 있습니다. 메뉴 목록에서 "
+             f"「확인 완료」를 눌러 주세요." if pick_menu and unseen else None)
 
 # 창은 여기 한 곳에서만 연다. 신호는 둘 다 꺼내면서 지운다.
 #
@@ -2855,6 +3000,10 @@ if go and target < datetime.now(KST).date():
     # 골라 두고 자정을 넘겨 누르는 경우가 있다.
     st.session_state[SS_DATE_TOAST] = (
         f"협업 시작 희망일이 지났습니다 ({target}). 오늘 이후로 다시 골라 주세요.")
+elif go and pick_menu:
+    # 메뉴 추천받기 — 두 단계만 돌려 3안을 낸다. 이어 만들기는 쓰지 않는다.
+    # 메뉴를 새로 고르는 일이라 앞 결과를 가져오면 안 된다.
+    generate(chosen, target, rnd, sent, stop_after=2)
 elif go:
     # 끊겼던 기획안이면 그 자리에서 이어 간다 (resumable 설명 참고).
     generate(chosen, target, rnd, sent,
@@ -2901,7 +3050,19 @@ if st.session_state.get(SS_RESULT) and broke:
         f'{says}</div>',
         unsafe_allow_html=True)
 
-if st.session_state.get(SS_RESULT) and not broke:
+if st.session_state.get(SS_RESULT) and not broke and meta.get("stop_after") == 2:
+    # 메뉴 3안. 협력사와 정할 메뉴 하나를 고르는 자리라 제안서 탭을 그리지
+    # 않는다 — 홍보도 제안서도 아직 만들지 않았다.
+    st.markdown(
+        f'<div style="margin:18px 0 6px; padding:14px 18px; border:1.5px solid #34D399; '
+        f'background:#ECFDF5; border-radius:10px; color:#065F46; font-weight:700; '
+        f'display:flex; align-items:center; gap:10px">'
+        f'<span style="background:#059669; color:#fff; border-radius:50%; width:20px; height:20px; '
+        f'display:inline-flex; align-items:center; justify-content:center; font-size:12px">✓</span>'
+        f'메뉴 3안을 추천했습니다. 메뉴 하나를 골라 주세요.</div>',
+        unsafe_allow_html=True)
+    render_menu_options(st.session_state[SS_RESULT], meta)
+elif st.session_state.get(SS_RESULT) and not broke:
     st.markdown(
         f'<div style="margin:18px 0 6px; padding:14px 18px; border:1.5px solid #34D399; '
         f'background:#ECFDF5; border-radius:10px; color:#065F46; font-weight:700; '
@@ -2941,7 +3102,9 @@ if flash is not None:
 # 메뉴 등록·수집 알림. 같은 자리에서 그린다.
 # 담기 알림(2초)보다 길게 둔다 — 「찾지 못했습니다」처럼 읽고 다음에 뭘 할지
 # 정해야 하는 말이라 2초로는 짧다 (10/6).
-flash_note(st.session_state.pop(SS_MENU_TOAST, None), seconds=3.0)
+# 메뉴 알림은 다음에 할 일까지 적혀 있어 읽을 글자가 많다. 「협업 메뉴로
+# 정했습니다 — 보관함의 「폼 링크」로 조건을 받아 주세요」가 3초에 사라졌다.
+flash_note(st.session_state.pop(SS_MENU_TOAST, None), seconds=5.0)
 
 # 희망일이 지났을 때. 날짜를 다시 고르러 가야 해서 조금 더 길게 둔다.
 flash_note(st.session_state.pop(SS_DATE_TOAST, None), seconds=3.5)
