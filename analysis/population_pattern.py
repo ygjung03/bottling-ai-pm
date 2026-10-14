@@ -57,8 +57,11 @@ def fetch_all(spot):
 
 
 def to_kst(series_utc):
+    # format 을 적어 준다. 안 적으면 pandas 가 첫 값으로 형식을 정하는데,
+    # collected_at 에 초의 소수점이 붙은 행이 섞여 있어 그 행에서 터진다
+    # (10/14, 1,639행 중 한 행).
     return (
-        pd.to_datetime(series_utc, utc=True)
+        pd.to_datetime(series_utc, utc=True, format="ISO8601")
         .dt.tz_convert("Asia/Seoul")
     )
 
