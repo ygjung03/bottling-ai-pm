@@ -161,7 +161,18 @@ def round_of(partner: dict) -> int:
     return 2 if has_form(partner) else 1
 
 
-def menu_block(partner: dict) -> str | None:
+def has_menu_fixed(partner_id: int) -> bool:
+    """
+    B/C 에서 메뉴를 확정한 줄이 보관함에 있나.
+
+    메뉴 3안 중 하나를 골라 담은 행이다 — 제안서가 아직 없어 그 칸이 비어 있다.
+    보관함과 같은 조회를 쓴다 (캐시도 함께 쓴다).
+    """
+    return any(not (r.get("final_output") or {}).get("안")
+               for r in load_archive(partner_id))
+
+
+def menu_block(partner: dict, menu_fixed: bool = False) -> str | None:
     """
     2차를 막아야 하면 그 이유, 괜찮으면 None.
 
@@ -170,6 +181,9 @@ def menu_block(partner: dict) -> str | None:
       A    제안받은 그 메뉴다. 폼이 묻지 않아 보관함에서 고른 안을 쓴다
       A2   협의로 정한 다른 메뉴. 폼 1 이 이름을 받는다
       B·C  메뉴를 다시 고르겠다는 뜻. 이름은 폼 2 에서 온다
+
+    menu_fixed 는 B/C 가 메뉴를 이미 정했는가다 (has_menu_fixed). 안 넘기면
+    아직 안 정한 것으로 보고 안내한다.
 
     B·C 는 협력사가 그 메뉴를 **거절한** 것이라, 새 메뉴가 오기 전에 2차를
     만들면 거절한 메뉴로 확정 기획안이 나간다. 경고도 안 뜬다 — 코드가 폼
@@ -182,8 +196,13 @@ def menu_block(partner: dict) -> str | None:
         return None
     branch = (partner.get("reply_choice") or "").strip().upper()
     if branch in ("B", "C"):
+        # 두 상태를 가른다. 메뉴를 정한 뒤에도 같은 말을 하면 이미 한 일을
+        # 또 하라는 안내가 된다.
+        if menu_fixed:
+            return ("보관함의 「폼 링크」로 협력사와 함께 조건을 채워 "
+                    "제출하면 2차(최종) 기획안을 생성할 수 있습니다.")
         return ("협력사가 메뉴를 다시 추천받고 싶다고 했습니다. "
-                "메뉴를 정한 뒤 두 번째 구글폼을 받아야 2차를 만들 수 있습니다.")
+                "메뉴 3안을 만들어 하나를 정해 주세요.")
     if branch == "A2":
         return ("협의로 정한 메뉴가 폼에 들어오지 않았습니다. "
                 "폼을 다시 제출해야 합니다.")
@@ -355,11 +374,13 @@ def sent_options(picks: list[dict]) -> list[dict]:
     """
     out = []
     for p in picks:
-        # 메뉴 3안까지만 만든 행은 제안서가 없다. 그때는 (2)가 낸 메뉴안에서
-        # 읽는다 — 보관함 줄이 쓰는 메뉴명·접근·선정_사유·판매가가 거기 다 있다
-        # (선정_사유를 (2)로 옮겨 둔 덕이다).
-        menu_only = not (p.get("final_output") or {}).get("안")
-        src = ((p.get("p2_output") or {}).get("메뉴안") if menu_only
+        # B/C 갈래에서 확정한 메뉴는 제안서가 아직 없다. 메뉴 3안에서 하나를
+        # 고른 것이고, 제안서는 협력사에게 조건을 받은 뒤 2차에서 만든다.
+        #
+        # 그 줄의 값은 (2)가 낸 메뉴안에서 읽는다 — 보관함 줄이 쓰는 메뉴명·
+        # 접근·선정_사유·판매가가 거기 다 있다 (선정_사유를 (2)로 옮겨 둔 덕이다).
+        menu_fixed = not (p.get("final_output") or {}).get("안")
+        src = ((p.get("p2_output") or {}).get("메뉴안") if menu_fixed
                else (p.get("final_output") or {}).get("안")) or []
         items = {i.get("안_id"): i for i in src}
         for aid in adopted_ids(p.get("adopted_option")):
@@ -368,9 +389,8 @@ def sent_options(picks: list[dict]) -> list[dict]:
                 "key": f"{p['id']}-{aid}",
                 "plan_id": p["id"],
                 "round": p.get("round") or 1,
-                # 회차 자리에 무엇을 적을지. 제안서가 없는 줄은 회차가 아니라
-                # 어느 단계인지를 적는다.
-                "메뉴만": menu_only,
+                # B/C 에서 확정한 메뉴인가. 회차 배지와 폼 링크를 가른다.
+                "메뉴확정": menu_fixed,
                 "안_id": aid,
                 "메뉴명": it.get("메뉴명") or f"{aid}안",
                 "접근": it.get("접근") or "",
@@ -1100,8 +1120,8 @@ ARCHIVE_CSS = """
   .arch-rnd { display:inline-block; padding:5px 13px; border-radius:999px;
     background:#EEF2FF; color:#4338CA; font-size:14px; font-weight:800; }
   .arch-rnd-2 { background:#FEF3C7; color:#92400E; }
-  /* 메뉴 3안까지만 만든 줄. 1차도 2차도 아니라 그 사이다 — 협력사와 메뉴를
-     정하려고 내미는 안이다. 글자가 길어 가로 여백을 줄인다 */
+  /* B/C 갈래에서 확정한 메뉴. 1차도 2차도 아니라 그 사이다 — 메뉴는 정해졌고
+     제안서는 아직 없다. 글자가 길어 가로 여백을 줄인다 */
   .arch-rnd-menu { background:#F1F5F9; color:#475569; padding:5px 10px; }
 
   /* 확정한 줄 — 눈에 띄어야 한다. 두 확정은 뜻이 달라 색도 가른다 (10/9).
@@ -2213,25 +2233,30 @@ def render_archive(partner: dict, options: list[dict]) -> None:
     #   2차를 고르면   실제로 **실행할** 안이 된다. 그 줄에만 결과 입력이 뜬다
     #
     # 둘 다 「여러 개 담아 두고 하나를 고른다」는 같은 구조다.
-    keys = [o["key"] for o in options]
+    #
+    # **메뉴 확정 줄은 고르는 자리가 아니다.** 3안 화면에서 「이 메뉴로 하기」로
+    # 이미 정한 것이고, 다음에 할 일은 그 줄의 폼 링크를 받는 것이다. 고를 수
+    # 있게 두면 그 줄이 round 2 라서 「실행할 안」으로 저장된다.
+    keys = [o["key"] for o in options if not o.get("메뉴확정")]
     # 같은 배지끼리 순서를 센다. 회차로만 세면 메뉴 확정 줄이 2차와 번호를
     # 나눠 써서, 2차가 하나뿐인데 02 로 적히는 일이 생긴다.
     seq: dict[str, int] = {}
     with st.container(key="arch_rows"):
         for o in options:
-            kind = "메뉴" if o.get("메뉴만") else str(o["round"])
+            kind = "메뉴" if o.get("메뉴확정") else str(o["round"])
             seq[kind] = seq.get(kind, 0) + 1
             is_sent = bool(sent and sent["key"] == o["key"])
             is_run = bool(o.get("실행"))
-            first = o["round"] == 1 and not o.get("메뉴만")
+            first = o["round"] == 1 and not o.get("메뉴확정")
             c_chk, c_rnd, c_no, c_body, c_btn, c_form, c_res = st.columns(
                 ARCH_COLS, vertical_alignment="center")
             with c_chk:
-                st.checkbox("선택", key=f"arch_{o['key']}",
-                            label_visibility="collapsed",
-                            on_change=_only_one, args=(o["key"], keys))
+                if not o.get("메뉴확정"):
+                    st.checkbox("선택", key=f"arch_{o['key']}",
+                                label_visibility="collapsed",
+                                on_change=_only_one, args=(o["key"], keys))
             with c_rnd:
-                if o.get("메뉴만"):
+                if o.get("메뉴확정"):
                     cls, text = "arch-rnd arch-rnd-menu", "메뉴 확정"
                 elif first:
                     cls, text = "arch-rnd", "1차"
@@ -2270,14 +2295,13 @@ def render_archive(partner: dict, options: list[dict]) -> None:
                     + "".join(f"<span>{m}</span>" for m in meta)
                     + '</div>', unsafe_allow_html=True)
             with c_btn:
-                # 메뉴 확정 줄은 제안서가 없다. 홍보와 제안서를 만들기 전에
-                # 제안서는 아직 만들지 않은 안이라 미리볼 것이 없다.
+                # 메뉴 확정 줄은 제안서가 아직 없어 잠근다. 왜 잠겼는지는 여기
+                # 적지 않는다 — 보관함은 담아 둔 것을 보는 자리이고, 다음에 할
+                # 일은 기획안 생성 화면이 안내한다.
                 if st.button("미리보기", key=f"apv_{o['key']}", type="primary",
                              use_container_width=True,
-                             disabled=o.get("메뉴만", False),
-                             icon=":material/description:",
-                             help="협력사와 메뉴를 확정한 뒤에 만듭니다."
-                             if o.get("메뉴만") else None):
+                             disabled=o.get("메뉴확정", False),
+                             icon=":material/description:"):
                     _preview(o, partner)
             with c_form:
                 # 폼은 갈래마다 자리가 다르다.
@@ -2287,7 +2311,7 @@ def render_archive(partner: dict, options: list[dict]) -> None:
                 #
                 # 2차 줄은 비운다. 이미 만들어진 2차에 폼을 붙이면 순서가
                 # 거꾸로다 — 폼은 그 2차를 만들기 전에 받는 것이다.
-                if o.get("메뉴만"):
+                if o.get("메뉴확정"):
                     if st.button("폼 2 링크", key=f"afm2_{o['key']}",
                                  use_container_width=True,
                                  icon=":material/link:",
@@ -2354,9 +2378,16 @@ def render_archive(partner: dict, options: list[dict]) -> None:
                 # 여기서 못 알아본다. 20개를 넘길 만큼 돌린 협력사에만 생기는
                 # 일이고, 그때는 확인 창이 한 번 더 뜨는 것으로 끝난다.
                 if sent and sent["key"] != new["key"]:
-                    if any(o["round"] == 2 for o in options):
+                    # 메뉴 확정 줄도 round 2 다. 둘 다 바꿀 수 없는 것은 같고
+                    # 이유가 다르다 — 그 메뉴를 1차에 보낸 안 위에서 정했으니
+                    # 밑을 바꾸면 무엇을 기준으로 정한 것인지 알 수 없게 된다.
+                    later = [o for o in options if o["round"] == 2]
+                    if later:
+                        why = ("메뉴를 이미 확정해서"
+                               if all(o.get("메뉴확정") for o in later)
+                               else "2차 기획안을 이미 만들어서")
                         st.session_state[SS_ARCHIVE_NOTE] = (
-                            "2차 기획안을 이미 만들어서 바꿀 수 없습니다")
+                            f"{why} 바꿀 수 없습니다")
                     else:
                         st.session_state[SS_ARCHIVE_SWAP] = new
                     st.rerun()
@@ -2676,7 +2707,8 @@ with st.container(key="param_card"):
         sent = sent_pick(options)
 
         # 갈래에 따라 2차를 막아야 할 수 있다. 막으면 왜 막았는지 적는다.
-        blocked = menu_block(chosen) if rnd == 2 else None
+        blocked = (menu_block(chosen, has_menu_fixed(chosen["id"]))
+                   if rnd == 2 else None)
 
         # 고른 안은 보관함에서 표시로 보인다. 여기에 또 적지 않는다.
         # 다만 안 골랐으면 생성 버튼이 막히므로 왜 막혔는지는 알려야 한다.
