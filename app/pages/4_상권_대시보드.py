@@ -679,7 +679,10 @@ for col, spot in zip(cols, SPOTS):
             earliest = hist["collected_at"].iloc[0]
             now_utc = pd.Timestamp.now(tz="UTC")
             # 창(window)의 첫 값이 24시간 전에 충분히 가까울 때만 "전일 대비"로 신뢰한다.
-            if (now_utc - earliest) >= pd.Timedelta(hours=20) and pmin is not None:
+            # pd.Timedelta 를 쓰지 않는다. 지금 numpy 와 짝이 맞지 않아 부를
+            # 때마다 「generic unit 은 없어질 예정」 경고가 나고, 없어지면 오류가
+            # 된다. datetime.timedelta 로도 비교가 똑같이 된다.
+            if (now_utc - earliest) >= timedelta(hours=20) and pmin is not None:
                 prev_mid = hist["mid"].iloc[0]
                 current_mid = (pmin + pmax) / 2
                 if prev_mid:
