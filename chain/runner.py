@@ -105,6 +105,28 @@ def _j(obj) -> str:
     return obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False)
 
 
+def _one(out, step: str = "") -> object:
+    """
+    목록으로 온 출력에서 첫 묶음을 꺼낸다.
+
+    제미나이가 묶음 하나를 낼 자리에 목록을 낼 때가 있다 — 메뉴 수집에서
+    300회 중 11회 났다 (10/13). 받는 쪽은 전부 묶음으로 보고 `.get` 으로
+    꺼내므로, 그대로 두면 그 자리에서 터진다. 출력 형식을 스키마로 묶어
+    두지 않은 이유는 단계마다 모양이 달라서다 (`chain/gemini.py` 는
+    `response_mime_type` 만 준다).
+
+    네 단계가 모두 이 자리를 지나므로 여기 한 번만 둔다. 메뉴 수집은
+    `collectors/menu_photo.rows_of` 가 따로 받는다 — 거기는 목록에 담긴
+    줄을 모두 모아야 해서 첫 묶음만 꺼내면 안 된다.
+    """
+    if isinstance(out, list):
+        first = next((d for d in out if isinstance(d, dict)), None)
+        if first is not None:
+            print(f"[출력 모양] {step}: 목록({len(out)}개)으로 와서 첫 묶음만 썼다")
+            return first
+    return out
+
+
 def rejected_note(p2: dict, excluded: list[dict]) -> str:
     """
     (2)에게 되돌려 보낼 쪽지. 무엇을 그대로 두고 무엇을 바꿀지 적는다.
@@ -259,7 +281,7 @@ def run(context: str, target_date: str, beer_list: str,
         # 정확도는 키와 무관하다. 같은 모델이면 출력이 달라지지 않는다.
         out, ms = call(build(name, **kw), on_wait=on_wait, paid=True)
         total_ms += ms
-        return out
+        return _one(out, label)
 
     def ready(n, label, fresh=False):
         """
