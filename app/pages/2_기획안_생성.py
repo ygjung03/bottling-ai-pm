@@ -208,7 +208,11 @@ def plan_steps(partner: dict, menus: list[dict], picks: list[dict],
     # 제안서까지 만든 2차가 있나. 메뉴만 확정한 줄은 제안서가 없어 빠진다.
     second = any(r.get("round") == 2 and (r.get("final_output") or {}).get("안")
                  for r in archive)
-    fixed = any(not (r.get("final_output") or {}).get("안") for r in archive)
+    # 메뉴를 확정한 줄과, 그 줄의 폼 2 링크를 꺼냈는지. 「확정했다」와 「링크를
+    # 줬다」는 다르다 — 확정만으로 「응답 대기」라고 하면 아직 주지도 않은
+    # 링크의 답을 기다리는 중이라고 말하는 셈이다.
+    fixed_rows = [r for r in archive if not (r.get("final_output") or {}).get("안")]
+    form2_out = any(r.get("form2_at") for r in fixed_rows)
 
     out = [{"name": n, "state": LOCK, "note": "", "sub": None} for n in STEPS]
 
@@ -247,7 +251,7 @@ def plan_steps(partner: dict, menus: list[dict], picks: list[dict],
         if partner.get("agreed_menu"):
             out[4]["state"] = DONE
             out[4]["sub"] = ("2차 폼 작성", DONE)
-        elif fixed:
+        elif form2_out:
             out[4]["state"] = WAIT
             out[4]["sub"] = ("2차 폼 작성", "대기중")
         else:
@@ -512,7 +516,7 @@ def load_archive(partner_id: int) -> list[dict]:
     try:
         rows = (get_client().table("plans")
                 .select("id,round,adopted_option,sent_option,target_date,"
-                        "created_at,p2_output,final_output,final_option,"
+                        "created_at,p2_output,final_output,final_option,form2_at,"
                         "executed_from,executed_to,sold_qty,agreed_wholesale,"
                         "retail_price,sales_before,sales_after,note")
                 .eq("partner_id", partner_id)
@@ -1591,6 +1595,34 @@ def _form_link(partner: dict) -> None:
         st.rerun()
 
 
+def mark_form2_out(plan_id: int | None) -> None:
+    """
+    이 줄의 폼 2 링크를 꺼냈다고 적는다 (plans.form2_at).
+
+    진행바가 「미작성」과 「대기중」을 이것으로 가른다. 메뉴를 확정한 것과 링크를
+    준 것은 다른 일이라, 확정만 보고 「응답 대기」라고 하면 아직 주지도 않은
+    링크의 답을 기다리는 중이라고 말하게 된다.
+
+    **처음 꺼낸 때만 적는다.** 링크를 다시 열어 보는 일은 흔한데, 그때마다
+    시각이 밀리면 언제부터 기다렸는지를 알 수 없다.
+
+    실패해도 링크 창은 뜬다 — 기록이 안 되는 것보다 링크를 못 주는 쪽이 나쁘다.
+    """
+    if not plan_id:
+        return
+    try:
+        cli = get_client()
+        row = (cli.table("plans").select("form2_at")
+               .eq("id", plan_id).single().execute().data or {})
+        if row.get("form2_at"):
+            return
+        cli.table("plans").update(
+            {"form2_at": datetime.now(KST).isoformat()}).eq("id", plan_id).execute()
+        load_archive.clear()
+    except Exception as e:
+        print(f"[mark_form2_out] {e}")
+
+
 @st.dialog("메뉴 확정 폼 링크")
 def _form2_link(partner: dict) -> None:
     """
@@ -2667,6 +2699,7 @@ def render_archive(partner: dict, options: list[dict]) -> None:
                                  icon=":material/link:",
                                  help="고른 메뉴의 가격·수량·보관 조건을 "
                                       "받는 폼입니다."):
+                        mark_form2_out(o["plan_id"])
                         _form2_link(partner)
                 elif first and st.button(
                         "폼 링크", key=f"afm_{o['key']}",
