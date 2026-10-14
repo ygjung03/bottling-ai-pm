@@ -169,7 +169,8 @@ def run(context: str, target_date: str, beer_list: str,
         on_step=None, usage_note: str | None = None,
         today: date | None = None,
         rec_menu_hint: str = NO_REC_MENU,
-        agreed_menu: str | None = None) -> dict:
+        agreed_menu: str | None = None,
+        stop_after: int = 4) -> dict:
     """
     on_step: 진행 상황 콜백 (Streamlit st.status 연동용)
 
@@ -201,6 +202,18 @@ def run(context: str, target_date: str, beer_list: str,
     constraints 만 문자열이 아니라 dict 다. 규칙이 단계별로 갈려
     {"p2": ..., "p3": ..., "p4": ...} 형태로 온다 (명세서 1-5).
     chain.inputs.build_constraints() 가 만든다.
+
+    stop_after: 몇 단계까지 돌지. 기본 4 — 제안서까지 만든다.
+
+      2 를 주면 (1)(2)까지만 돈다. **메뉴 3안을 내미는 자리다** — B/C 갈래가
+      메뉴판을 읽고 다시 고를 때 쓴다. 홍보와 제안서는 협력사와 메뉴를 확정한
+      뒤에 만드는 것이라 아직 만들 것이 없다.
+
+      p3·final 은 None 으로 남는다. 그 둘이 비어 있는 것이 화면에서 「메뉴
+      확정」 줄을 가리는 표시이기도 하다.
+
+      화면 진행 표시의 분모를 이 값에 맞출 것 — 부르는 쪽이 아는 값이다
+      (2_기획안_생성.py 의 on_step).
 
     반환
       p1~p3, final   단계별 출력. 끊긴 뒤의 단계는 None 이다
@@ -401,6 +414,12 @@ def run(context: str, target_date: str, beer_list: str,
             result["p2"] = (ready(2, label2,
                                   fresh=attempt > 0 and not fixed_menu)
                             or make(2, label2, call_p2, check_p2))
+            if stop_after <= 2:
+                # 메뉴 3안만 내미는 자리다 (B/C). 홍보와 제안서는 메뉴를
+                # 확정한 뒤에 만들므로 여기서 끝낸다. 되감기는 (2) 안에서
+                # 이미 돌았고, 아래 되감기는 (4)가 안을 뺐을 때 도는 것이라
+                # (4)를 안 부르면 돌 일이 없다.
+                break
             result["p3"] = (
                 ready(3, "홍보 기획 중...", fresh=attempt > 0)
                 or make(3, "홍보 기획 중...", call_p3,

@@ -74,6 +74,13 @@ BOTTLING_LNG = float(os.getenv("BOTTLING_LNG", "127.0679483"))
 PARTNER_FORM_URL = os.getenv("PARTNER_FORM_URL", "")
 PARTNER_FORM_CODE_ENTRY = os.getenv("PARTNER_FORM_CODE_ENTRY", "")
 
+# 폼 2 — 「협의 사항 입력폼 (메뉴 확정)」. B/C 갈래에서 메뉴를 확정한 뒤에 보낸다.
+#
+# **폼 1 과 주소도 문항 번호도 다르다.** 문항 번호는 폼마다 따로 매겨지므로
+# 폼 1 의 값을 쓰면 엉뚱한 칸에 코드가 들어간다.
+PARTNER_FORM2_URL = os.getenv("PARTNER_FORM2_URL", "")
+PARTNER_FORM2_CODE_ENTRY = os.getenv("PARTNER_FORM2_CODE_ENTRY", "")
+
 # --- 수집 대상 지점 ---
 # TODO(A): 「서울시 주요 120장소 목록」에서 확인 후 실제 코드값으로 교체
 SPOTS = {
