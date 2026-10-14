@@ -158,6 +158,13 @@ PAST_CASES = """- 제과·디저트 협업 (2025, 대형 행사 기간): 유동�
 # 아님을 구분하기 위해서다.
 NO_TREND_MENU = f"{NO_DATA} (메뉴 검색 경로로 시작하지 않음)"
 
+# (2) 입력 — 추천받기 에이전트가 낸 메뉴 방향. 「대표님이 지정한 메뉴」와 다르다.
+#
+# 에이전트는 가게의 실제 메뉴를 모른 채 업종만 보고 지어낸다 (recommender/agent.py
+# 규칙 4). 그래서 **참고일 뿐 확정이 아니다.** 지정한 메뉴 자리에 넣으면 (2)가
+# 그 메뉴 하나로 안을 만드는데, 협력사가 안 파는 메뉴일 수 있다.
+NO_REC_MENU = f"{NO_DATA} (추천받기로 시작하지 않음)"
+
 
 # 바틀링 SNS 자산 — (3) 마케터 입력.
 #
@@ -337,13 +344,38 @@ def fetch_partner(partner_id: int | None = None) -> dict | None:
     return rows[0] if rows else None
 
 
-MENU_MANUAL = "수동 등록"
+MENU_MANUAL = "직접 입력"
 MENU_AUTO = "자동 수집"
-MENU_PHOTO = "메뉴판 사진"
+MENU_PHOTO = "메뉴판 자동 인식"
 
 # 「근거」 맨 앞에 적는 말. 이 말이 있는 줄만 그 출처로 친다.
 MENU_AUTO_BASIS = "블로그 후기 자동 수집"
-MENU_PHOTO_BASIS = MENU_PHOTO       # "메뉴판 사진 (2026-10-13)" 꼴로 적는다
+MENU_PHOTO_BASIS = MENU_PHOTO       # "메뉴판 자동 인식 (2026-10-13)" 꼴로 적는다
+
+# 사람이 고친 줄은 「근거」 끝에 이 말이 붙는다 — 「메뉴판 자동 인식 · 수정됨 (10-14)」.
+# 출처는 그대로 둔다. 「직접 입력」으로 바꾸면 어디서 온 메뉴인지가 사라지고,
+# 사진으로 9개를 읽었는데 세는 줄이 7개로 줄어 보인다.
+MENU_EDITED = "수정됨"
+
+# 사람이 눈으로 확인한 줄에 들어가는 칸. 메뉴 목록 창에서 체크하고 「확인」을
+# 누르면 날짜가 들어간다. 날짜는 화면에 안 보이고 체크 표시로만 나간다.
+#
+# 협력사가 아니라 **줄마다** 둔다. 새 메뉴가 들어와도 이미 본 줄의 확인이
+# 풀리지 않는다.
+MENU_SEEN = "확인"
+
+
+def menu_kept(row: dict) -> bool:
+    """
+    다시 수집해도 덮지 말아야 할 줄인가.
+
+    사람이 고쳤거나 눈으로 확인한 줄이다. 기계가 읽은 값보다 사람이 맞다.
+    자동 수집과 메뉴판 사진이 이 값을 보고 남길 줄을 가린다.
+
+    둘 중 하나만 있어도 남긴다. 「확인만 있고 안 고친 줄」이 흔한 쪽이다 —
+    목록을 보고 맞으면 체크만 하고 넘어간다.
+    """
+    return bool(row.get(MENU_SEEN)) or MENU_EDITED in str(row.get("근거") or "")
 
 
 def menu_source(row: dict) -> str:
@@ -354,9 +386,9 @@ def menu_source(row: dict) -> str:
     옮겨 적은 것도 들어 있다 (프레즐 32개, 9/19). 컬럼이 가르는 것은 「누가
     넣었나」가 아니라 「어디서 온 값인가」다.
 
-    셋으로 가른다. 사진으로 읽은 것을 「수동 등록」으로 묶으면 안 된다 —
-    사람이 적은 것이 아니고, 「메뉴판 사진이 수동 등록보다 최신이고 전체를
-    담는다」는 판단이 거기에 걸려 있다 (`db/migrate_0928.sql:117`).
+    셋으로 가른다. 사진으로 읽은 것을 「직접 입력」으로 묶으면 안 된다 —
+    사람이 적은 것이 아니고, 「메뉴판 사진이 손으로 넣은 것보다 최신이고
+    전체를 담는다」는 판단이 거기에 걸려 있다 (`db/migrate_0928.sql:117`).
     """
     basis = str(row.get("근거") or "")
     if basis.startswith(MENU_AUTO_BASIS):
@@ -364,6 +396,24 @@ def menu_source(row: dict) -> str:
     if basis.startswith(MENU_PHOTO_BASIS):
         return MENU_PHOTO
     return MENU_MANUAL
+
+
+def menu_protected(row: dict) -> bool:
+    """
+    자동 수집이 덮으면 안 되는 줄인가.
+
+    자동 수집은 그 가게 메뉴를 그때그때 처음부터 다시 찾아 후기 칸을 통째로
+    바꾼다. 그 칸에 사람 손이 닿은 줄이 섞여 있으면 함께 쓸려 나간다.
+
+    남길 줄은 둘이다.
+      · 사람이 고쳤거나 확인한 줄 (menu_kept)
+      · 자동 수집이 넣지 않은 줄 — 직접 입력, 메뉴판 자동 인식
+
+    확인·수정 표시만 보면 모자란다. **사람이 직접 넣은 줄이 후기 칸에 있었고,
+    표시가 없어서 자동 수집 한 번에 사라졌다 (10/14).** 어느 칸에 있는지가
+    아니라 누가 넣었는지로 갈라야 한다 (menu_source 설명 참고).
+    """
+    return menu_kept(row) or menu_source(row) != MENU_AUTO
 
 
 def menu_rows_sourced(partner: dict) -> list[tuple[str, dict]]:
@@ -494,6 +544,22 @@ def fixed_approach(partner: dict | None, approach: str | None = None) -> str | N
     return picked if picked in APPROACH.values() else None
 
 
+def agreed_menu_name(partner: dict | None,
+                     fallback: str | None = None) -> str | None:
+    """
+    협의로 정한 협업 메뉴 이름. 없으면 None.
+
+    폼 값이 먼저다. 폼에 없으면 넘겨 준 값을 쓴다 — A 갈래는 제안받은 그
+    메뉴라서 폼이 묻지 않고, 1차에서 고른 안에서 가져와야 한다.
+
+    같은 이름을 (2)의 입력(build_partner_resources)과 출력 검사(check_menu)가
+    함께 봐야 해서 따로 뒀다. 두 곳에서 다르게 고르면 검사가 헛돈다.
+    """
+    if not partner:
+        return None
+    return str(partner.get("agreed_menu") or fallback or "").strip() or None
+
+
 def _agreed_menu_line(partner: dict, name: str) -> str:
     """
     확정된 메뉴 한 줄. 「판매 중인 메뉴」 자리에 이것만 들어간다.
@@ -596,7 +662,7 @@ def build_partner_resources(partner: dict | None,
     if partner is None:
         return f"{NO_DATA} (협력사 미선택)"
 
-    name = (partner.get("agreed_menu") or agreed_menu) if confirmed else None
+    name = agreed_menu_name(partner, agreed_menu) if confirmed else None
     head = f"{partner.get('name', '?')} / {partner.get('category') or NO_DATA}"
     lines = [head]
 

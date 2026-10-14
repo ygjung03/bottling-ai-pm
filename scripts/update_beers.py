@@ -18,11 +18,15 @@
   python -m scripts.update_beers --apply    실제로 반영
 """
 import sys
-from datetime import date
+from datetime import datetime, timedelta, timezone
+
+# 이 날짜가 beers 의 「확인 날짜」로 DB 에 남는다. 돌리는 곳이 바뀌어도
+# 한국 날짜로 적히게 둔다.
+KST = timezone(timedelta(hours=9))
 
 from db.client import get_client
 
-TODAY = date.today().isoformat()
+TODAY = datetime.now(KST).date().isoformat()
 
 # 메뉴판 그대로. 빅웨이브가 고정 5종에 있었는데 빠져 고정은 4종이 됐다.
 FIXED = {"(논알콜) 체리에이드", "바틀링 라거", "37디그리스라거", "카이저돔 켈러비어"}
