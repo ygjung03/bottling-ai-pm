@@ -44,13 +44,15 @@ from app.theme import (ARCHIVE_PARAM, SS_ARCHIVE_COUNT, SS_PARTNER_ID,
                        apply_chrome)
 from app.ui import page_header
 from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
-                          MENU_AUTO_BASIS, MENU_EDITED, MENU_MANUAL,
-                          MENU_PHOTO, MENU_SEEN, NO_REC_MENU, NO_TREND_MENU,
+                          MENU_AUTO_BASIS, MENU_EDITED, MENU_FORM, MENU_MANUAL,
+                          MENU_PHOTO, MENU_PICKED, MENU_SEEN, NO_REC_MENU,
+                          NO_TREND_MENU,
                           PAST_CASES, WEATHER_PREF, build_beer_list,
                           build_constraints, build_events,
                           build_partner_blockers, build_partner_resources,
                           build_partner_sns, build_rec_reason, menu_protected,
-                          menu_rows, menu_rows_sourced)
+                          menu_rows, menu_rows_sourced, menu_source,
+                          note_menus)
 from chain.runner import run
 from collectors.menu_photo import read_photos
 from collectors.menu_reviews import collect
@@ -80,6 +82,7 @@ SS_MENU_RUN = "menu_collecting"   # 지금 후기를 찾는 중이다 (버튼이
 SS_PHOTO_RUN = "photo_reading"    # 지금 메뉴판 사진을 읽는 중이다
 SS_MENU_VIEW = "menu_list_open"   # 메뉴 목록 창을 열어라
 SS_MENU_EDIT = "menu_list_edit"   # 그 창이 고치는 상태다
+SS_MENU_NOTE_ADDED = "menu_note_added"   # 협력사가 적어 준 메뉴를 몇 개 넣었나
 
 # 추천받기에서 「이 안으로 진행」을 누르고 왔을 때 그 화면이 남겨 둔 값.
 # 담기는 것은 app/pages/3_파트너_추천.py 의 SS_REC_PLAN 설명에 있다.
@@ -1655,6 +1658,63 @@ def save_photo_menus(partner: dict, rows: list[dict], today: str) -> int:
     return len(fresh)
 
 
+def load_note_menus(partner: dict) -> tuple[int, int]:
+    """
+    협력사가 폼에 적어 준 메뉴를 목록에 반영한다. (새로 넣은 수, 표시한 수).
+
+    사진을 올리기 어렵다고 한 경우에 그 칸이 채워진다 (partners.menu_note,
+    폼 1 섹션 4). 버튼을 두지 않는다 — 고를 것이 없는 일이고, 폼의 다른 답도
+    버튼 없이 들어와 쓰인다.
+
+    이름이 목록에 있나 없나로 하는 일이 갈린다.
+
+      없으면  menu_prices 에 새 줄로 넣는다. **가격은 폼이 묻지 않아 비어
+             있다** — 「판매가 미입력」으로 남고 (2)는 그런 줄을 고르지 않는다
+             (p2_chef 지시 1-0-1). 가격은 사람이 목록에서 채운다. 적어 준
+             글귀에서 숫자를 짐작하면 틀린 값이 들어간다
+      있으면  그 줄에 「· 협력사 지목 (날짜)」를 붙인다. 값은 건드리지 않는다 —
+             이미 가격이 채워져 있고, 그 가격의 출처는 그대로여야 한다
+             (chain/inputs.MENU_PICKED 설명)
+
+    **한 번만 한다.** 「협력사 입력」 줄이나 「협력사 지목」 표시가 이미 있으면
+    아무것도 하지 않는다. 안 그러면 사람이 지운 줄이 화면을 다시 그릴 때마다
+    되살아난다.
+    """
+    names = note_menus(partner.get("menu_note"))
+    if not names:
+        return 0, 0
+    cols = {c: [dict(r) for r in (partner.get(c) or [])]
+            for c in ("menu_prices", "menu_prices_review")}
+    done = any(menu_source(r) == MENU_FORM
+               or MENU_PICKED in str(r.get("근거") or "")
+               for rows in cols.values() for r in rows)
+    if done:
+        return 0, 0
+
+    today = datetime.now(KST).date().isoformat()
+    want = set(names)
+    marked = 0
+    for rows in cols.values():
+        for r in rows:
+            if str(r.get("메뉴") or "").strip() in want:
+                r["근거"] = (f'{str(r.get("근거") or "").strip()} '
+                            f'· {MENU_PICKED} ({today})').strip(" ·")
+                marked += 1
+
+    have = {str(r.get("메뉴") or "").strip()
+            for rows in cols.values() for r in rows}
+    fresh = [{"메뉴": n, "가격": None, "납품가": None,
+              "근거": f"{MENU_FORM} ({today})"}
+             for n in names if n not in have]
+    if not (fresh or marked):
+        return 0, 0
+
+    cols["menu_prices"] += fresh
+    get_client().table("partners").update(cols).eq("id", partner["id"]).execute()
+    load_partners.clear()
+    return len(fresh), marked
+
+
 def save_menu_edits(partner: dict, before: list[tuple[str, dict]]) -> bool:
     """
     메뉴 목록에서 고친 줄을 저장한다. 고친 것이 있었는지 돌려준다.
@@ -1918,6 +1978,29 @@ def _menu_list(partner: dict) -> None:
     안에서 모드가 바뀌므로 다시 그릴 일이 없다. 표가 버튼 위에 보이도록
     자리를 미리 잡아 둔다(`body`).
     """
+    # 협력사가 적어 준 메뉴를 방금 넣었으면 그 사실을 여기 적는다. 화면 가운데
+    # 띠(flash_note)로는 안 된다 — 이 창이 모달이라 띠를 덮는다. 할 일이 있는
+    # 자리에 말이 있는 쪽이 낫다.
+    added, marked = st.session_state.pop(SS_MENU_NOTE_ADDED, (0, 0))
+    if added or marked:
+        # 셋 중 하나를 고른다. 조각을 이어 붙이면 「0개를 넣었습니다」가 뜨거나
+        # 한 문장에 두 문장이 들어가 읽기 어려워진다.
+        if added and marked:
+            note = (f"협력사가 폼에 적어 주신 메뉴를 목록에 반영했습니다. "
+                    f"{added}개를 새로 넣고, 이미 있던 {marked}개에 "
+                    f"「{MENU_PICKED}」 표시를 더했습니다. "
+                    f"가격을 채우고 확인해 주세요.")
+        elif added:
+            note = (f"협력사가 폼에 적어 주신 메뉴 {added}개를 목록에 "
+                    f"넣었습니다. 가격을 채우고 확인해 주세요.")
+        else:
+            note = (f"협력사가 폼에 적어 주신 메뉴 {marked}개가 이미 목록에 "
+                    f"있어 「{MENU_PICKED}」 표시를 더했습니다. 확인해 주세요.")
+        st.markdown(
+            f'<div style="background:#EFF6FF; border:1px solid #BFDBFE;'
+            f' border-radius:10px; padding:12px 16px; margin-bottom:10px;'
+            f' color:#1E3A8A; font-weight:700; font-size:15px;'
+            f' line-height:1.5">{note}</div>', unsafe_allow_html=True)
     st.caption("기획안에 활용할 메뉴와 가격, 등록 출처를 확인해 주세요.")
     rows = _menu_table(partner)
     body = st.container()        # 표가 들어갈 자리. 내용은 맨 아래에서 채운다
@@ -2580,6 +2663,22 @@ with st.container(key="param_card"):
                 hint = f" · 메뉴 방향 「{plan['menu']}」" if plan.get("menu") else ""
                 st.caption(f"추천 에이전트가 제안한 날짜입니다{hint}. 날짜는 "
                            "바꿀 수 있고, 메뉴 방향은 참고로만 들어갑니다.")
+
+        # 협력사가 폼에 적어 준 메뉴를 목록에 넣는다. 사진을 못 올린 B/C 가
+        # 그렇다 — 폼이 왔고, 적어 준 글귀가 있고, 아직 안 넣었을 때만 돈다.
+        #
+        # 협력사를 고른 자리에서 본다. 화면에 들어올 때 보면 안 된다 — 세션이
+        # 끊기면 목록 첫 협력사로 돌아가서, 엉뚱한 협력사를 보는 중에 뜬다.
+        if has_form(chosen) and (chosen.get("reply_choice") or "") \
+                .strip().upper() in ("B", "C"):
+            added, marked = load_note_menus(chosen)
+            if added or marked:
+                # 바뀐 줄이 이 실행의 목록에도 보여야 한다. 캐시는 그 안에서
+                # 이미 비웠으므로 다시 읽으면 새 값이 온다.
+                chosen = next((p for p in load_partners()
+                               if p["id"] == chosen["id"]), chosen)
+                st.session_state[SS_MENU_NOTE_ADDED] = (added, marked)
+                st.session_state[SS_MENU_VIEW] = True
 
         # ── 협력사 메뉴·가격 정보 (시안 1쪽) ──
         #

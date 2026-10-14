@@ -18,6 +18,7 @@ runner.run() 이 받는 입력을 만드는 곳이다.
 """
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 
 from chain.loader import load
@@ -347,10 +348,26 @@ def fetch_partner(partner_id: int | None = None) -> dict | None:
 MENU_MANUAL = "직접 입력"
 MENU_AUTO = "자동 수집"
 MENU_PHOTO = "메뉴판 자동 인식"
+# 협력사가 폼에 손으로 적어 준 메뉴 이름. 사진을 올리기 어렵다고 한 경우다
+# (폼 1 섹션 4, partners.menu_note). 가격은 묻지 않아 이름만 온다.
+#
+# 「직접 입력」과 가른다 — 그쪽은 바틀링이 적은 것이다. 같은 칸에 넣으면
+# 누가 알려 준 이름인지가 사라진다.
+MENU_FORM = "협력사 입력"
 
 # 「근거」 맨 앞에 적는 말. 이 말이 있는 줄만 그 출처로 친다.
 MENU_AUTO_BASIS = "블로그 후기 자동 수집"
 MENU_PHOTO_BASIS = MENU_PHOTO       # "메뉴판 자동 인식 (2026-10-13)" 꼴로 적는다
+MENU_FORM_BASIS = MENU_FORM         # "협력사 입력 (2026-10-14)" 꼴로 적는다
+
+# 이미 목록에 있는 메뉴를 협력사가 폼에서 지목한 경우. 출처는 그대로 두고 뒤에
+# 이 말을 붙인다 — 「블로그 후기 자동 수집, … · 협력사 지목 (2026-10-14)」.
+#
+# 출처를 「협력사 입력」으로 덮지 않는다. 「근거」는 **그 가격이 어디서 온
+# 값인가**이고 (2)가 판매가 뒤에 읽어 믿을 값인지 가늠한다. 폼은 가격을 묻지
+# 않으므로, 덮으면 후기에서 추정한 값이 협력사가 확인해 준 값처럼 보인다.
+# 수정됨 표시와 같은 방식이다.
+MENU_PICKED = "협력사 지목"
 
 # 사람이 고친 줄은 「근거」 끝에 이 말이 붙는다 — 「메뉴판 자동 인식 · 수정됨 (10-14)」.
 # 출처는 그대로 둔다. 「직접 입력」으로 바꾸면 어디서 온 메뉴인지가 사라지고,
@@ -395,7 +412,33 @@ def menu_source(row: dict) -> str:
         return MENU_AUTO
     if basis.startswith(MENU_PHOTO_BASIS):
         return MENU_PHOTO
+    if basis.startswith(MENU_FORM_BASIS):
+        return MENU_FORM
     return MENU_MANUAL
+
+
+def note_menus(text: str | None) -> list[str]:
+    """
+    협력사가 폼에 적어 준 메뉴 글귀를 이름 목록으로 쪼갠다 (partners.menu_note).
+
+    자유롭게 적는 칸이라 구분자가 제각각이다. 쉼표·가운뎃점·줄바꿈·슬래시를
+    모두 구분자로 본다. 「붕어빵, 호두과자」·「붕어빵 / 호두과자」·줄마다 하나씩
+    적은 것이 다 들어온다.
+
+    앞뒤의 번호와 글머리표는 뗀다 — 「1. 붕어빵」·「- 붕어빵」으로 적는다.
+    같은 이름이 두 번 나오면 한 번만 남기고, 적은 순서는 지킨다.
+
+    가격은 묻지 않는 칸이라 이름만 돌려준다. 값을 섞어 적었더라도 그대로 두고
+    사람이 목록에서 고친다 — 글귀에서 가격을 짐작하면 틀린 값이 들어간다.
+    """
+    if not text:
+        return []
+    out: list[str] = []
+    for piece in re.split(r"[,，、·/\n\r]+", str(text)):
+        name = re.sub(r"^\s*(?:\d+[.)]|[-*•])\s*", "", piece).strip()
+        if name and name not in out:
+            out.append(name)
+    return out
 
 
 def menu_protected(row: dict) -> bool:
