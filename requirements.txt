@@ -8,6 +8,9 @@ lxml==5.3.0
 google-genai
 PyYAML==6.0.2
 streamlit==1.40.2
+# 관리 화면의 일별 사용금액 그래프. streamlit 이 끌고 오는 것이지만(altair>=4,<6)
+# 버전에 따라 축 글자 각도가 달라질 수 있어 로컬과 같은 값으로 박아 둔다.
+altair==5.5.0
 plotly==5.24.1
 python-docx==1.1.2
 pymupdf==1.28.2

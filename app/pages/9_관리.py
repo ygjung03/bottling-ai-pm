@@ -7,10 +7,15 @@ import _path
 import re
 from datetime import datetime, timedelta, timezone
 
+import altair as alt
+import pandas as pd
 import streamlit as st
 
 from app.auth import require_owner
 from app.theme import apply_chrome
+from config.settings import KRW_PER_USD, USAGE_LOG_FROM
+from db import api_usage as usage
+from db.api_usage import KST
 from db.client import get_client
 
 # 배포는 UTC 라 그냥 today() 를 쓰면 새벽에 하루 전 날짜가 들어간다. 이 날짜가
@@ -24,9 +29,12 @@ require_owner()
 apply_chrome()
 
 st.title("관리")
-st.caption("판매 중인 맥주 라인업과 기획안 생성에 사용할 설정을 관리합니다.")
+st.caption("판매 중인 맥주 라인업과 AI 사용량을 확인합니다.")
 
-t1, t2, t3 = st.tabs(["맥주 라인업", "프롬프트", "제약조건"])
+# 프롬프트·제약조건 탭은 뺐다 (10/15). 둘 다 「구현 예정」 안내만 띄우는
+# 껍데기였고, 밖으로 나가는 보고서에도 적혀 있지 않다. 명세서 8-1 의 이관
+# 설계에만 있던 것이라 그 표도 함께 고쳤다.
+tab_beer, tab_usage = st.tabs(["맥주 라인업", "API 사용량"])
 
 # ───────────────────────── 맥주 라인업 (T10b) ─────────────────────────
 #
@@ -196,17 +204,306 @@ def render_lineup() -> None:
                "스타일·도수·맛 특성이 AI 가 페어링을 고르는 근거입니다.")
 
 
-with t1:
+# ───────────────────────── API 사용량 (㉞) ─────────────────────────
+#
+# 예시 화면: docs/ref/관리화면(api사용량포함)_예시_피그마.pdf
+#
+# [건별로 다 펼치지 않는다]
+#   한 줄씩 다 보여 주면 정보가 많아 읽기 어렵다. 합계와 평균을 먼저 보이고
+#   건별은 최근 10건만 접어 둔다.
+#
+# [평균은 유료 줄만으로 낸다]
+#   무료는 금액이 0 이라 함께 평균을 내면 값이 희석된다.
+#
+# [기록 이전 사용분]
+#   api_usage 가 쌓이기 전에 쓴 금액이 있다. 구글 결제 화면에서 확인한 값이고
+#   (config/settings.GEMINI_SPENT_BEFORE_KRW), 총액에만 더한다. 종류별·날짜별
+#   비중은 기록된 것만으로 낸다 — 그 전 사용분은 금액만 알고 종류를 모른다.
+
+
+def _bar(pct: float) -> str:
+    """막대 하나. 넘치면 100% 에서 멈춘다."""
+    w = max(0.0, min(pct, 100.0))
+    return (f'<div style="background:#EEF0F3; border-radius:999px; height:10px;'
+            f' overflow:hidden; margin:10px 0 6px">'
+            f'<div style="width:{w}%; height:100%; background:#2563EB;'
+            f' border-radius:999px"></div></div>')
+
+
+def _won(n) -> str:
+    return f"{int(n or 0):,}원"
+
+
+# 상자 사이 여백.
+#
+# **열 묶음(st.columns) 아래에는 Streamlit 이 스스로 16px 을 준다. 위에는 없다.**
+# 브라우저로 좌표를 재서 확인했다 — 열 묶음이 989 에서 끝나는데 다음 요소가
+# 1005 에서 시작했다. 그래서 위에만 이만큼 넣어 주면 위아래가 같아진다.
+#
+# 빈 요소는 16px 아래로 줄어들지 않아(4px 을 넣어도 16px 로 그려졌다) 이 값을
+# 16 보다 작게 잡을 수 없다. 더 벌리려면 GAP 을 올리고 열 묶음 **아래에도**
+# `_gap(GAP - 16)` 을 넣어야 한다.
+GAP = 16
+
+
+def _gap(px: int = GAP) -> None:
+    """상자 사이 여백. Streamlit 기본 간격은 0 이라 직접 넣는다."""
+    st.markdown(f'<div style="height:{px}px"></div>', unsafe_allow_html=True)
+
+
+# 「일별 사용금액」과 「평균 단가」 상자의 세로 길이. 나란히 놓이는 두 상자라
+# 길이가 다르면 눈에 띈다. 한 값으로 묶어 둔다.
+CARD_H = 290
+
+# 일별 그래프에 보일 날수. 다 보이면 막대가 가늘어지고, 지금은 하루 금액이
+# 수십 원이라 옛 날짜까지 볼 이유가 적다.
+DAYS = 5
+
+# 그래프 높이. **가로축 날짜 글자까지 포함한 전체 높이다.**
+#
+# `use_container_width=True` 로 넘기면 Altair 가 autosize fit 으로 그린다 —
+# 주는 높이 안에 축 글자까지 들어가고 그림 영역이 그만큼 줄어든다. 앞서 축
+# 글자가 높이 밖에 더 붙는 줄 알고 작게 잡았다가 상자 아래가 남았다.
+#
+# 상자 안에서 쓸 수 있는 높이: CARD_H 290 - 테두리·여백 2×16 = 258.
+# 거기서 제목 줄(약 26)과 요소 사이 간격(16)을 뺀 216 이 그래프 몫이다.
+CHART_H = 210
+
+
+def render_usage() -> None:
+    """
+    제미나이 API 사용량 (시안 docs/ref/관리화면(api사용량포함)_예시_피그마.pdf).
+
+    시안은 「이번 달 / 안내 금액 3,000원」을 기준선으로 뒀는데, 그 3,000원은
+    대표님께 미리 말씀드린 추정치일 뿐 정해 둔 예산이 아니다. 대신 **선불
+    충전액**에 견준다 — 다 쓰면 실제로 기획안 생성이 멈추는 값이다.
+    """
+    rows = usage.fetch()
+    if not rows:
+        st.info("아직 기록된 사용량이 없습니다.")
+        return
+    s = usage.summarize(rows)
+    총, 충전 = s["쓴_금액"], s["충전_금액"]
+    남은 = max(충전 - 총, 0)
+    pct = 총 / 충전 * 100 if 충전 else 0
+
+    c_title, c_pill = st.columns([3, 1], vertical_alignment="center")
+    c_title.markdown(
+        '<div style="font-size:1.15rem; font-weight:800; color:#161A1F">'
+        '제미나이 API 사용량</div>'
+        '<div style="color:#59606D; font-size:0.85rem; margin-top:2px">'
+        f'선불 충전액 대비 · {datetime.now(KST):%Y-%m-%d} 기준</div>',
+        unsafe_allow_html=True)
+    c_pill.markdown(
+        f'<div style="text-align:right"><span style="border:1px solid #E5E7EB;'
+        f' border-radius:999px; padding:6px 14px; font-size:0.82rem;'
+        f' color:#59606D">{USAGE_LOG_FROM}부터 기록</span></div>',
+        unsafe_allow_html=True)
+    st.markdown(
+        '<div style="color:#59606D; font-size:0.85rem; margin:14px 0 12px">'
+        '기록을 시작하기 전의 사용 내역은 금액만 확인할 수 있어 전체 금액과'
+        ' 월별 합계에만 포함했습니다.</div>',
+        unsafe_allow_html=True)
+
+    # ── 큰 카드 — 누적·오늘·기능별 비중 ──
+    #
+    # 기능별 비중 띠는 **유료로 쓴 기능이 둘 이상일 때만** 띄운다. 지금은
+    # 기획안 생성만 유료라 「기획안 생성 100.0%」 한 줄이 되는데, 나눌 것이
+    # 없는 비중은 자리만 차지한다. 메뉴 수집을 유료로 돌리면 다시 나타난다.
+    비중 = [(k, v["금액"]) for k, v in s["종류별"].items() if v["금액"]]
+    쓴것 = sum(w for _, w in 비중) or 1
+    strip = ""
+    if len(비중) > 1:
+        strip = (
+            '<div style="background:#F8FAFC; border-radius:10px;'
+            ' padding:12px 16px; margin-top:18px; font-size:0.88rem">'
+            '<span style="color:#161A1F; font-weight:800; margin-right:14px">'
+            '기능별 비중</span>'
+            + " <span style='color:#D7DBE0'>|</span> ".join(
+                f'<span style="color:#59606D">{k}</span> '
+                f'<b style="color:#161A1F">{_won(w)}</b> '
+                f'<span style="color:#9CA3AF">{w / 쓴것 * 100:.1f}%</span>'
+                for k, w in 비중)
+            + '</div>')
+
+    st.markdown(
+        '<div style="position:relative; background:#FFFFFF;'
+        ' border:1px solid #E5E7EB; border-radius:14px; padding:22px 26px">'
+        # 세로 구분선. 위아래 두 칸만 가르는 선이 아니라 **상자 전체를 덮는다** —
+        # 칸 안에 두면 안내문이 시작되는 자리에서 끊긴다.
+        #
+        # 가로 위치는 왼쪽 칸이 차지하는 비율(2.4 / 3.4 = 70.588%)에서 나온다.
+        # 상자 안쪽 너비가 얼마든 맞게, 좌우 여백 26px 을 셈에 넣어 둔다:
+        #   26 + 0.70588 × (너비 − 52) = 0.70588 × 너비 − 10.7
+        '<div style="position:absolute; top:0; bottom:0;'
+        ' left:calc(70.588% - 10.7px); width:1px; background:#EEF0F3"></div>'
+        '<div style="display:flex; align-items:stretch">'
+        '<div style="flex:2.4; padding-right:26px">'
+        '<div style="display:flex; justify-content:space-between;'
+        ' align-items:center">'
+        '<div style="color:#161A1F; font-weight:800">누적 사용금액'
+        '<span style="color:#9CA3AF; font-weight:600"> · 선불 충전액 대비</span>'
+        '</div>'
+        f'<span style="background:#EFF4FF; color:#2563EB; border-radius:999px;'
+        f' padding:5px 13px; font-size:0.8rem; font-weight:700">'
+        f'{"충전액 이내" if 총 <= 충전 else "충전액 초과"}</span></div>'
+        f'<div style="margin-top:14px"><span style="font-size:2.1rem;'
+        f' font-weight:800; color:#161A1F">{_won(총)}</span>'
+        f'<span style="font-size:1.1rem; color:#9CA3AF"> / {_won(충전)}</span>'
+        f'</div>{_bar(pct)}'
+        '<div style="display:flex; justify-content:space-between;'
+        ' font-size:0.85rem; margin-top:4px">'
+        f'<span style="color:#59606D">충전액의 {pct:.1f}% 사용</span>'
+        f'<b style="color:#161A1F">남은 금액 {_won(남은)}</b></div></div>'
+        '<div style="flex:1; padding-left:26px">'
+        '<div style="color:#161A1F; font-weight:800">오늘 사용한 금액</div>'
+        f'<div style="font-size:2.1rem; font-weight:800; color:#161A1F;'
+        f' margin-top:10px">{_won(s["오늘"])}</div>'
+        f'<div style="color:#9CA3AF; font-size:0.82rem; margin-top:4px">'
+        f'이번 달 {_won(s["이번달"])}</div>'
+        '<div style="color:#59606D; font-size:0.82rem; margin-top:10px;'
+        ' line-height:1.5">기록된 유료 호출의 합계입니다.</div>'
+        '</div></div>' + strip +
+        '<div style="margin-top:14px; color:#59606D; font-size:0.84rem">'
+        '※ 구글 단가로 계산한 어림값입니다. 실제 청구액과 다를 수 있습니다.</div>'
+        f'<div style="color:#9CA3AF; font-size:0.82rem; margin-top:2px">'
+        f'Google 단가 · 환율 1달러 = {KRW_PER_USD:,.0f}원 적용 · 기능별·날짜별'
+        f' 비중은 {USAGE_LOG_FROM} 이후 기록 기준</div></div>',
+        unsafe_allow_html=True)
+
+    _gap()
+    c_day, c_avg = st.columns([2, 1])
+
+    with c_day, st.container(border=True, height=CARD_H):
+        st.markdown(
+            '<div style="display:flex; justify-content:space-between;'
+            # 제목과 그래프 사이. 상자 안에 남는 22px 을 위아래로 나눠 그래프가
+            # 가운데 오게 한다 (안쪽 높이 258 - 제목 26 - 그래프 210 = 22).
+            ' align-items:baseline; margin-bottom:11px">'
+            '<span><span style="font-weight:800; color:#161A1F">일별 사용금액'
+            '</span><span style="color:#9CA3AF; font-size:0.78rem;'
+            ' margin-left:8px">무료로만 쓴 날은 0원으로 나옵니다</span></span>'
+            f'<span style="color:#9CA3AF; font-size:0.82rem">최근'
+            f' {DAYS}일 · 단위 원</span></div>',
+            unsafe_allow_html=True)
+        날짜 = s["날짜별"][:DAYS][::-1]      # 최근 것부터 와 있다. 왼쪽이 옛날이 되게 뒤집는다
+        if 날짜:
+            # st.bar_chart 를 쓰지 않는다. 날짜 글자가 세로로 서고(labelAngle),
+            # 손을 올렸을 때 나오는 이름도 고칠 수 없다. 둘 다 Altair 로만 된다.
+            #
+            # 칸 이름을 「금액(원)」으로 두면 Altair 가 괄호를 집계 함수로 읽는다
+            # (`금액(원)` → 「원 칸의 금액 집계」). 칸은 「금액」으로 두고 보일
+            # 이름만 title 로 준다.
+            표 = pd.DataFrame({"날짜": [f"{d:%m/%d}" for d, _ in 날짜],
+                              "금액": [w for _, w in 날짜]})
+            st.altair_chart(
+                alt.Chart(표)
+                .mark_bar(color="#2563EB", cornerRadiusTopLeft=3,
+                          cornerRadiusTopRight=3)
+                .encode(
+                    x=alt.X("날짜:N", sort=None,
+                            axis=alt.Axis(labelAngle=0, title=None,
+                                          labelColor="#59606D", labelPadding=6)),
+                    y=alt.Y("금액:Q", axis=alt.Axis(title=None, tickCount=4,
+                                                  labelColor="#9CA3AF")),
+                    tooltip=[alt.Tooltip("날짜:N", title="날짜"),
+                             alt.Tooltip("금액:Q", title="금액(원)", format=",")])
+                .properties(height=CHART_H),
+                use_container_width=True)
+        else:
+            st.caption("아직 기록된 날이 없습니다.")
+
+    # ── 평균 단가 ──
+    #
+    # 가로줄이 상자 세로 가운데에 오게 한다. 위아래 칸을 flex:1 둘로 나누면
+    # 내용 길이와 무관하게 선이 가운데에 선다. 네 방향 여백은 같은 값(PAD)이고,
+    # 내용은 각 칸 안에서 가운데 정렬이다.
+    PAD = 18
+    유료종류 = {k: v for k, v in s["종류별"].items() if v["평균"]}
+    half = (f'flex:1; min-height:0; padding:{PAD}px; display:flex;'
+            f' flex-direction:column; justify-content:center')
+    if 유료종류:
+        위 = ('<div style="display:flex; justify-content:space-between;'
+              ' align-items:center">'
+              '<span style="font-weight:800; color:#161A1F">평균 단가</span>'
+              '<span style="color:#9CA3AF; font-size:0.82rem">근사값</span></div>'
+              # 「1건」이 아니라 「클릭 1번」이다. 기록은 호출 한 번이 아니라
+              # 한 번 돌린 것을 한 줄로 남기므로(기획안은 4단계가 한 줄),
+              # 줄 수가 곧 버튼을 누른 횟수다.
+              + "".join(
+                  f'<div style="margin-top:10px; color:#161A1F">{k} 클릭 1번'
+                  f' 평균 <b>{_won(v["평균"])}</b></div>'
+                  for k, v in 유료종류.items()))
+        아래 = (f'<div style="color:#59606D; font-size:0.86rem">남은'
+                f' {_won(남은)}으로 예상하면</div>'
+                + "".join(
+                    f'<div style="color:#161A1F; font-weight:700;'
+                    f' margin-top:4px">{k} 클릭만 약 {남은 // v["평균"]:,}번</div>'
+                    for k, v in 유료종류.items())
+                + '<div style="color:#9CA3AF; font-size:0.8rem; margin-top:8px">'
+                  '한 종류만 쓸 때의 어림입니다.</div>')
+    else:
+        위 = ('<div style="font-weight:800; color:#161A1F">평균 단가</div>'
+              '<div style="color:#9CA3AF; font-size:0.86rem; margin-top:10px">'
+              '유료로 쓴 기록이 없어 평균을 낼 수 없습니다.</div>')
+        아래 = ('<div style="color:#9CA3AF; font-size:0.86rem">기획안을 한 번'
+                ' 만들면 여기에 1건 평균이 나옵니다.</div>')
+
+    c_avg.markdown(
+        f'<div style="height:{CARD_H}px; box-sizing:border-box;'
+        f' border:1px solid rgba(49,51,63,0.2); border-radius:0.5rem;'
+        f' display:flex; flex-direction:column">'
+        f'<div style="{half}">{위}</div>'
+        f'<div style="flex:0 0 1px; background:#EEF0F3"></div>'
+        f'<div style="{half}">{아래}</div></div>',
+        unsafe_allow_html=True)
+
+    # ── 최근 기록 ──
+    #
+    # st.container(border=True) 로 두지 않는다. 표가 이미 HTML 한 덩어리라
+    # 컨테이너가 하는 일이 테두리뿐인데, 그 테두리가 마지막 줄에 가려 아래쪽이
+    # 잘려 보였다. 테두리까지 직접 그리면 끝이 어디인지 분명해진다.
+    # 테두리 모양은 왼쪽 두 상자(Streamlit 기본)와 같은 값으로 맞췄다.
+    #
+    # 마지막 줄에는 밑줄을 넣지 않는다. 카드 테두리와 겹쳐 두 줄로 보인다.
+    #
+    # 여기에는 _gap() 을 넣지 않는다. 바로 위가 열 묶음이라 Streamlit 이 이미
+    # 16px 을 주고 있다 (GAP 설명 참고).
+    줄 = s["최근"]
+    st.markdown(
+        '<div style="box-sizing:border-box; border:1px solid rgba(49,51,63,0.2);'
+        ' border-radius:0.5rem; padding:16px">'
+        '<div style="display:flex; justify-content:space-between;'
+        ' align-items:center; margin-bottom:10px">'
+        f'<span style="font-weight:800; color:#161A1F">최근 기록 ·'
+        f' 최대 {len(줄)}건</span>'
+        f'<span style="color:#9CA3AF; font-size:0.82rem">전체'
+        f' {len(rows)}건</span></div>'
+        '<div style="display:flex; color:#9CA3AF; font-size:0.82rem;'
+        ' border-bottom:1px solid #EEF0F3; padding-bottom:8px">'
+        '<span style="flex:1.6">시각</span><span style="flex:1.2">종류</span>'
+        '<span style="flex:1.6">협력사</span>'
+        '<span style="flex:0.6; text-align:right">금액</span></div>'
+        + "".join(
+            '<div style="display:flex; align-items:center;'
+            ' font-size:0.88rem; padding:10px 0'
+            + ('' if i == len(줄) - 1 else '; border-bottom:1px solid #F3F4F6')
+            + '">'
+            f'<span style="flex:1.6; color:#59606D">'
+            f'{r["때"]:%Y-%m-%d %H:%M}</span>'
+            f'<span style="flex:1.2; color:#161A1F; font-weight:700">'
+            f'{r["kind"]}</span>'
+            f'<span style="flex:1.6; color:#59606D">'
+            f'{r.get("partner_name") or "—"}</span>'
+            f'<span style="flex:0.6; text-align:right; color:#161A1F;'
+            f' font-weight:700">'
+            f'{_won(r.get("krw")) if r.get("krw") else "무료"}</span></div>'
+            for i, r in enumerate(줄))
+        + '</div>', unsafe_allow_html=True)
+
+
+with tab_beer:
     render_lineup()
 
-with t2:
-    st.caption("prompts/*.yaml 을 화면에서 수정합니다.")
-    st.selectbox("대상", ["p1_analyst", "p2_chef", "p3_marketer", "p4_consultant",
-                          "common_rules"])
-    st.info("파일 내용을 불러와 편집합니다.")
-    st.caption("W5 이후 구현 예정")
-
-with t3:
-    st.caption("폐기 사유를 긍정형 제약으로 변환해 누적합니다. (설계 결정 D2)")
-    st.info("constraints.yaml 항목을 표시합니다.")
-    st.caption("T34에서 구현 예정")
+with tab_usage:
+    render_usage()
