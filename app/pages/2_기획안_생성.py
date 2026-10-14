@@ -176,6 +176,165 @@ def has_menu_fixed(partner_id: int) -> bool:
                for r in load_archive(partner_id))
 
 
+# 진행 바 여섯 칸 (시안 docs/ref/기획안생성화면_진행바_메뉴판자동인식_figma.pdf 2쪽).
+#
+# **칸은 늘 여섯이다.** 갈래에 따라 5번을 건너뛰거나 거치지만 넣고 빼지 않는다 —
+# 자리가 바뀌면 지금 어디쯤인지가 한눈에 안 들어온다.
+STEPS = ["협력사·일정", "메뉴 확인", "1차 기획안",
+         "협의·폼 작성", "메뉴 재선정", "2차 기획안"]
+
+# 칸 상태 다섯. 색과 표시는 render_steps 가 정한다.
+DONE, DOING, WAIT, LOCK, SKIP = "완료", "진행중", "응답 대기", "잠김", "건너뜀"
+
+
+def plan_steps(partner: dict, menus: list[dict], picks: list[dict],
+               sent: dict | None, archive: list[dict]) -> list[dict]:
+    """
+    여섯 칸의 상태. 각 칸은 {"name", "state", "note", "sub"}.
+
+      sub   5번 아래 「2차 폼 작성」. 별도 단계가 아니라 그 칸에 딸린 줄이다
+
+    **5번은 갈래가 정한다.** 협력사가 제안받은 메뉴로 하겠다고 했으면(A·A2)
+    메뉴를 다시 고를 일이 없어 건너뛴다. 다시 추천받겠다고 했으면(B·C) 거친다.
+    갈래를 모르면 아직 폼이 안 온 것이라 잠김으로 둔다.
+
+    **2번은 갈래를 가리지 않고 「전부 확인」이 기준이다** (10/15). 버튼을 막는
+    것은 B/C 뿐이지만, 칸 이름이 「메뉴 확인」인데 확인하지 않고도 완료로 뜨면
+    그 칸이 무슨 뜻인지 흐려진다.
+    """
+    branch = (partner.get("reply_choice") or "").strip().upper()
+    form_in = has_form(partner)
+    unseen = [m for m in menus if not menu_kept(m)]
+    # 제안서까지 만든 2차가 있나. 메뉴만 확정한 줄은 제안서가 없어 빠진다.
+    second = any(r.get("round") == 2 and (r.get("final_output") or {}).get("안")
+                 for r in archive)
+    fixed = any(not (r.get("final_output") or {}).get("안") for r in archive)
+
+    out = [{"name": n, "state": LOCK, "note": "", "sub": None} for n in STEPS]
+
+    # 1. 협력사·일정 — 이 화면에 협력사가 잡혀 있으면 고른 것이다.
+    out[0]["state"] = DONE
+
+    # 2. 메뉴 확인
+    if menus and not unseen:
+        out[1]["state"] = DONE
+    else:
+        out[1]["state"] = DOING
+        out[1]["note"] = ("메뉴를 등록해 주세요" if not menus
+                          else f"확인 안 한 메뉴 {len(unseen)}개")
+
+    # 3. 1차 기획안 — 담은 안이 있으면 끝난 것이다.
+    if picks:
+        out[2]["state"] = DONE
+    elif out[1]["state"] == DONE:
+        out[2]["state"] = DOING
+
+    # 4. 협의·폼 작성 — 폼이 오면 끝. 보낼 안을 정했으면 답을 기다리는 중이다.
+    if form_in:
+        out[3]["state"] = DONE
+    elif sent:
+        out[3]["state"] = WAIT
+        out[3]["note"] = "폼 회신 대기"
+    elif picks:
+        out[3]["state"] = DOING
+        out[3]["note"] = "보낼 안을 골라 주세요"
+
+    # 5. 메뉴 재선정 — 조건부.
+    out[4]["note"] = "조건부"
+    if branch in ("A", "A2"):
+        out[4]["state"] = SKIP
+    elif branch in ("B", "C"):
+        if partner.get("agreed_menu"):
+            out[4]["state"] = DONE
+            out[4]["sub"] = ("2차 폼 작성", DONE)
+        elif fixed:
+            out[4]["state"] = WAIT
+            out[4]["sub"] = ("2차 폼 작성", "대기중")
+        else:
+            out[4]["state"] = DOING
+            out[4]["sub"] = ("2차 폼 작성", "미작성")
+
+    # 6. 2차 기획안
+    if second:
+        out[5]["state"] = DONE
+    elif out[4]["state"] in (DONE, SKIP) and form_in:
+        out[5]["state"] = DOING
+    return out
+
+
+def steps_percent(steps: list[dict]) -> int:
+    """진행률 — (완료 + 건너뜀) ÷ 6 × 100, 반올림. **분모는 늘 6이다** (시안)."""
+    done = sum(1 for s in steps if s["state"] in (DONE, SKIP))
+    return round(done / len(STEPS) * 100)
+
+
+# 상태별 모습 — (칸 바탕, 칸 테두리, 번호 바탕, 번호 글자, 이름 글자, 오른쪽 글자)
+STEP_LOOK = {
+    DONE: ("#FFFFFF", "#E5E7EB", "#111827", "#FFFFFF", "#111827", "#9CA3AF"),
+    DOING: ("#EFF4FF", "#C7D7FE", "#2563EB", "#FFFFFF", "#1D4ED8", "#2563EB"),
+    WAIT: ("#FFFBEB", "#FDE68A", "#FFFBEB", "#B45309", "#B45309", "#B45309"),
+    LOCK: ("#FFFFFF", "#EEEFF2", "#F3F4F6", "#9CA3AF", "#9CA3AF", "#C4C8CF"),
+    SKIP: ("#FFFFFF", "#EEEFF2", "#F3F4F6", "#9CA3AF", "#9CA3AF", "#C4C8CF"),
+}
+
+
+def render_steps(steps: list[dict]) -> None:
+    """
+    진행 바. 여섯 칸을 한 줄에 그리고 오른쪽 위에 진행률을 적는다.
+
+    격자로 그린다. 칸마다 글 길이가 달라 열로 두면 높이가 어긋난다 — 메뉴 3안
+    카드에서 겪은 것과 같다.
+
+    완료는 체크, 진행중은 점, 응답 대기는 시계, 건너뜀은 그 글자를 오른쪽에
+    적는다. 잠김은 오른쪽에 「잠김」만 적는다 (시안 2쪽).
+    """
+    pct = steps_percent(steps)
+    done = sum(1 for s in steps if s["state"] in (DONE, SKIP))
+    st.markdown(
+        f'<div style="display:flex; justify-content:space-between;'
+        f' align-items:flex-end; margin:0 0 8px">'
+        f'<div style="font-weight:800; color:#161A1F; font-size:0.95rem">'
+        f'기획 진행 · 메뉴 확인</div>'
+        f'<div style="color:#2563EB; font-weight:700; font-size:0.85rem">'
+        f'{done}/{len(STEPS)} 처리 완료 · {pct}%</div></div>',
+        unsafe_allow_html=True)
+
+    cells = []
+    for i, s in enumerate(steps, 1):
+        bg, edge, nbg, nink, ink, side = STEP_LOOK[s["state"]]
+        mark = {DONE: "✓", WAIT: "◷"}.get(s["state"])
+        num = (f'<span style="background:{nbg}; color:{nink}; width:22px;'
+               f' height:22px; border-radius:50%; display:inline-flex;'
+               f' align-items:center; justify-content:center; font-size:12px;'
+               f' font-weight:800; flex:none">{mark or i}</span>')
+        right = {DONE: "완료", DOING: "● 진행중", WAIT: "◷ 응답 대기",
+                 LOCK: "잠김", SKIP: "건너뜀"}[s["state"]]
+        note = (f'<div style="color:{side}; font-size:11.5px; margin-top:6px">'
+                f'{s["note"]}</div>' if s["note"] else "")
+        sub = ""
+        if s["sub"]:
+            label, how = s["sub"]
+            sub = (f'<div style="margin-top:7px; padding-left:8px;'
+                   f' border-left:2px solid {edge}; color:{side};'
+                   f' font-size:11.5px">{label} '
+                   f'<b style="color:{ink}">{how}</b></div>')
+        cells.append(
+            f'<div style="background:{bg}; border:1px solid {edge};'
+            f' border-radius:12px; padding:14px 14px 16px; min-height:104px">'
+            f'<div style="display:flex; justify-content:space-between;'
+            f' align-items:center">{num}'
+            f'<span style="color:{side}; font-size:11.5px;'
+            f' font-weight:700">{right}</span></div>'
+            f'<div style="color:{ink}; font-weight:800; font-size:14.5px;'
+            f' margin-top:10px; word-break:keep-all">{s["name"]}</div>'
+            f'{note}{sub}</div>')
+
+    st.markdown(
+        f'<div style="display:grid; gap:10px; margin-bottom:22px;'
+        f' grid-template-columns:repeat({len(steps)}, 1fr)">'
+        + "".join(cells) + '</div>', unsafe_allow_html=True)
+
+
 def menu_block(partner: dict, menu_fixed: bool = False) -> str | None:
     """
     2차를 막아야 하면 그 이유, 괜찮으면 None.
@@ -2680,6 +2839,10 @@ if _in_archive:
 # 그대로 두었고 나중에 고친다 (9/21).
 # 명세서 4-2 의 「희망 기간」 방식은 아직 없어 고르는 칸을 두지 않는다 (T45).
 page_header("기획안 생성", "AI로 최적의 기획안을 빠르게 생성합니다.")
+
+# 진행 바 자리. 칸 상태를 정하려면 아래 카드에서 계산하는 값들이 필요해서,
+# 자리만 먼저 잡아 두고 다 구한 뒤에 채운다.
+steps_slot = st.container()
 # 색과 글자 크기는 시안(docs/ref/기획안생성화면_메뉴정보_figma.pdf)에서 픽셀로
 # 재서 넣었다. 짐작한 값이 아니다.
 #
@@ -2912,6 +3075,12 @@ with st.container(key="param_card"):
         # 시스템이 알 수 없다. 자동으로 정하면 보낸 적 없는 안으로 2차가
         # 만들어진다.
         sent = sent_pick(options)
+
+        # 진행 바는 맨 위에 그리지만 값은 여기서 다 모인다. 자리를 잡아 둔
+        # 상자에 지금 채운다 (steps_slot).
+        with steps_slot:
+            render_steps(plan_steps(chosen, menu_rows(chosen), picks, sent,
+                                    load_archive(chosen["id"])))
 
         # 갈래에 따라 2차를 막아야 할 수 있다. 막으면 왜 막았는지 적는다.
         blocked = (menu_block(chosen, has_menu_fixed(chosen["id"]))
