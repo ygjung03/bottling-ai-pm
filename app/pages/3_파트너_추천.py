@@ -34,6 +34,7 @@ from db.client import get_client
 from recommender.complement import TIER_LABELS, guess_industry_category, tier_label
 from recommender.scoring import score_store
 from recommender import agent as rec_agent
+from recommender import menu_search
 
 st.set_page_config(page_title="파트너 추천", page_icon="🔍", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -283,6 +284,10 @@ def render_map(df: pd.DataFrame, highlight_store_id: str | None = None, top_n: i
     st.markdown(f'<div style="font-size:0.8rem;color:#6B7280;">{legend}</div>', unsafe_allow_html=True)
 
 
+POOL_COLS = ["store_id", "name", "tier", "distance_m", "score",
+             "category_m", "category_s", "address", "lat", "lng"]
+
+
 # ───────────────────────── 추천받기 — AI 에이전트 ─────────────────────────
 
 SS_REC_AI = "rec_ai_result"
@@ -327,24 +332,35 @@ def render_ai_recommend(candidates: pd.DataFrame) -> None:
 
     if st.button("AI 추천받기", type="primary", disabled=not ready, key="rec_ai_btn"):
         start, end = picked
-        pool = candidates[~candidates["등록됨"]].head(rec_agent.MAX_CANDIDATES)
-        wait_box = st.empty()
-
-        def on_wait(sec, _attempt):
-            wait_box.caption(f"AI 호출 한도에 걸려 {sec}초 기다렸다가 다시 부릅니다…")
-
-        with st.spinner("행사와 후보 가게를 보고 추천을 만드는 중… (10~30초)"):
+        free = candidates[~candidates["등록됨"]]
+        picks, events = None, []
+        # 30초 가까이 걸려 단계를 보여 준다 (기획안 생성 화면의 진행 표시와 같은 생각)
+        with st.status("추천을 만드는 중…", expanded=True) as box:
             try:
+                pool = free[POOL_COLS].head(rec_agent.MAX_CANDIDATES).to_dict("records")
+                st.write(f"① 추천 점수 상위 후보 {len(pool)}곳")
+
+                def on_step(name, n):
+                    if name == "events":
+                        st.write(f"② 기간 안의 근처 행사 확인 — {n}건")
+                    elif name == "ai":
+                        st.write("③ AI 가 날짜·가게·메뉴를 고르는 중… (10~30초)")
+
+                def on_wait(sec, _attempt):
+                    st.write(f"　AI 호출 한도에 걸려 {sec}초 기다렸다가 다시 부릅니다…")
+
                 from chain.inputs import build_beer_list
-                picks, events = rec_agent.recommend(
-                    start, end, pool.to_dict("records"), build_beer_list(), on_wait=on_wait)
+                picks, events = rec_agent.recommend(start, end, pool, build_beer_list(),
+                                                    on_wait=on_wait, on_step=on_step)
+                box.update(label=f"추천 {len(picks)}건을 만들었습니다", state="complete",
+                           expanded=False)
             except Exception as e:
-                st.error(f"추천을 만들지 못했습니다 — {e}")
-                picks, events = None, []
-        wait_box.empty()
+                box.update(label="추천을 만들지 못했습니다", state="error", expanded=True)
+                st.error(f"{e}")
         if picks is not None:
             st.session_state[SS_REC_AI] = {"range": (start, end), "picks": picks,
                                            "events": events}
+            st.session_state.pop("rec_ai_chosen", None)
 
     result = st.session_state.get(SS_REC_AI)
     if not result:
@@ -358,37 +374,74 @@ def render_ai_recommend(candidates: pd.DataFrame) -> None:
 
     st.caption(f"{_fmt_day(start)} ~ {_fmt_day(end)} 기준 · 메뉴는 업종으로 낸 아이디어입니다 "
                f"(가게의 실제 메뉴는 협력사 등록 뒤에 모읍니다).")
-    for p in picks:
-        store = p["store"]
-        with st.container(border=True):
-            st.markdown(f"**{p['rank']}위 · {_fmt_day(p['date'])} · {store['name']}**")
-            st.caption(f"{store.get('tier') or '업종 미상'} · 도보 약 "
-                       f"{round(store['distance_m'] / 67)}분 ({int(store['distance_m'])}m) · "
-                       f"점수 {float(store['score']):.2f}")
-            st.markdown(f"연계 행사 — {p['event'] or '없음'}  \n"
-                        f"메뉴 아이디어 — {p['menu'] or '-'}")
-            for i, r in enumerate(p["reasons"], 1):
-                st.markdown(f"{i}. {r}")
-            if st.button("이 안으로 진행", key=f"rec_ai_go_{p['rank']}"):
-                st.session_state[SS_REC_PLAN] = {
-                    "date": p["date"].isoformat(), "event": p["event"],
-                    "menu": p["menu"], "store_id": store["store_id"],
-                    "name": store["name"],
-                }
-                # 아래 점수 표에서 같은 가게가 체크된 상태로 다시 그린다
-                st.session_state["rec_pick_id"] = store["store_id"]
-                st.session_state["rec_table_ver"] = st.session_state.get("rec_table_ver", 0) + 1
-                st.session_state["rec_ai_went"] = store["name"]
-                st.rerun()
 
-    went = st.session_state.pop("rec_ai_went", None)
-    if went:
-        st.success(f"'{went}'을(를) 골랐습니다. 아래 표에서 상세를 확인하고 진행하세요.")
+    # 고른 안이 있으면 그 카드만 펼치고, 나머지는 「다른 추천 보기」로 접는다.
+    chosen_id = st.session_state.get("rec_ai_chosen")
+    chosen = [p for p in picks if p["store"]["store_id"] == chosen_id]
+    others = [p for p in picks if p["store"]["store_id"] != chosen_id]
+    if chosen:
+        _ai_card(chosen[0], chosen=True)
+        with st.expander(f"다른 추천 보기 ({len(others)})"):
+            for p in others:
+                _ai_card(p, nested=True)
+    else:
+        for p in picks:
+            _ai_card(p)
 
     if result["events"]:
         with st.expander(f"AI 가 본 행사 {len(result['events'])}건"):
             for e in result["events"]:
                 st.caption(f"{e['start_date']} ~ {e.get('end_date')} · {e.get('title')}")
+
+
+def _ai_card(p: dict, chosen: bool = False, nested: bool = False) -> None:
+    """
+    추천 카드 한 장 — 두 줄로 짧게. 이유 3줄은 접어 둔다 (10/14).
+
+    고른 카드에는 다음 단계(협력사 등록 / 기획안 생성으로 이동)를 바로 아래에 그린다.
+    전에는 아래 점수 표에서만 선택이 바뀌어, 눌러도 아무 반응이 없어 보였다.
+    """
+    store = p["store"]
+    with st.container(border=True):
+        head, btn = st.columns([5, 1.4], vertical_alignment="center")
+        mark = "✓ " if chosen else ""
+        head.markdown(f"**{mark}{p['rank']}위 · {_fmt_day(p['date'])} · {store['name']}**")
+        head.caption(f"{store.get('tier') or '업종 미상'} · 도보 약 "
+                     f"{round(store['distance_m'] / 67)}분 ({int(store['distance_m'])}m) · "
+                     f"점수 {float(store['score']):.2f}")
+        if not chosen and btn.button("이 안으로 진행", key=f"rec_ai_go_{p['rank']}",
+                                     use_container_width=True):
+            st.session_state[SS_REC_PLAN] = {
+                "date": p["date"].isoformat(), "event": p["event"],
+                "menu": p["menu"], "store_id": store["store_id"],
+                "name": store["name"],
+            }
+            # 아래 점수 표에서도 같은 가게가 체크된 상태로 다시 그린다
+            st.session_state["rec_pick_id"] = store["store_id"]
+            st.session_state["rec_table_ver"] = st.session_state.get("rec_table_ver", 0) + 1
+            st.session_state["rec_ai_chosen"] = store["store_id"]
+            st.rerun()
+
+        st.markdown(f"<span style='color:#59606D'>연계 행사</span> {p['event'] or '없음'}"
+                    f" &nbsp;·&nbsp; <span style='color:#59606D'>메뉴 아이디어</span> "
+                    f"{p['menu'] or '-'}", unsafe_allow_html=True)
+        # 접힌 목록(「다른 추천 보기」) 안에서는 접기를 겹칠 수 없어 작은 글씨로 보인다
+        if nested:
+            for i, r in enumerate(p["reasons"], 1):
+                st.caption(f"{i}. {r}")
+        else:
+            with st.expander("추천 이유 보기", expanded=chosen):
+                for i, r in enumerate(p["reasons"], 1):
+                    st.markdown(f"{i}. {r}")
+
+        if chosen:
+            st.success("이 안을 골랐습니다. 날짜와 메뉴 방향이 기획안 생성으로 넘어갑니다.")
+            render_next_step(
+                store["name"],
+                guess_industry_category(store.get("category_m"), store.get("category_s")),
+                store.get("lat"), store.get("lng"),
+                key_prefix=f"rec_ai_{p['rank']}", address=store.get("address"),
+            )
 
 
 # ───────────────────────── 화면 ─────────────────────────
@@ -414,111 +467,113 @@ with tab_rec:
 
         render_ai_recommend(candidates)
         st.divider()
-        st.markdown("#### 점수 순 전체 후보")
+        # 점수표·상세·지도는 접어 둔다 (10/14). AI 추천이 이 탭의 첫 화면이고, 표를
+        # 펼쳐 두면 화면이 너무 길어진다. 표에서 직접 고르는 길은 그대로 남는다.
+        with st.expander("점수 순 전체 후보 보기", expanded=False):
 
-        c1, c2 = st.columns([1, 3])
-        with c1:
-            radius = st.slider("반경 (m)", 200, 1000, 1000, step=100, key="rec_radius")
-            tiers = st.multiselect(
-                "업종", TIER_LABELS,
-                default=TIER_LABELS, key="rec_tiers",
-            )
-            hide_registered = st.checkbox(
-                "이미 등록된 협력사 숨기기", value=True, key="rec_hide_registered",
-                help="partners 테이블에 같은 이름이 이미 있으면 후보에서 뺍니다.",
-            )
-
-        filtered = candidates[
-            (candidates["distance_m"] <= radius) & (candidates["tier"].isin(tiers))
-        ]
-        if hide_registered:
-            filtered = filtered[~filtered["등록됨"]]
-        filtered = filtered.reset_index(drop=True)
-        filtered.insert(0, "순위", range(1, len(filtered) + 1))
-
-        unmapped = total - len(candidates)
-        hidden_by_filter = len(candidates) - len(filtered)
-        registered_total = int(candidates["등록됨"].sum())
-
-        with c2:
-            extra = (
-                f" (그중 이미 등록된 {registered_total}곳)" if hide_registered and registered_total
-                else f" · 이미 등록된 협력사 {registered_total}곳 포함" if registered_total
-                else ""
-            )
-            st.caption(
-                f"추천 후보 {len(filtered)}곳 · "
-                f"프랜차이즈 추정·업종 미매핑으로 제외한 {unmapped}곳(3-1·3-2 원칙) · "
-                f"현재 필터로 {hidden_by_filter}곳 더 숨김{extra}"
-            )
-            # 고르는 칸을 표 맨 오른쪽 열에 체크박스로 둔다. st.dataframe 의 행 선택은
-            # 표 왼쪽 끝에 숨은 체크 칸을 눌러야 해서 눈에 안 띄었다 — 셀을 눌러도
-            # 아무 일이 없어 등록이 안 되는 줄 알았다 (9/21). 등록 여부 열은 뺐다.
-            # 이미 등록된 곳을 고르면 아래에서 경고로 알린다. 다른 열은 편집 잠금.
-            #
-            # 한 곳만 고른다. 표 안의 체크박스라 두 번째 클릭 자체는 못 막으므로,
-            # 둘 이상 체크되면 먼저 고른 것만 남기고 표를 다시 그린 뒤 팝업으로
-            # 알린다 (9/22). 고른 곳은 행 번호가 아니라 store_id 로 기억한다 —
-            # 반경·업종 필터를 바꾸면 행 번호가 밀린다. 표를 다시 그리려면 key 를
-            # 바꿔야 해서 버전 번호를 key 에 붙인다.
-            if st.session_state.pop("rec_pick_warn", False):
-                warn_one_pick()
-            pick_id = st.session_state.get("rec_pick_id")
-            ver = st.session_state.get("rec_table_ver", 0)
-            view = filtered[["순위", "name", "tier", "distance_m", "score"]].rename(
-                columns={"name": "상호", "tier": "업종", "distance_m": "거리(m)", "score": "점수"}
-            )
-            view["선택"] = (filtered["store_id"] == pick_id).tolist()
-            edited = st.data_editor(
-                view, use_container_width=True, hide_index=True, key=f"rec_table_{ver}",
-                disabled=[c for c in view.columns if c != "선택"],
-                column_config={"선택": st.column_config.CheckboxColumn(
-                    "선택", help="체크하면 아래에 상세와 등록 버튼이 나옵니다")},
-            )
-
-        picked_ids = filtered.loc[edited["선택"].tolist(), "store_id"].tolist()
-        if len(picked_ids) > 1:
-            keep = pick_id if pick_id in picked_ids else picked_ids[0]
-            st.session_state["rec_pick_id"] = keep
-            st.session_state["rec_table_ver"] = ver + 1
-            st.session_state["rec_pick_warn"] = True
-            st.rerun()
-        st.session_state["rec_pick_id"] = picked_ids[0] if picked_ids else None
-        selected_idx = filtered.index[filtered["store_id"] == picked_ids[0]][0] if picked_ids else None
-
-        st.divider()
-        if selected_idx is None:
-            st.caption("표에서 후보를 선택하면 상세 정보가 여기에 표시됩니다.")
-        else:
-            row = filtered.iloc[selected_idx]
-            detail_col, map_col = st.columns([1, 1])
-
-            with detail_col:
-                st.markdown(f"#### {row['name']}")
-                st.caption(f"{row['tier']} · 도보 약 {round(row['distance_m'] / 67)}분 ({int(row['distance_m'])}m)")
-
-                result = score_store(row.to_dict())
-                if result:
-                    st.write(result["reason"])
-                    st.markdown(f"[네이버 지도에서 확인]({result['naver_map_url']})")
-
-                sd = row["score_detail"] or {}
-                st.markdown("**점수 구성**")
-                st.progress(float(sd.get("S_distance", 0)), text=f"거리 {sd.get('S_distance', 0):.2f}")
-                st.progress(float(sd.get("S_complement", 0)), text=f"업종 상보성 {sd.get('S_complement', 0):.2f}")
-                st.caption(f"종합 {row['score']:.3f} = 0.5×거리 + 0.5×업종 상보성 (명세서 3-2)")
-
-                st.divider()
-                render_next_step(
-                    row["name"],
-                    guess_industry_category(row.get("category_m"), row.get("category_s")),
-                    row.get("lat"), row.get("lng"),
-                    address=row.get("address"),
-                    key_prefix="rec",
+            c1, c2 = st.columns([1, 3])
+            with c1:
+                radius = st.slider("반경 (m)", 200, 1000, 1000, step=100, key="rec_radius")
+                tiers = st.multiselect(
+                    "업종", TIER_LABELS,
+                    default=TIER_LABELS, key="rec_tiers",
+                )
+                hide_registered = st.checkbox(
+                    "이미 등록된 협력사 숨기기", value=True, key="rec_hide_registered",
+                    help="partners 테이블에 같은 이름이 이미 있으면 후보에서 뺍니다.",
                 )
 
-            with map_col:
-                render_map(filtered, highlight_store_id=row["store_id"])
+            filtered = candidates[
+                (candidates["distance_m"] <= radius) & (candidates["tier"].isin(tiers))
+            ]
+            if hide_registered:
+                filtered = filtered[~filtered["등록됨"]]
+            filtered = filtered.reset_index(drop=True)
+            filtered.insert(0, "순위", range(1, len(filtered) + 1))
+
+            unmapped = total - len(candidates)
+            hidden_by_filter = len(candidates) - len(filtered)
+            registered_total = int(candidates["등록됨"].sum())
+
+            with c2:
+                extra = (
+                    f" (그중 이미 등록된 {registered_total}곳)" if hide_registered and registered_total
+                    else f" · 이미 등록된 협력사 {registered_total}곳 포함" if registered_total
+                    else ""
+                )
+                st.caption(
+                    f"추천 후보 {len(filtered)}곳 · "
+                    f"프랜차이즈 추정·업종 미매핑으로 제외한 {unmapped}곳(3-1·3-2 원칙) · "
+                    f"현재 필터로 {hidden_by_filter}곳 더 숨김{extra}"
+                )
+                # 고르는 칸을 표 맨 오른쪽 열에 체크박스로 둔다. st.dataframe 의 행 선택은
+                # 표 왼쪽 끝에 숨은 체크 칸을 눌러야 해서 눈에 안 띄었다 — 셀을 눌러도
+                # 아무 일이 없어 등록이 안 되는 줄 알았다 (9/21). 등록 여부 열은 뺐다.
+                # 이미 등록된 곳을 고르면 아래에서 경고로 알린다. 다른 열은 편집 잠금.
+                #
+                # 한 곳만 고른다. 표 안의 체크박스라 두 번째 클릭 자체는 못 막으므로,
+                # 둘 이상 체크되면 먼저 고른 것만 남기고 표를 다시 그린 뒤 팝업으로
+                # 알린다 (9/22). 고른 곳은 행 번호가 아니라 store_id 로 기억한다 —
+                # 반경·업종 필터를 바꾸면 행 번호가 밀린다. 표를 다시 그리려면 key 를
+                # 바꿔야 해서 버전 번호를 key 에 붙인다.
+                if st.session_state.pop("rec_pick_warn", False):
+                    warn_one_pick()
+                pick_id = st.session_state.get("rec_pick_id")
+                ver = st.session_state.get("rec_table_ver", 0)
+                view = filtered[["순위", "name", "tier", "distance_m", "score"]].rename(
+                    columns={"name": "상호", "tier": "업종", "distance_m": "거리(m)", "score": "점수"}
+                )
+                view["선택"] = (filtered["store_id"] == pick_id).tolist()
+                edited = st.data_editor(
+                    view, use_container_width=True, hide_index=True, key=f"rec_table_{ver}",
+                    disabled=[c for c in view.columns if c != "선택"],
+                    column_config={"선택": st.column_config.CheckboxColumn(
+                        "선택", help="체크하면 아래에 상세와 등록 버튼이 나옵니다")},
+                )
+
+            picked_ids = filtered.loc[edited["선택"].tolist(), "store_id"].tolist()
+            if len(picked_ids) > 1:
+                keep = pick_id if pick_id in picked_ids else picked_ids[0]
+                st.session_state["rec_pick_id"] = keep
+                st.session_state["rec_table_ver"] = ver + 1
+                st.session_state["rec_pick_warn"] = True
+                st.rerun()
+            st.session_state["rec_pick_id"] = picked_ids[0] if picked_ids else None
+            selected_idx = filtered.index[filtered["store_id"] == picked_ids[0]][0] if picked_ids else None
+
+            st.divider()
+            if selected_idx is None:
+                st.caption("표에서 후보를 선택하면 상세 정보가 여기에 표시됩니다.")
+            else:
+                row = filtered.iloc[selected_idx]
+                detail_col, map_col = st.columns([1, 1])
+
+                with detail_col:
+                    st.markdown(f"#### {row['name']}")
+                    st.caption(f"{row['tier']} · 도보 약 {round(row['distance_m'] / 67)}분 ({int(row['distance_m'])}m)")
+
+                    result = score_store(row.to_dict())
+                    if result:
+                        st.write(result["reason"])
+                        st.markdown(f"[네이버 지도에서 확인]({result['naver_map_url']})")
+
+                    sd = row["score_detail"] or {}
+                    st.markdown("**점수 구성**")
+                    st.progress(float(sd.get("S_distance", 0)), text=f"거리 {sd.get('S_distance', 0):.2f}")
+                    st.progress(float(sd.get("S_complement", 0)), text=f"업종 상보성 {sd.get('S_complement', 0):.2f}")
+                    st.caption(f"종합 {row['score']:.3f} = 0.5×거리 + 0.5×업종 상보성 (명세서 3-2)")
+
+                    st.divider()
+                    render_next_step(
+                        row["name"],
+                        guess_industry_category(row.get("category_m"), row.get("category_s")),
+                        row.get("lat"), row.get("lng"),
+                        address=row.get("address"),
+                        key_prefix="rec",
+                    )
+
+                with map_col:
+                    render_map(filtered, highlight_store_id=row["store_id"])
 
 # ── B. 직접 지정 ──
 with tab_manual:
@@ -589,30 +644,107 @@ with tab_manual:
                         render_registered(row, m_category)
 
 # ── C. 메뉴로 찾기 ──
+#
+# 메뉴 이름 → 관련 업종 점수 상위 30곳 → 가게마다 블로그 「가게명 + 메뉴」 →
+# 언급이 있는 곳 중 점수 순 상위 5곳 (recommender/menu_search.py).
+#
+# 고른 메뉴는 기획안 생성으로 넘긴다. 담기는 것:
+#   {"menu": str, "store_id": str, "name": str}
+# 기획안 생성 화면이 menu 를 trend_menu 자리에 읽는다 (B 와 맞춘 이름 — 바꾸면
+# 조용히 빠진다). name 은 그 화면에서 고른 협력사와 같은 가게인지 보는 데 쓴다.
+SS_MENU_PICK = "menu_pick"
+SS_MENU_RESULT = "menu_search_result"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def run_menu_search(menu: str, rows: tuple) -> dict:
+    """같은 메뉴·같은 후보면 한 시간 동안 다시 검색하지 않는다 (가게마다 1회 호출)."""
+    return menu_search.search(menu, [dict(r) for r in rows])
+
+
+def _menu_card(i: int, r: dict, menu: str) -> None:
+    with st.container(border=True):
+        st.markdown(f"**{i}위 · {r['name']}**")
+        st.caption(f"{r.get('tier') or '업종 미상'} · 도보 약 {round(r['distance_m'] / 67)}분 "
+                   f"({int(r['distance_m'])}m) · 점수 {float(r['score']):.2f}")
+        links = f"[네이버 지도](https://map.naver.com/p/search/{quote(r['name'])})"
+        if r.get("sample_url"):
+            links += f" · [관련 후기 예시]({r['sample_url']})"
+        st.markdown(f"후기 언급 **{r['mentions']}건** · {links}")
+        if st.button("이 가게로 진행", key=f"menu_go_{r['store_id']}"):
+            st.session_state[SS_MENU_PICK] = {"menu": menu, "store_id": r["store_id"],
+                                              "name": r["name"]}
+            st.session_state["menu_pick_store"] = r["store_id"]
+            st.rerun()
+
+
 with tab_menu:
-    st.caption("메뉴 이름을 넣으면 관련 업종의 가까운 가게를 찾습니다 (2차 방문 요구사항, 명세서 3-5).")
-    st.info(
-        "메뉴로 실제로 걸러주는 기능(T48)은 네이버 검색 API(지역검색) 키 승인 대기 중입니다 — "
-        "승인되면 '메뉴 검색 → 반경 필터 → nearby_stores 대조'로 교체될 예정입니다(9/28 이후). "
-        "지금은 업종 필터로만 후보를 추리고, 링크는 검색 결과가 뜨도록 네이버 통합검색으로 엽니다 "
-        "(지도 검색 링크는 빈 화면이 뜨는 문제가 있어 바꿨습니다)."
-    )
+    st.caption("메뉴 이름을 넣으면, 그 메뉴가 후기에 함께 나오는 근처 가게를 추천 점수 순으로 보여줍니다.")
 
-    menu_name = st.text_input("메뉴 이름", placeholder="예: 두바이 초콜릿", key="menu_name")
-    menu_tiers = st.multiselect(
-        "관련 업종 (메뉴 성격에 맞게 골라주세요)",
-        TIER_LABELS, default=TIER_LABELS,
-        key="menu_tiers",
-    )
+    with st.form("menu_search_form", border=False):
+        f1, f2 = st.columns([2, 3])
+        menu_name = f1.text_input("메뉴 이름", placeholder="예: 두바이 초콜릿", key="menu_name")
+        menu_tiers = f2.multiselect(
+            "관련 업종 (메뉴 성격에 맞게 고르면 더 정확합니다)",
+            TIER_LABELS, default=TIER_LABELS, key="menu_tiers",
+        )
+        go = st.form_submit_button("찾기", type="primary")
 
-    if menu_name:
-        candidates = load_scored_candidates()
-        matched = candidates[candidates["tier"].isin(menu_tiers)].sort_values("distance_m")
-        st.write(f"'{menu_name}' 관련 업종 후보 {len(matched)}곳 (거리순)")
-        for _, r in matched.head(20).iterrows():
-            store_name = r["name"]
-            search_q = f"{store_name} {menu_name}"
-            url = f"https://search.naver.com/search.naver?query={quote(search_q)}"
-            st.markdown(f"- **{store_name}** ({r['tier']}, {int(r['distance_m'])}m) — [네이버에서 검색]({url})")
-        if matched.empty:
-            st.caption("조건에 맞는 후보가 없습니다. 업종 선택을 넓혀보세요.")
+    if go:
+        menu = (menu_name or "").strip()
+        if not menu:
+            st.warning("메뉴 이름을 넣어 주세요.")
+        elif not menu_tiers:
+            st.warning("업종을 하나 이상 골라 주세요.")
+        else:
+            cands = load_scored_candidates()
+            pool = cands[cands["tier"].isin(menu_tiers)] if not cands.empty else cands
+            if pool.empty:
+                st.session_state[SS_MENU_RESULT] = {"menu": menu, "res": None}
+            else:
+                rows = tuple(tuple(r.items()) for r in pool[POOL_COLS]
+                             .head(menu_search.MAX_STORES).to_dict("records"))
+                with st.spinner(f"점수 상위 {len(rows)}곳의 후기에서 '{menu}'를 찾는 중… (10초 안팎)"):
+                    try:
+                        res = run_menu_search(menu, rows)
+                    except Exception as e:
+                        st.error(f"검색하지 못했습니다 — {e}")
+                        res = None
+                st.session_state[SS_MENU_RESULT] = {"menu": menu, "res": res}
+                st.session_state.pop("menu_pick_store", None)
+
+    found = st.session_state.get(SS_MENU_RESULT)
+    if found and found.get("res") is None and found.get("menu"):
+        st.caption("조건에 맞는 후보가 없습니다. 업종 선택을 넓혀 보세요.")
+    elif found and found.get("res"):
+        menu, res = found["menu"], found["res"]
+        note = f" · 검색 실패 {res['errors']}곳" if res["errors"] else ""
+        st.caption(f"'{menu}' — 점수 상위 {res['searched']}곳 중 후기 언급이 확인된 곳 "
+                   f"{len(res['hits'])}곳{note}")
+
+        if not res["top"]:
+            st.info("후기에서 이 메뉴가 확인된 가게가 없습니다. 메뉴 이름을 더 흔한 말로 바꾸거나 "
+                    "(예: 「두바이 쫀득쿠키」→「두바이 초콜릿」) 업종을 넓혀 보세요.")
+        for i, r in enumerate(res["top"], 1):
+            _menu_card(i, r, menu)
+
+        if res["misses"]:
+            with st.expander(f"언급이 확인되지 않은 곳 {len(res['misses'])}곳"):
+                st.caption("블로그에 언급이 없어도 취급할 수 있습니다. 지도에서 확인해 보세요.")
+                for r in res["misses"]:
+                    st.markdown(f"- **{r['name']}** ({r.get('tier')}, {int(r['distance_m'])}m, "
+                                f"점수 {float(r['score']):.2f}) — "
+                                f"[네이버 지도](https://map.naver.com/p/search/{quote(r['name'])})")
+
+        # 고른 가게 — 기존 흐름(등록 여부 확인 → 등록 → 기획안 생성)을 그대로 탄다
+        pick_id = st.session_state.get("menu_pick_store")
+        picked = next((r for r in res["hits"] if r["store_id"] == pick_id), None)
+        if picked:
+            st.divider()
+            st.markdown(f"#### {picked['name']} · 메뉴 「{menu}」")
+            render_next_step(
+                picked["name"],
+                guess_industry_category(picked.get("category_m"), picked.get("category_s")),
+                picked.get("lat"), picked.get("lng"),
+                key_prefix="menu", address=picked.get("address"),
+            )
