@@ -112,14 +112,16 @@ def render_add_form(names: set[str]) -> None:
         return
 
     name, style, flavor = (name or "").strip(), (style or "").strip(), split_notes(notes)
+    # 중복을 먼저 본다. 이름만으로 알 수 있는 것이라, 다섯 칸을 다 채우고 나서야
+    # 「이미 있습니다」를 듣게 하면 채운 것이 헛일이 된다.
+    if name.lower() in names:
+        st.error(f"'{name}'은(는) 이미 판매 중인 라인업에 있습니다.")
+        return
     missing = [label for label, ok in (("맥주 이름", name), ("ml당 가격", price),
                                        ("스타일", style), ("도수", abv is not None),
                                        ("맛 특성", flavor)) if not ok]
     if missing:
         st.error("비어 있는 항목: " + ", ".join(missing))
-        return
-    if name.lower() in names:
-        st.error(f"'{name}'은(는) 이미 판매 중인 라인업에 있습니다.")
         return
 
     try:
@@ -187,8 +189,11 @@ def render_lineup() -> None:
         else:
             render_add_form({(b["name"] or "").strip().lower() for b in beers})
 
+    # 「비면 페어링이 추측으로 채워집니다」는 지웠다. 추가 폼이 다섯 항목을 다
+    # 받으므로 비는 경우가 없다. 일어나지 않는 일을 알리면 읽는 쪽이 비워도
+    # 되는 줄로 읽는다.
     st.caption("ⓘ 여기서 넣은 값이 기획안 생성에 그대로 들어갑니다. "
-               "스타일·도수·맛 특성이 비면 페어링이 추측으로 채워집니다.")
+               "스타일·도수·맛 특성이 AI 가 페어링을 고르는 근거입니다.")
 
 
 with t1:
