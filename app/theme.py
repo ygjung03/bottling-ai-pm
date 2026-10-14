@@ -12,7 +12,9 @@ CSS/내용보다 먼저 호출해야 상단 바가 맨 위에 온다):
     apply_chrome()
     # 이 아래에 페이지 고유 내용
 """
+import base64
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 import streamlit as st
@@ -39,6 +41,17 @@ SS_PARTNER_ID = "partner_id_last"
 # 보관함에서 「기획안 생성」을 누르면 값을 그대로 들고 가 보관함이 다시 그려지고,
 # 눈에는 아무 일도 안 일어난 것으로 보인다. 그래서 그 항목만 버튼으로 둔다.
 ARCHIVE_PARAM = "archive"
+
+# 파트너 추천 화면에서 처음 열 탭. 홈의 세 버튼(AI 추천 · 정해 둔 매장 · 메뉴로 찾기)이
+# 넣고, 파트너 추천 화면이 한 번 읽고 지운다. st.tabs 는 코드로 탭을 고를 수 없어
+# 화면이 탭 단추를 대신 눌러 준다 (3_파트너_추천.py 의 _jump_to_tab).
+SS_PARTNER_TAB = "partner_tab_open"
+
+
+def open_partner_tab(tab: str) -> None:
+    """파트너 추천 화면으로 가서 tab(「추천받기」「직접 지정」「메뉴로 찾기」)을 연다."""
+    st.session_state[SS_PARTNER_TAB] = tab
+    st.switch_page("pages/3_파트너_추천.py")
 
 BASE_CSS = """
 <style>
@@ -75,16 +88,49 @@ BASE_CSS = """
     border-bottom: 1px solid var(--line);
     margin-bottom: 2.2rem;
 }
-.st-key-topnav_brand div[data-testid="stPageLink"] a {
-    background: transparent !important;
-    border: none !important;
-    padding: 0.3rem 0 !important;
-    justify-content: flex-start !important;
+/* 로고 — 「Bottling AI PM.」 영문 워드마크, 끝 점만 노란색 (10/14).
+   링크 대신 버튼이라 (render_topnav 설명 참고) 버튼 상자를 통째로 풀고 다시 준다. */
+.st-key-topnav_brand,
+.st-key-topnav_brand > div,
+.st-key-topnav_brand div[data-testid="stVerticalBlock"] {
+    margin: 0 !important;
+    padding: 0 !important;
+    gap: 0 !important;
 }
-.st-key-topnav_brand div[data-testid="stPageLink"] a p {
-    font-weight: 800 !important;
-    font-size: 1.05rem !important;
+.st-key-topnav_brand button {
+    all: unset;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    min-height: 38px;
+    cursor: pointer !important;
+    font-family: inherit !important;
+}
+.st-key-topnav_brand button:hover,
+.st-key-topnav_brand button:focus,
+.st-key-topnav_brand button:focus-visible,
+.st-key-topnav_brand button:active {
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    outline: none !important;
+}
+.st-key-topnav_brand button div[data-testid="stMarkdownContainer"] {
+    width: auto !important;
+}
+.st-key-topnav_brand button p {
+    margin: 0 !important;
+    white-space: nowrap !important;
+    font-family: 'Pretendard', sans-serif !important;
+    font-weight: 900 !important;
+    font-size: 1.3rem !important;
+    letter-spacing: -0.04em !important;
+    line-height: 1 !important;
     color: var(--ink) !important;
+}
+.st-key-topnav_brand button p::after {
+    content: ".";
+    color: #F5B800;
 }
 .st-key-topnav_links div[data-testid="stPageLink"] a {
     background: transparent !important;
@@ -193,6 +239,25 @@ def _entry_page() -> str:
     return Path(sys.argv[0]).name
 
 
+MASCOT = Path(__file__).parent / "img" / "mascot.png"
+
+
+@lru_cache(maxsize=1)
+def _mascot_css() -> str:
+    """로고 왼쪽 마스코트. page_link 는 글자만 받아서 CSS 배경으로 붙인다.
+    파일이 없으면 글자만 나온다."""
+    try:
+        b64 = base64.b64encode(MASCOT.read_bytes()).decode()
+    except OSError:
+        return ""
+    return f"""<style>
+.st-key-topnav_brand button {{
+    padding-left: 62px !important;
+    background: url(data:image/png;base64,{b64}) left center / 54px auto no-repeat !important;
+}}
+</style>"""
+
+
 def render_topnav(right: str = "") -> None:
     """
     상단 내비 바. right 가 오른쪽 끝 자리를 정한다 (9/30).
@@ -213,13 +278,19 @@ def render_topnav(right: str = "") -> None:
     보관함 개수는 화면이 넘긴다. 협력사마다 다른 값이라 여기서 셀 수 없다.
     """
     entry = _entry_page()
+    st.markdown(_mascot_css(), unsafe_allow_html=True)
     with st.container(key="topnav"):
         nav_brand, nav_links, nav_logout = st.columns(
-            [1.8, 4.2, 0.9], vertical_alignment="center"
+            [2.4, 4.2, 0.9], vertical_alignment="center"
         )
         with nav_brand:
+            # 로고를 누르면 홈. 링크(page_link)는 홈에서 누르면 아무 일도 안 일어나고
+            # 보관함 표시(질의 문자열)도 못 지워 「안 눌린다」로 보였다 (10/14).
+            # 버튼으로 두고 직접 지운 뒤 홈으로 보낸다 — 어느 화면에서든 같다.
             with st.container(key="topnav_brand"):
-                st.page_link(entry, label="바틀링 AI PM")
+                if st.button("Bottling AI PM", key="topnav_brand_btn"):
+                    st.query_params.clear()
+                    st.switch_page(entry)
         with nav_links:
             with st.container(key="topnav_links"):
                 l1, l2, l3, l4 = st.columns(4, gap="small")
