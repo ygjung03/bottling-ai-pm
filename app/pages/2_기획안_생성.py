@@ -49,7 +49,7 @@ from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           PAST_CASES, WEATHER_PREF, build_beer_list,
                           build_constraints, build_events,
                           build_partner_blockers, build_partner_resources,
-                          build_partner_sns, build_rec_reason, menu_kept,
+                          build_partner_sns, build_rec_reason, menu_protected,
                           menu_rows, menu_rows_sourced)
 from chain.runner import run
 from collectors.menu_photo import read_photos
@@ -1257,14 +1257,17 @@ def save_auto_menus(partner: dict, rows: list[dict]) -> list[dict]:
     새로 들어온 줄만 돌려준다 — 알림에 「새로 2개를 찾았습니다」로 적는다.
 
     통째로 바꾼다. 수집은 그때그때 처음부터 다시 찾는 것이라, 예전 것을 남겨
-    두면 지난번에 잘못 들어간 값이 계속 남는다. 사람이 직접 넣은 메뉴는
-    menu_prices 라는 다른 칸에 있어서 여기서 건드리지 않는다.
+    두면 지난번에 잘못 들어간 값이 계속 남는다.
 
-    **사람이 확인했거나 고친 줄은 남긴다** (`menu_kept`). 기계가 다시 읽은
-    값보다 사람이 본 값이 맞다. 같은 이름이 새로 들어와도 사람 쪽이 이긴다.
+    **단 사람 손이 닿은 줄은 남긴다** (`menu_protected`). 기계가 다시 읽은 값보다
+    사람이 넣거나 본 값이 맞다. 같은 이름이 새로 들어와도 사람 쪽이 이긴다.
+
+    여기서 남길 줄을 확인·수정 표시로만 가렸더니, 표시가 없는 직접 입력 줄이
+    쓸려 나갔다 — **사람이 직접 넣은 줄이 이 칸에 있었고 수집 한 번에
+    사라졌다 (10/14).**
     """
     old = [dict(r) for r in (partner.get("menu_prices_review") or [])]
-    keep = [r for r in old if menu_kept(r)]
+    keep = [r for r in old if menu_protected(r)]
     kept_names = {str(r.get("메뉴") or "").strip() for r in keep}
     had = {str(r.get("메뉴") or "").strip() for r in old}
 
@@ -1490,8 +1493,8 @@ def save_menu_seen(partner: dict, picked: set[str], today: str) -> bool:
     훑어 이름이 맞는 줄에 날짜를 넣는다. 이미 확인된 줄은 건드리지 않는다.
 
     줄을 다른 칸으로 옮기지는 않는다. 확인했다고 그 메뉴가 어디서 왔는지가
-    바뀌는 것은 아니다. 다시 수집해도 안 덮이는 것은 `save_auto_menus` 와
-    `save_photo_menus` 가 `menu_kept` 를 보기 때문이다.
+    바뀌는 것은 아니다. 다시 수집해도 안 덮이는 것은 `save_auto_menus` 가
+    `menu_protected` 를 보기 때문이다.
     """
     cols, changed = {}, False
     for col in ("menu_prices", "menu_prices_review"):
