@@ -441,6 +441,26 @@ def note_menus(text: str | None) -> list[str]:
     return out
 
 
+def menu_checked(row: dict) -> bool:
+    """
+    사람이 값을 본 줄인가. 메뉴 목록의 「확인」 칸이 이 값으로 체크된다.
+
+    확인 표시가 붙었거나 사람이 고친 줄(menu_kept), 그리고 **직접 입력**이다.
+    직접 입력은 적어 넣을 때 이미 값을 보고 넣은 것이라 다시 확인시킬 것이 없다.
+
+    나머지는 사람이 아직 안 본 값이다.
+
+      자동 수집        후기에서 추정한 가격이라 지금과 다를 수 있다
+      메뉴판 자동 인식   기계가 읽은 값이라 틀릴 수 있다
+      협력사 입력       가격이 비어 있다
+
+    menu_protected 와 뜻이 다르다. 그쪽은 **다시 수집해도 덮지 말 것**을 가리고
+    이쪽은 **사람이 봤는가**를 가린다. 직접 입력은 둘 다 참이지만, 자동 수집
+    줄은 확인하면 둘 다 참이 되고 손 안 댔으면 둘 다 거짓이다.
+    """
+    return menu_kept(row) or menu_source(row) == MENU_MANUAL
+
+
 def menu_protected(row: dict) -> bool:
     """
     자동 수집이 덮으면 안 되는 줄인가.
