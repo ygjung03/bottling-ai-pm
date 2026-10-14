@@ -207,12 +207,17 @@ def prompt_version() -> str | None:
 
 def save_plan(result: dict, meta: dict) -> int | None:
     """
-    생성 결과를 plans 에 남긴다.
+    생성 결과를 plans 에 남긴다. 끊긴 것은 남기지 않는다.
 
-    체인이 중간에 끊기면 final_output 이 없다. 그 컬럼이 NOT NULL 이라
-    저장할 수 없으므로 건너뛴다. 화면에는 살아남은 단계를 그대로 보여준다.
+    **무엇이 「다 만들어진 것」인지는 어디까지 돌기로 했는지에 달렸다.** 기획안은
+    (4)까지, 메뉴 3안은 (2)까지가 끝이다. 끊긴 것을 남기면 보관함에 반쪽 줄이
+    올라가 제안서를 만들 수 없는 안을 고를 수 있게 된다.
+
+    끊겼을 때 화면은 살아남은 단계를 그대로 보여 준다. 다시 누르면 그 자리에서
+    이어 만든다 (resumable).
     """
-    if not result.get("final"):
+    need = "p2" if meta.get("stop_after") == 2 else "final"
+    if not result.get(need):
         return None
     try:
         rows = get_client().table("plans").insert({
@@ -611,7 +616,7 @@ def rec_plan_for(partner: dict) -> dict:
 
 def generate(partner: dict, target: date, rnd: int,
              sent: dict | None = None, resume: dict | None = None,
-             rec_menu: str = "") -> None:
+             rec_menu: str = "", stop_after: int = 4) -> None:
     """
     체인을 돌리고 결과를 세션에 남긴다.
 
@@ -631,13 +636,20 @@ def generate(partner: dict, target: date, rnd: int,
     rec_menu 는 추천받기에서 넘어온 메뉴 방향이다 (rec_plan_for). 확정 메뉴가
     아니라 참고이고, (2)는 협력사가 실제로 파는 메뉴 중에서 그 방향에 가까운
     것을 고른다. 세 안은 그대로 나온다.
+
+    stop_after 에 2 를 주면 메뉴 3안만 만들고 멈춘다 — B/C 갈래가 메뉴판을 읽고
+    다시 고르는 자리다. 그때는 회차를 세지 않고 「메뉴 3안」으로 적는다. 홍보와
+    제안서는 협력사와 메뉴를 확정한 뒤에 만든다.
     """
-    head = f"{rnd}차 기획안 {'이어서 만드는 중' if resume else '생성 중'}..."
+    head = ("메뉴 3안 만드는 중..." if stop_after == 2 else
+            f"{rnd}차 기획안 {'이어서 만드는 중' if resume else '생성 중'}...")
     with st.status(head, expanded=True) as box:
         step_slot = st.empty()
 
         def on_step(n: int, label: str) -> None:
-            step_slot.write(f"({n}/4) {label}")
+            # 분모는 stop_after 다. 메뉴 3안만 내미는 자리는 두 단계로 끝나서
+            # 4 로 적어 두면 절반에서 멈춘 것처럼 보인다.
+            step_slot.write(f"({n}/{stop_after}) {label}")
 
         try:
             ctx = build_context(target, partner_category=partner.get("category"))
@@ -674,19 +686,27 @@ def generate(partner: dict, target: date, rnd: int,
             past_cases=PAST_CASES,
             rec_reason=build_rec_reason(partner),
             partner=partner,
-            fixed_menu=rnd == 2,
+            # 3안 도출은 메뉴가 아직 안 정해진 자리라 끈다. B/C 는 폼 1 만 와도
+            # has_form 이 참이라 rnd 가 2 로 잡히는데, 그대로 켜면 안이 1개로
+            # 강제되고 되감기가 가져온 (2)를 그대로 써서 헛돈다.
+            fixed_menu=rnd == 2 and stop_after == 4,
             agreed_menu=(sent or {}).get("메뉴명"),
+            # 3안 도출은 앞 단계를 가져다 쓰지 않는다. 메뉴를 새로 고르는 일이다.
             preset=(made_preset(resume) if resume
-                    else (load_preset(partner, sent) if rnd == 2 else None)),
+                    else (load_preset(partner, sent)
+                          if rnd == 2 and stop_after == 4 else None)),
             on_step=on_step,
-            usage_note=f"{rnd}차 이어서" if resume else f"{rnd}차",
+            stop_after=stop_after,
+            usage_note=(f"{rnd}차 이어서" if resume
+                        else ("메뉴 3안" if stop_after == 2 else f"{rnd}차")),
         )
 
         sec = result["latency_ms"] / 1000
+        what = "메뉴 3안" if stop_after == 2 else f"{rnd}차 기획안"
         if result["error"]:
-            box.update(label=f"{rnd}차 기획안을 끝까지 만들지 못했습니다", state="error")
+            box.update(label=f"{what}을 끝까지 만들지 못했습니다", state="error")
         else:
-            box.update(label=f"{rnd}차 기획안 완료 — {sec:.0f}초", state="complete")
+            box.update(label=f"{what} 완료 — {sec:.0f}초", state="complete")
             # 추천에서 온 방향은 **한 번 쓰고 지운다.** 남겨 두면 나중에 같은
             # 협력사로 다시 만들 때, 추천을 거치지 않았는데도 그 방향이 또
             # 붙는다. 끝까지 못 만들었으면 남겨 둔다 — 다시 누르면 그 방향으로
@@ -705,6 +725,8 @@ def generate(partner: dict, target: date, rnd: int,
         "prev_plan_id": (sent or {}).get("plan_id"),
         # 제안서의 「포장 판매」 줄. 협력사가 폼에 답한 값이다.
         "takeout": partner.get("takeout"),
+        # 어디까지 돌았나. save_plan 이 「다 만들어진 것」을 가릴 때 본다.
+        "stop_after": stop_after,
     }
     meta["adopted"] = []            # 새로 만든 기획안이라 아직 담은 안이 없다
     meta["plan_id"] = save_plan(result, meta)
