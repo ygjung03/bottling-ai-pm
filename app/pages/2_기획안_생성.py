@@ -2428,12 +2428,16 @@ with st.container(key="param_card"):
             # 회차·협의 가능 시간·납품 요일 캡션은 화면에 두지 않는다 (9/22).
             # 회차는 결과의 「생성 조건」에 있고, 납품 요일은 체인 입력에 그대로 들어간다.
         with c2:
-            # 추천 에이전트가 제안한 날짜를 달력 첫 값으로 쓴다. 위젯이 그려진 뒤에
-            # 넣으면 늦어서, 그리기 전에 넣는다. 이미 값이 있으면 건드리지
-            # 않는다 — 사람이 고친 날짜를 되돌리면 안 된다.
+            # 첫 값은 세션에 미리 넣고 위젯에는 value 를 주지 않는다. 둘 다
+            # 주면 Streamlit 이 「기본값과 세션 값을 같이 설정했다」고 경고한다.
+            #
+            # 추천 에이전트를 거쳐 왔으면 그 날짜, 아니면 1주 뒤다. 값이 이미
+            # 있으면 건드리지 않는다 — 사람이 고친 날짜를 되돌리면 안 된다.
             plan = rec_plan_for(chosen)
-            if plan.get("date") and "target_date" not in st.session_state:
-                st.session_state["target_date"] = date.fromisoformat(plan["date"])
+            if "target_date" not in st.session_state:
+                st.session_state["target_date"] = (
+                    date.fromisoformat(plan["date"]) if plan.get("date")
+                    else datetime.now(KST).date() + timedelta(days=7))
 
             # 달력 표시를 그리려고 상자로 감싼다. Streamlit 내부 이름
             # (data-testid·data-baseweb)에 기대면 버전에 따라 빗나간다 —
@@ -2441,9 +2445,7 @@ with st.container(key="param_card"):
             with st.container(key="date_box"):
                 # key 가 없으면 그려지는 자리로 키가 정해져, 위아래가 바뀔 때
                 # 고른 날짜가 기본값으로 돌아갈 수 있다.
-                target = st.date_input(
-                    "협업 시작 희망일", key="target_date",
-                    value=datetime.now(KST).date() + timedelta(days=7))
+                target = st.date_input("협업 시작 희망일", key="target_date")
             if plan:
                 hint = f" · 메뉴 방향 「{plan['menu']}」" if plan.get("menu") else ""
                 st.caption(f"추천 에이전트가 제안한 날짜입니다{hint}. 날짜는 "

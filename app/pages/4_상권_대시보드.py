@@ -537,7 +537,11 @@ def render_weekday_heatmap(spot, color):
         st.markdown('<div class="bt-note">누적 데이터가 아직 부족합니다.</div>', unsafe_allow_html=True)
         return
 
-    df["collected_kst"] = pd.to_datetime(df["collected_at"], utc=True).dt.tz_convert("Asia/Seoul")
+    # format 을 적어 준다. 안 적으면 pandas 가 첫 값으로 형식을 정하는데,
+    # collected_at 에 초의 소수점이 붙은 행이 섞여 있어 그 행에서 터진다.
+    # 1,639행 중 한 행이 그랬다 (10/14).
+    df["collected_kst"] = pd.to_datetime(
+        df["collected_at"], utc=True, format="ISO8601").dt.tz_convert("Asia/Seoul")
     df["mid"] = (df["population_min"] + df["population_max"]) / 2
     df["weekday"] = df["collected_kst"].dt.weekday
     df["hour"] = df["collected_kst"].dt.hour
@@ -670,7 +674,8 @@ for col, spot in zip(cols, SPOTS):
         change_pct = None
         if not hist.empty:
             hist["mid"] = (hist["population_min"] + hist["population_max"]) / 2
-            hist["collected_at"] = pd.to_datetime(hist["collected_at"], utc=True)
+            hist["collected_at"] = pd.to_datetime(
+                hist["collected_at"], utc=True, format="ISO8601")
             earliest = hist["collected_at"].iloc[0]
             now_utc = pd.Timestamp.now(tz="UTC")
             # 창(window)의 첫 값이 24시간 전에 충분히 가까울 때만 "전일 대비"로 신뢰한다.
@@ -784,7 +789,7 @@ st.markdown('<div class="bt-card">', unsafe_allow_html=True)
 if hist.empty:
     st.markdown('<div class="bt-note">결제 데이터가 아직 충분하지 않습니다.</div>', unsafe_allow_html=True)
 else:
-    hist["collected_at"] = pd.to_datetime(hist["collected_at"])
+    hist["collected_at"] = pd.to_datetime(hist["collected_at"], format="ISO8601")
     # 원 단위 그대로 쓰면 축 눈금이 "4M"처럼 자동 축약돼 카드의 콤마 표기와 어긋난다.
     # 만원 단위로 환산해 콤마 표기를 그대로 유지한다.
     hist["avg_amt_10k"] = (hist["pay_amt_min"] + hist["pay_amt_max"]) / 2 / 10000
