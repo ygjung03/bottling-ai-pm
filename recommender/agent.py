@@ -54,6 +54,8 @@ PROMPT = """너는 서울 광진구 자양동 크래프트 맥주 펍 「바틀�
 5. reasons 는 정확히 3줄. ① 왜 이 날짜인가 ② 왜 이 가게인가 ③ 왜 이 메뉴인가. 각 줄 한 문장.
 6. 행사 데이터에 없는 사실(방문객 수, 가게 메뉴, 가격)을 지어내지 마라.
 7. reasons 와 menu 에 후보 번호(S1, S2…)를 쓰지 마라. 가게는 상호로 부른다. 날짜의 요일을 틀리지 마라.
+8. 과장·홍보 문구를 쓰지 마라 (「최고의 궁합을 자랑하는」「입맛을 사로잡는」「최적의」 등). 근거가 된 사실만 담담하게 적는다
+   — 무슨 행사가 언제 어디서 열리는지, 가게가 몇 m 거리의 어떤 업종인지, 어떤 맥주와 짝지었는지.
 
 [출력] JSON 하나.
 {{"picks": [{{"rank": 1, "store": "S번호", "date": "YYYY-MM-DD", "event": "행사 이름 또는 없음",
@@ -161,14 +163,17 @@ def check_picks(raw: dict, by_no: dict[str, dict], start: date, end: date) -> li
 
 
 def recommend(start: date, end: date, cands: list[dict], beers: str,
-              on_wait=None) -> tuple[list[dict], list[dict]]:
+              on_wait=None, on_step=None) -> tuple[list[dict], list[dict]]:
     """
     반환: (추천 목록, AI 에 보여준 행사 목록)
 
     추천이 비면 호출자가 「다시 시도」를 띄운다. 예외는 그대로 올린다 — 화면이 알린다.
     """
+    step = on_step or (lambda *_: None)      # 화면이 진행 단계를 그린다
     events = load_events(start, end)
+    step("events", len(events))
     prompt, by_no = build_prompt(start, end, cands, events, beers)
+    step("ai", len(cands))
     raw, _ms = call(prompt, on_wait=on_wait)      # 무료 키 (paid 를 주지 않는다)
     return check_picks(raw, by_no, start, end), events
 
