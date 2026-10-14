@@ -398,6 +398,24 @@ def menu_source(row: dict) -> str:
     return MENU_MANUAL
 
 
+def menu_protected(row: dict) -> bool:
+    """
+    자동 수집이 덮으면 안 되는 줄인가.
+
+    자동 수집은 그 가게 메뉴를 그때그때 처음부터 다시 찾아 후기 칸을 통째로
+    바꾼다. 그 칸에 사람 손이 닿은 줄이 섞여 있으면 함께 쓸려 나간다.
+
+    남길 줄은 둘이다.
+      · 사람이 고쳤거나 확인한 줄 (menu_kept)
+      · 자동 수집이 넣지 않은 줄 — 직접 입력, 메뉴판 자동 인식
+
+    확인·수정 표시만 보면 모자란다. **사람이 직접 넣은 줄이 후기 칸에 있었고,
+    표시가 없어서 자동 수집 한 번에 사라졌다 (10/14).** 어느 칸에 있는지가
+    아니라 누가 넣었는지로 갈라야 한다 (menu_source 설명 참고).
+    """
+    return menu_kept(row) or menu_source(row) != MENU_AUTO
+
+
 def menu_rows_sourced(partner: dict) -> list[tuple[str, dict]]:
     """
     menu_rows 와 같은 목록을 내되 누가 넣은 값인지를 함께 준다.
