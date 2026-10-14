@@ -50,7 +50,8 @@ from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           PAST_CASES, WEATHER_PREF, build_beer_list,
                           build_constraints, build_events,
                           build_partner_blockers, build_partner_resources,
-                          build_partner_sns, build_rec_reason, menu_kept,
+                          build_partner_sns, build_rec_reason, menu_checked,
+                          menu_kept,
                           menu_protected,
                           menu_rows, menu_rows_sourced, menu_source,
                           note_menus)
@@ -204,7 +205,7 @@ def plan_steps(partner: dict, menus: list[dict], picks: list[dict],
     """
     branch = (partner.get("reply_choice") or "").strip().upper()
     form_in = has_form(partner)
-    unseen = [m for m in menus if not menu_kept(m)]
+    unseen = [m for m in menus if not menu_checked(m)]
     # 제안서까지 만든 2차가 있나. 메뉴만 확정한 줄은 제안서가 없어 빠진다.
     second = any(r.get("round") == 2 and (r.get("final_output") or {}).get("안")
                  for r in archive)
@@ -2199,19 +2200,36 @@ def _menu_rows_view(rows: list[tuple[str, dict]]) -> None:
                              unsafe_allow_html=True)
 
         for i, (src, r) in enumerate(rows):
+            price = r.get("가격")
+            cells = [_cell(r.get("메뉴") or ""),
+                     _cell(f"{price:,}" if isinstance(price, int) else "—"),
+                     _cell(src, dim=True),
+                     _cell(_basis_tail(src, r.get("근거")), dim=True)]
+
+            # **이미 확인된 줄은 위젯 없이 글자로만 그린다.** 누를 일이 없는데
+            # 줄마다 열·마크다운·체크박스를 만들면 요소가 금세 수백 개가 되고,
+            # 「모두 확인」을 누를 때마다 그걸 다 다시 그린다 — 45줄짜리
+            # 협력사에서 눈에 띄게 느렸다 (10/15).
+            if menu_checked(r):
+                with st.container(key=f"menu_row_{i}"):
+                    st.markdown(
+                        '<div style="display:flex">'
+                        + "".join(f'<div style="flex:{w}; min-width:0">{c}</div>'
+                                  for w, c in zip(MENU_W, cells))
+                        + f'<div style="flex:{MENU_W[-1]}">'
+                        + _cell("✓", last=True) + '</div></div>',
+                        unsafe_allow_html=True)
+                continue
+
             with st.container(key=f"menu_row_{i}"):
                 c = st.columns(MENU_W, vertical_alignment="center")
-            price = r.get("가격")
-            c[0].markdown(_cell(r.get("메뉴") or ""), unsafe_allow_html=True)
-            c[1].markdown(_cell(f"{price:,}" if isinstance(price, int) else "—"),
-                          unsafe_allow_html=True)
-            c[2].markdown(_cell(src, dim=True), unsafe_allow_html=True)
-            c[3].markdown(_cell(_basis_tail(src, r.get("근거")), dim=True),
-                          unsafe_allow_html=True)
+            for col, html in zip(c, cells):
+                col.markdown(html, unsafe_allow_html=True)
             with c[4], st.container(key=f"menu_chk_{i}"):
-                st.checkbox("확인", key=f"mseen_{i}", label_visibility="collapsed",
-                            value=bool(r.get(MENU_SEEN)),
-                            disabled=bool(r.get(MENU_SEEN)))
+                # value 를 주지 않는다. 「모두 확인」이 세션 값을 건드리는데
+                # 기본값까지 주면 둘을 같이 설정했다는 경고가 뜬다.
+                st.checkbox("확인", key=f"mseen_{i}",
+                            label_visibility="collapsed")
 
 
 def _basis_tail(src: str, basis) -> str:
@@ -2321,7 +2339,7 @@ def _menu_list(partner: dict) -> None:
     def toggle_all() -> None:
         on = st.session_state.get("mseen_all", False)
         for i, (_src, row) in enumerate(rows):
-            if not row.get(MENU_SEEN):
+            if not menu_checked(row):
                 st.session_state[f"mseen_{i}"] = on
 
     if not editing and rows:
@@ -2331,7 +2349,7 @@ def _menu_list(partner: dict) -> None:
         # 새로 체크한 줄이 있을 때만 눌린다. 이미 확인된 줄은 세지 않는다.
         fresh = {str(r.get("메뉴") or "").strip()
                  for i, (_src, r) in enumerate(rows)
-                 if st.session_state.get(f"mseen_{i}") and not r.get(MENU_SEEN)}
+                 if st.session_state.get(f"mseen_{i}") and not menu_checked(r)}
         if st.button("확인 완료", type="primary", use_container_width=True,
                      disabled=not fresh, key="menu_seen_btn"):
             save_menu_seen(partner, fresh, datetime.now(KST).date().isoformat())
@@ -3126,7 +3144,12 @@ with st.container(key="param_card"):
 
     # 메뉴가 없으면 생성 버튼이 잠긴다. 따로 알리지 않는다 — 바로 위 상자가
     # 등록 개수와 채우는 길 둘을 이미 보여 준다 (10/5).
-    has_menus = bool(menu_rows(chosen))
+    #
+    # **가격이 있는 메뉴로 센다.** AI 는 「판매가 미입력」인 메뉴를 고르지 않고
+    # (p2 지시 1-0-1), 그래도 고르면 검사가 되감는다. 가격 있는 메뉴가 하나도
+    # 없으면 고를 것이 없어 되감기만 돌다가 끝난다.
+    priced = [r for r in menu_rows(chosen) if r.get("가격")]
+    has_menus = bool(priced)
 
     allowed = (can_1st if rnd == 1
                else (can_2nd and bool(sent) and not blocked))
@@ -3145,15 +3168,24 @@ with st.container(key="param_card"):
     # 메뉴를 다 확인해야 열린다. 협력사가 적어 준 줄은 가격이 비어 있고 (2)는
     # 그런 줄을 고르지 않으므로, 확인을 거치지 않으면 쓸 수 없는 메뉴로 안을
     # 만들게 된다.
-    unseen = [r for r in menu_rows(chosen) if not menu_kept(r)]
+    unseen = [r for r in menu_rows(chosen) if not menu_checked(r)]
 
     # 추천받기가 열렸으면 경고를 내린다. 막힌 것이 없는데 노란 상자가 남아
     # 있으면 무엇이 문제인지 찾게 된다. 할 일은 버튼이 말해 준다.
     if pick_menu and not unseen:
         blocked = None
 
+    # 메뉴는 있는데 가격이 하나도 없는 경우. 상자에는 「총 N개 등록됨」으로 떠서
+    # 메뉴가 있는 것처럼 보이므로 이유를 알려야 한다. 버튼 옆 작은 글씨로는 눈에
+    # 안 들어와 노란 경고로 띄우고, 그 자리의 작은 글씨는 비운다.
+    if menu_rows(chosen) and not priced:
+        blocked = ("메뉴에 가격이 없어 기획안을 만들 수 없습니다. "
+                   "메뉴 목록에서 「수정」으로 판매가를 채워 주세요.")
+
     c_wait, c_btn = st.columns([3, 1], vertical_alignment="center")
-    if pick_menu:
+    if menu_rows(chosen) and not priced:
+        wait = ""
+    elif pick_menu:
         # 아직 확인할 것이 남았으면 그 말이 먼저 눈에 들어와야 한다 — 버튼이
         # 왜 잠겼는지가 거기 적혀 있다.
         wait = ("<b>메뉴를 확인하면 추천을 받을 수 있습니다.</b>" if unseen else
@@ -3162,13 +3194,16 @@ with st.container(key="param_card"):
         # 걸리는 시간을 버튼 바로 옆에 적는다 (시안 1쪽). 전에는 카드 밖에 있어
         # 누르기 전에 눈에 안 들어왔다.
         wait = "약 30초 뒤, 기획안 3안을 확인할 수 있습니다."
-    c_wait.markdown(
-        '<div style="color:#59606D; font-size:0.9rem; display:flex; '
-        'align-items:center; gap:7px">'
-        '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" '
-        'stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/>'
-        f'<path d="M12 7v5l3 2"/></svg>{wait}</div>',
-        unsafe_allow_html=True)
+    # wait 가 비면 그 줄을 안 그린다. 빈 글자로 두면 시계 아이콘만 남는다.
+    if wait:
+        c_wait.markdown(
+            '<div style="color:#59606D; font-size:0.9rem; display:flex; '
+            'align-items:center; gap:7px">'
+            '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" '
+            'stroke="currentColor" stroke-width="2">'
+            '<circle cx="12" cy="12" r="9"/>'
+            f'<path d="M12 7v5l3 2"/></svg>{wait}</div>',
+            unsafe_allow_html=True)
     go = c_btn.button(
         "메뉴 추천받기" if pick_menu else "기획안 최적 생성 시작",
         type="primary",
