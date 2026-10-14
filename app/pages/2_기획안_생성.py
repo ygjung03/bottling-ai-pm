@@ -54,7 +54,8 @@ from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
 from chain.runner import run
 from collectors.menu_photo import read_photos
 from collectors.menu_reviews import collect
-from config.settings import PARTNER_FORM_CODE_ENTRY, PARTNER_FORM_URL
+from config.settings import (PARTNER_FORM2_CODE_ENTRY, PARTNER_FORM2_URL,
+                             PARTNER_FORM_CODE_ENTRY, PARTNER_FORM_URL)
 from context.builder import build as build_context
 from db.client import get_client
 
@@ -329,7 +330,7 @@ def load_archive(partner_id: int) -> list[dict]:
     try:
         rows = (get_client().table("plans")
                 .select("id,round,adopted_option,sent_option,target_date,"
-                        "created_at,final_output,final_option,"
+                        "created_at,p2_output,final_output,final_option,"
                         "executed_from,executed_to,sold_qty,agreed_wholesale,"
                         "retail_price,sales_before,sales_after,note")
                 .eq("partner_id", partner_id)
@@ -354,14 +355,22 @@ def sent_options(picks: list[dict]) -> list[dict]:
     """
     out = []
     for p in picks:
-        items = {i.get("안_id"): i
-                 for i in ((p.get("final_output") or {}).get("안") or [])}
+        # 메뉴 3안까지만 만든 행은 제안서가 없다. 그때는 (2)가 낸 메뉴안에서
+        # 읽는다 — 보관함 줄이 쓰는 메뉴명·접근·선정_사유·판매가가 거기 다 있다
+        # (선정_사유를 (2)로 옮겨 둔 덕이다).
+        menu_only = not (p.get("final_output") or {}).get("안")
+        src = ((p.get("p2_output") or {}).get("메뉴안") if menu_only
+               else (p.get("final_output") or {}).get("안")) or []
+        items = {i.get("안_id"): i for i in src}
         for aid in adopted_ids(p.get("adopted_option")):
             it = items.get(aid) or {}
             out.append({
                 "key": f"{p['id']}-{aid}",
                 "plan_id": p["id"],
                 "round": p.get("round") or 1,
+                # 회차 자리에 무엇을 적을지. 제안서가 없는 줄은 회차가 아니라
+                # 어느 단계인지를 적는다.
+                "메뉴만": menu_only,
                 "안_id": aid,
                 "메뉴명": it.get("메뉴명") or f"{aid}안",
                 "접근": it.get("접근") or "",
@@ -637,7 +646,7 @@ def generate(partner: dict, target: date, rnd: int,
     아니라 참고이고, (2)는 협력사가 실제로 파는 메뉴 중에서 그 방향에 가까운
     것을 고른다. 세 안은 그대로 나온다.
 
-    stop_after 에 2 를 주면 메뉴 3안만 만들고 멈춘다 — B/C 갈래가 메뉴판을 읽고
+    stop_after 에 2 를 주면 메뉴 3안까지만 만든다 — B/C 갈래가 메뉴판을 읽고
     다시 고르는 자리다. 그때는 회차를 세지 않고 「메뉴 3안」으로 적는다. 홍보와
     제안서는 협력사와 메뉴를 확정한 뒤에 만든다.
     """
@@ -648,7 +657,7 @@ def generate(partner: dict, target: date, rnd: int,
 
         def on_step(n: int, label: str) -> None:
             # 분모는 stop_after 다. 메뉴 3안만 내미는 자리는 두 단계로 끝나서
-            # 4 로 적어 두면 절반에서 멈춘 것처럼 보인다.
+            # 4 로 적어 두면 절반에서 끊긴 것처럼 보인다.
             step_slot.write(f"({n}/{stop_after}) {label}")
 
         try:
@@ -1091,6 +1100,9 @@ ARCHIVE_CSS = """
   .arch-rnd { display:inline-block; padding:5px 13px; border-radius:999px;
     background:#EEF2FF; color:#4338CA; font-size:14px; font-weight:800; }
   .arch-rnd-2 { background:#FEF3C7; color:#92400E; }
+  /* 메뉴 3안까지만 만든 줄. 1차도 2차도 아니라 그 사이다 — 협력사와 메뉴를
+     정하려고 내미는 안이다. 글자가 길어 가로 여백을 줄인다 */
+  .arch-rnd-menu { background:#F1F5F9; color:#475569; padding:5px 10px; }
 
   /* 확정한 줄 — 눈에 띄어야 한다. 두 확정은 뜻이 달라 색도 가른다 (10/9).
      같은 초록으로 두었더니 어느 쪽인지 헷갈렸다.
@@ -1162,9 +1174,9 @@ ARCH_HEAD = ["선택", "회차", "순서", "기획안 정보", "미리보기", "
              "협업 결과"]
 
 
-def form_link(partner: dict) -> str | None:
+def _prefilled(url: str, entry: str, partner: dict) -> str | None:
     """
-    이 협력사의 초대 코드가 미리 채워진 「협의 사항 입력폼」 주소.
+    이 협력사의 초대 코드가 미리 채워진 폼 주소. 폼 1·2 가 함께 쓴다.
 
     손으로 적다 틀리는 것을 막는다. 코드가 어긋나면 폼은 통과시키고(형식만
     본다) .gs 가 맞는 협력사를 못 찾아 아무것도 저장하지 않는다 — 제출은
@@ -1174,10 +1186,23 @@ def form_link(partner: dict) -> str | None:
     사실을 알린다 — 조용히 빈 링크를 내놓으면 안 된다.
     """
     code = partner.get("invite_code")
-    if not (PARTNER_FORM_URL and PARTNER_FORM_CODE_ENTRY and code):
+    if not (url and entry and code):
         return None
-    return (f"{PARTNER_FORM_URL}?usp=pp_url"
-            f"&{PARTNER_FORM_CODE_ENTRY}={quote(code)}")
+    return f"{url}?usp=pp_url&{entry}={quote(code)}"
+
+
+def form_link(partner: dict) -> str | None:
+    """폼 1 — 「협의 사항 입력폼」. 제안서를 보낸 뒤 협의 자리에서 함께 채운다."""
+    return _prefilled(PARTNER_FORM_URL, PARTNER_FORM_CODE_ENTRY, partner)
+
+
+def form2_link(partner: dict) -> str | None:
+    """
+    폼 2 — 「협의 사항 입력폼 (메뉴 확정)」. B/C 갈래가 메뉴를 고른 뒤에 보낸다.
+
+    **폼 1 과 주소도 문항 번호도 다르다.** 문항 번호는 폼마다 따로 매겨진다.
+    """
+    return _prefilled(PARTNER_FORM2_URL, PARTNER_FORM2_CODE_ENTRY, partner)
 
 
 def _only_one(key: str, keys: list[str]) -> None:
@@ -1269,6 +1294,37 @@ def _form_link(partner: dict) -> None:
     st.write("")
     if st.button("기획안 생성으로 돌아가기", type="primary",
                  use_container_width=True):
+        del st.query_params[ARCHIVE_PARAM]
+        st.rerun()
+
+
+@st.dialog("메뉴 확정 폼 링크")
+def _form2_link(partner: dict) -> None:
+    """
+    메뉴 3안 중 하나를 고른 뒤, 그 메뉴의 조건을 받는 폼 주소.
+
+    **메뉴는 화면에서 정한다** (「이 메뉴로 하기」). 폼이 묻는 것은 그 메뉴의
+    판매가·매입가·수량·보관 조건이다. 폼에도 메뉴 문항이 있지만 그것은 정하는
+    자리가 아니라 협력사가 같은 메뉴를 보고 있는지 남기는 자리다.
+
+    이 답이 와야 2차 기획안을 만들 수 있다. 보내도 되지만 대개 한자리에서
+    함께 채운다 — 폼 1 과 같은 상황이다.
+    """
+    link = form2_link(partner)
+    if not link:
+        st.warning("폼 링크가 아직 준비되지 않았습니다.")
+        st.write("링크를 만들려면 폼 주소를 한 번 등록해 두어야 합니다. "
+                 "개발 쪽에 알려 주시면 바로 됩니다.")
+        return
+
+    st.write(f"고른 메뉴의 가격과 납품 조건을 **{partner['name']}** 과 협의하여 "
+             f"채울 폼입니다. 오른쪽 끝을 누르면 복사됩니다.")
+    st.code(link, language=None, wrap_lines=True)
+    st.caption("맨 위 「확인 코드」 칸은 이미 채워져 있습니다. 그 칸을 "
+               "지우거나 고치면 안됩니다.")
+    st.write("")
+    if st.button("기획안 생성으로 돌아가기", type="primary",
+                 use_container_width=True, key="form2_back"):
         del st.query_params[ARCHIVE_PARAM]
         st.rerun()
 
@@ -2158,13 +2214,16 @@ def render_archive(partner: dict, options: list[dict]) -> None:
     #
     # 둘 다 「여러 개 담아 두고 하나를 고른다」는 같은 구조다.
     keys = [o["key"] for o in options]
-    seq: dict[int, int] = {}        # 회차 안에서의 순서
+    # 같은 배지끼리 순서를 센다. 회차로만 세면 메뉴 확정 줄이 2차와 번호를
+    # 나눠 써서, 2차가 하나뿐인데 02 로 적히는 일이 생긴다.
+    seq: dict[str, int] = {}
     with st.container(key="arch_rows"):
         for o in options:
-            seq[o["round"]] = seq.get(o["round"], 0) + 1
+            kind = "메뉴" if o.get("메뉴만") else str(o["round"])
+            seq[kind] = seq.get(kind, 0) + 1
             is_sent = bool(sent and sent["key"] == o["key"])
             is_run = bool(o.get("실행"))
-            first = o["round"] == 1
+            first = o["round"] == 1 and not o.get("메뉴만")
             c_chk, c_rnd, c_no, c_body, c_btn, c_form, c_res = st.columns(
                 ARCH_COLS, vertical_alignment="center")
             with c_chk:
@@ -2172,11 +2231,16 @@ def render_archive(partner: dict, options: list[dict]) -> None:
                             label_visibility="collapsed",
                             on_change=_only_one, args=(o["key"], keys))
             with c_rnd:
-                cls = "arch-rnd" if first else "arch-rnd arch-rnd-2"
-                st.markdown(f'<div class="{cls}">{o["round"]}차</div>',
+                if o.get("메뉴만"):
+                    cls, text = "arch-rnd arch-rnd-menu", "메뉴 확정"
+                elif first:
+                    cls, text = "arch-rnd", "1차"
+                else:
+                    cls, text = "arch-rnd arch-rnd-2", f'{o["round"]}차'
+                st.markdown(f'<div class="{cls}">{text}</div>',
                             unsafe_allow_html=True)
             with c_no:
-                st.markdown(f'<div class="arch-no">{seq[o["round"]]:02d}'
+                st.markdown(f'<div class="arch-no">{seq[kind]:02d}'
                             f'<span>저장 순서</span></div>',
                             unsafe_allow_html=True)
             with c_body:
@@ -2206,18 +2270,31 @@ def render_archive(partner: dict, options: list[dict]) -> None:
                     + "".join(f"<span>{m}</span>" for m in meta)
                     + '</div>', unsafe_allow_html=True)
             with c_btn:
+                # 메뉴 확정 줄은 제안서가 없다. 홍보와 제안서를 만들기 전에
+                # 제안서는 아직 만들지 않은 안이라 미리볼 것이 없다.
                 if st.button("미리보기", key=f"apv_{o['key']}", type="primary",
                              use_container_width=True,
-                             icon=":material/description:"):
+                             disabled=o.get("메뉴만", False),
+                             icon=":material/description:",
+                             help="협력사와 메뉴를 확정한 뒤에 만듭니다."
+                             if o.get("메뉴만") else None):
                     _preview(o, partner)
             with c_form:
-                # 폼 1 은 갈래가 정해지기 전에 채운다. 그래서 「보낸 안」이
-                # 정해진 그 줄에 둔다.
+                # 폼은 갈래마다 자리가 다르다.
                 #
-                # 2차 줄은 비운다. 폼 2 는 2차를 만들기 **전에** 채우는 것이라
-                # 이미 만들어진 2차 줄에 붙이면 순서가 거꾸로다. 쓰는 갈래도
-                # B/C 뿐이고, 그 자리는 메뉴를 확정하는 화면이다 (아직 없다).
-                if first and st.button(
+                #   폼 1  갈래가 정해지기 전에 채운다 → 「보낸 안」 줄
+                #   폼 2  메뉴를 확정한 뒤에 채운다   → 「메뉴 확정」 줄
+                #
+                # 2차 줄은 비운다. 이미 만들어진 2차에 폼을 붙이면 순서가
+                # 거꾸로다 — 폼은 그 2차를 만들기 전에 받는 것이다.
+                if o.get("메뉴만"):
+                    if st.button("폼 2 링크", key=f"afm2_{o['key']}",
+                                 use_container_width=True,
+                                 icon=":material/link:",
+                                 help="고른 메뉴의 가격·수량·보관 조건을 "
+                                      "받는 폼입니다."):
+                        _form2_link(partner)
+                elif first and st.button(
                         "폼 링크", key=f"afm_{o['key']}",
                         use_container_width=True, disabled=not is_sent,
                         icon=":material/link:",
