@@ -260,9 +260,14 @@ def plan_steps(partner: dict, menus: list[dict], picks: list[dict],
             out[4]["sub"] = ("2차 폼 작성", "미작성")
 
     # 6. 2차 기획안
+    #
+    # **담은 안이 있어야 진행중으로 켠다.** 2차는 「어느 안으로 보냈나」를 알아야
+    # 만들 수 있어 담은 안이 없으면 버튼이 열리지 않는다 (can_2nd, 아래쪽).
+    # 폼이 먼저 온 협력사에서 그 조건이 깨진다 — 빼 두면 화면은 「2차 기획안
+    # 진행중」이라고 하는데 누를 것이 없다.
     if second:
         out[5]["state"] = DONE
-    elif out[4]["state"] in (DONE, SKIP) and form_in:
+    elif out[4]["state"] in (DONE, SKIP) and form_in and picks:
         out[5]["state"] = DOING
     return out
 
