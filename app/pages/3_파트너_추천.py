@@ -29,7 +29,7 @@ import pydeck as pdk
 import streamlit as st
 
 from app.auth import require_owner
-from app.theme import SS_PARTNER_ID, SS_PARTNER_TAB, apply_chrome
+from app.theme import SS_PARTNER_ID, SS_PARTNER_TAB, apply_chrome, just_arrived
 from context.builder import INDUSTRY_MAP
 from db.client import get_client
 from recommender.complement import TIER_LABELS, guess_industry_category, tier_label
@@ -213,6 +213,40 @@ def hand_over(partner: dict) -> None:
         st.session_state[SS_PARTNER_ID] = pid
 
 
+def go_to_plan(store: dict) -> None:
+    """고른 가게로 기획안 생성 화면을 연다. 등록이 안 돼 있으면 등록까지 한다.
+
+    「이 가게로 간다」고 누른 자리에서 부른다. 누른 사람은 이미 그 가게로
+    정했는데, 전에는 등록 안내를 한 번 더 보여 주고 버튼을 또 누르게 했다.
+    묻는 값도 없었다 — 업종은 상가정보에서 추정하고, 협력사가 폼에서 고친다.
+
+    **누른 그 자리에서만 부른다.** render_next_step 안에 두면 안 된다 — 거기는
+    추천 표에서 행을 고르기만 해도 그려지는 자리라, 상세를 보려고 고른 것뿐인데
+    화면이 넘어가고 가게가 등록돼 버린다.
+
+    등록에 실패하면 화면을 넘기지 않고 그대로 둔다. create_invite 가 오류를
+    띄우므로 누른 사람이 무슨 일이 났는지 본다.
+    """
+    name = (store.get("name") or "").strip()
+    if not name:
+        return
+    row = find_existing_partner(name) or create_invite(
+        name,
+        guess_industry_category(store.get("category_m"), store.get("category_s")),
+        store.get("lat"), store.get("lng"), store.get("address"),
+    )
+    if not row:
+        return
+    hand_over(row)
+    # 가게를 정하고 넘어가므로 추천 결과는 소임을 다했다. 두고 가면 나중에
+    # 다시 들어왔을 때 지난 카드가 선택된 채로 보인다.
+    for k in ("rec_ai_result", "rec_plan", "rec_ai_chosen", "rec_pick_id",
+              "manual_selected", "menu_search_result", "menu_pick",
+              "menu_pick_store"):
+        st.session_state.pop(k, None)
+    st.switch_page("pages/2_기획안_생성.py")
+
+
 def render_next_step(candidate_name: str, guessed_category: str, lat=None, lng=None,
                      key_prefix="", address: str | None = None):
     """추천받기·직접 지정 공통 — 이후 처리 (명세서 4-3 공통 절차)."""
@@ -232,19 +266,20 @@ def render_next_step(candidate_name: str, guessed_category: str, lat=None, lng=N
 
 def render_registered(row: dict, guessed_category: str):
     """
-    등록 직후 안내. 버튼 경로와 직접 입력 폼 경로가 같이 쓴다.
+    등록 직후 처리. 버튼 경로와 직접 입력 폼 경로가 같이 쓴다.
 
     확인 코드는 보여주지 않는다 (9/30). 등록할 때 만들어 두지만 사람이 읽고
     옮겨 적을 값이 아니다 — 협의 자리에서 쓸 때는 보관함이 그 코드가 박힌
     폼 링크를 통째로 내준다.
+
+    업종(`guessed_category`)은 초안으로 채워 두고 협력사가 폼에서 고친다.
+    여기서 따로 알리지 않는다 — 넘어간 화면에 그대로 보인다.
     """
-    st.success("협력사를 등록했습니다. 기획안 생성에서 고를 수 있습니다.")
-    st.caption(
-        f"업종은 '{guessed_category}'(으)로 초안을 채웠습니다 — "
-        f"협력사가 폼에서 직접 고칠 수 있습니다."
-    )
     hand_over(row)
-    st.page_link("pages/2_기획안_생성.py", label="기획안 생성으로 이동", icon="📝")
+    # 등록은 「이 가게와 한다」고 정한 뒤에만 누르는 버튼이라, 끝나면 바로
+    # 기획안 생성으로 보낸다. 전에는 안내와 링크만 띄워 한 번 더 눌러야 했다.
+    # 업종 초안은 그 화면에서 그대로 보이고 폼에서 협력사가 고칠 수 있다.
+    st.switch_page("pages/2_기획안_생성.py")
 
 
 @st.dialog("알림")
@@ -469,6 +504,9 @@ def _ai_card(p: dict, events: list[dict], chosen: bool = False, nested: bool = F
             st.session_state["rec_pick_id"] = store["store_id"]
             st.session_state["rec_table_ver"] = st.session_state.get("rec_table_ver", 0) + 1
             st.session_state["rec_ai_chosen"] = store["store_id"]
+            # 여기서 화면이 기획안 생성으로 바뀐다. 아직 등록 안 된 가게면
+            # 등록하고 넘어간다.
+            go_to_plan(store)
             st.rerun()
 
         st.markdown(f"<span style='color:#59606D'>연계 행사</span> {p['event'] or '없음'}"
@@ -527,6 +565,26 @@ st.markdown("""<style>
 with st.container(key="partner_tabs"):
     _tab = st.radio("보기", TAB_NAMES, horizontal=True, key=TAB_KEY,
                     label_visibility="collapsed")
+
+# 이 화면에 들어오거나 탭을 옮기면 세 탭의 지난 결과를 모두 지운다.
+#
+# 결과는 전부 세션 값이라 탭을 옮기거나 화면을 나갔다 와도 남는다. 그래서 다시
+# 들어오면 지난 추천 카드와 「이 안을 선택했습니다」가 그대로 떠 있어, 새로
+# 찾으러 온 것인데 전에 고른 가게가 선택된 채로 보였다.
+#
+# 탭만 봐서는 모자란다 — 기획안 생성으로 넘어갔다가 상단 바로 돌아오면 탭은
+# 그대로라 안 지워진다. 그래서 화면에 막 들어온 실행인지를 함께 본다.
+#
+# 키 이름을 글자 그대로 적는다 — SS_MENU_PICK·SS_MENU_RESULT 는 이 줄보다
+# 아래에서 정해져서 여기서는 아직 이름으로 부를 수 없다.
+# 위젯 key(`manual_query`·`menu_name`·`rec_ai_range`)는 건드리지 않는다. 지운
+# 것은 결과를 담아 둔 값들뿐이고, 입력칸에 쳐 둔 글자는 그대로 남는다.
+_STALE = ("rec_ai_result", "rec_plan", "rec_ai_chosen", "rec_pick_id",
+          "manual_selected", "menu_search_result", "menu_pick", "menu_pick_store")
+if just_arrived() or st.session_state.get("partner_tab_seen") != _tab:
+    st.session_state["partner_tab_seen"] = _tab
+    for _k in _STALE:
+        st.session_state.pop(_k, None)
 
 # ── A. 추천받기 ──
 if _tab == "추천받기":
@@ -682,6 +740,7 @@ if _tab == "직접 지정":
                     with c2:
                         if st.button("이 가게로 진행", key=f"manual_pick_{r['store_id']}"):
                             st.session_state["manual_selected"] = r
+                            go_to_plan(r)   # 필요하면 등록하고 바로 넘어간다
 
             sel = st.session_state.get("manual_selected")
             if sel and sel.get("store_id") in [r["store_id"] for r in found]:
@@ -758,6 +817,7 @@ def _menu_card(i: int, r: dict, menu: str) -> None:
             st.session_state[SS_MENU_PICK] = {"menu": menu, "store_id": r["store_id"],
                                               "name": r["name"]}
             st.session_state["menu_pick_store"] = r["store_id"]
+            go_to_plan(r)   # 필요하면 등록하고 바로 넘어간다
             st.rerun()
 
 

@@ -13,6 +13,7 @@ CSS/내용보다 먼저 호출해야 상단 바가 맨 위에 온다):
     # 이 아래에 페이지 고유 내용
 """
 import base64
+import inspect
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -225,6 +226,40 @@ div[data-testid="stPageLink"] a { text-decoration: none !important; }
 """
 
 
+SS_PAGE = "ui_page"          # 지금 보고 있는 화면 파일 이름
+SS_PAGE_NEW = "ui_page_new"  # 이번 실행에 그 화면으로 막 들어왔나
+
+
+def _caller_page() -> str:
+    """상단 바를 부른 화면의 파일 이름. theme.py 안에서 거친 칸은 건너뛴다.
+
+    홈은 render_topnav 를 바로 부르고, 나머지 화면은 apply_chrome 을 거쳐
+    부른다. 그래서 바로 윗칸만 보면 apply_chrome 이 잡힌다.
+    """
+    frame = inspect.currentframe()
+    here = Path(__file__).resolve()
+    while frame:
+        f = frame.f_globals.get("__file__") or ""
+        if f and Path(f).resolve() != here:
+            return Path(f).stem
+        frame = frame.f_back
+    return ""
+
+
+def just_arrived() -> bool:
+    """다른 화면에 갔다가 이 화면으로 막 들어온 실행인가.
+
+    세션 값은 화면을 옮겨도 남는다. 그래서 화면에 담아 둔 결과가 나갔다
+    들어와도 그대로 보인다. 치우려면 「방금 들어왔다」를 알아야 하는데,
+    화면 스크립트만 봐서는 알 수 없다 — 들어올 때도 다시 실행되고 버튼을
+    누를 때도 다시 실행되기 때문이다. 상단 바가 화면마다 불리므로 거기서
+    표시해 둔다.
+
+    render_topnav 보다 뒤에서 부른다 (apply_chrome 다음이면 된다).
+    """
+    return bool(st.session_state.get(SS_PAGE_NEW))
+
+
 def _entry_page() -> str:
     """
     실행된 진입점 파일명(main.py, 또는 가안 비교용으로 main_2.py 등으로
@@ -277,6 +312,12 @@ def render_topnav(right: str = "") -> None:
 
     보관함 개수는 화면이 넘긴다. 협력사마다 다른 값이라 여기서 셀 수 없다.
     """
+    # 어느 화면인지 남긴다. 화면이 바뀌면 그 화면이 지난 결과를 치울 수 있다
+    # (just_arrived).
+    _page = _caller_page()
+    st.session_state[SS_PAGE_NEW] = st.session_state.get(SS_PAGE) != _page
+    st.session_state[SS_PAGE] = _page
+
     entry = _entry_page()
     st.markdown(_mascot_css(), unsafe_allow_html=True)
     with st.container(key="topnav"):
