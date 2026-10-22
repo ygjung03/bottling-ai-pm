@@ -295,8 +295,10 @@ def _gap(px: int = GAP) -> None:
 # 길이가 다르면 눈에 띈다. 한 값으로 묶어 둔다.
 CARD_H = 290
 
-# 일별 그래프에 보일 날수. 다 보이면 막대가 가늘어지고, 지금은 하루 금액이
-# 수십 원이라 옛 날짜까지 볼 이유가 적다.
+# 일별 그래프에 보일 날수. **보는 날에서 거슬러 센 달력 날짜다.** 기록이 있는
+# 날만 모으면 안 쓴 날이 통째로 빠져, 보름 떨어진 두 날이 나란히 붙는다 —
+# 띄엄띄엄 쓴 것이 연달아 쓴 것처럼 보인다. 다 보이면 막대가 가늘어지고,
+# 지금은 하루 금액이 수십 원이라 옛 날짜까지 볼 이유도 적다.
 DAYS = 5
 
 # 그래프 높이. **가로축 날짜 글자까지 포함한 전체 높이다.**
@@ -426,32 +428,35 @@ def render_usage() -> None:
             f'<span style="color:#9CA3AF; font-size:0.82rem">최근'
             f' {DAYS}일 · 단위 원</span></div>',
             unsafe_allow_html=True)
-        날짜 = s["날짜별"][:DAYS][::-1]      # 최근 것부터 와 있다. 왼쪽이 옛날이 되게 뒤집는다
-        if 날짜:
-            # st.bar_chart 를 쓰지 않는다. 날짜 글자가 세로로 서고(labelAngle),
-            # 손을 올렸을 때 나오는 이름도 고칠 수 없다. 둘 다 Altair 로만 된다.
-            #
-            # 칸 이름을 「금액(원)」으로 두면 Altair 가 괄호를 집계 함수로 읽는다
-            # (`금액(원)` → 「원 칸의 금액 집계」). 칸은 「금액」으로 두고 보일
-            # 이름만 title 로 준다.
-            표 = pd.DataFrame({"날짜": [f"{d:%m/%d}" for d, _ in 날짜],
-                              "금액": [w for _, w in 날짜]})
-            st.altair_chart(
-                alt.Chart(표)
-                .mark_bar(color="#2563EB", cornerRadiusTopLeft=3,
-                          cornerRadiusTopRight=3)
-                .encode(
-                    x=alt.X("날짜:N", sort=None,
-                            axis=alt.Axis(labelAngle=0, title=None,
-                                          labelColor="#59606D", labelPadding=6)),
-                    y=alt.Y("금액:Q", axis=alt.Axis(title=None, tickCount=4,
-                                                  labelColor="#9CA3AF")),
-                    tooltip=[alt.Tooltip("날짜:N", title="날짜"),
-                             alt.Tooltip("금액:Q", title="금액(원)", format=",")])
-                .properties(height=CHART_H),
-                use_container_width=True)
-        else:
-            st.caption("아직 기록된 날이 없습니다.")
+        # 오늘부터 거슬러 DAYS 일을 만들고 거기에 금액을 얹는다. 기록이 없는
+        # 날은 0원이다 — 그 날이 빠지면 안 쓴 날이 화면에서 사라져, 띄엄띄엄
+        # 쓴 것이 연달아 쓴 것처럼 보인다.
+        오늘 = datetime.now(KST).date()
+        금액 = dict(s["날짜별"])
+        날짜 = [오늘 - timedelta(days=i) for i in range(DAYS - 1, -1, -1)]
+
+        # st.bar_chart 를 쓰지 않는다. 날짜 글자가 세로로 서고(labelAngle),
+        # 손을 올렸을 때 나오는 이름도 고칠 수 없다. 둘 다 Altair 로만 된다.
+        #
+        # 칸 이름을 「금액(원)」으로 두면 Altair 가 괄호를 집계 함수로 읽는다
+        # (`금액(원)` → 「원 칸의 금액 집계」). 칸은 「금액」으로 두고 보일
+        # 이름만 title 로 준다.
+        표 = pd.DataFrame({"날짜": [f"{d:%m/%d}" for d in 날짜],
+                          "금액": [금액.get(d, 0) for d in 날짜]})
+        st.altair_chart(
+            alt.Chart(표)
+            .mark_bar(color="#2563EB", cornerRadiusTopLeft=3,
+                      cornerRadiusTopRight=3)
+            .encode(
+                x=alt.X("날짜:N", sort=None,
+                        axis=alt.Axis(labelAngle=0, title=None,
+                                      labelColor="#59606D", labelPadding=6)),
+                y=alt.Y("금액:Q", axis=alt.Axis(title=None, tickCount=4,
+                                              labelColor="#9CA3AF")),
+                tooltip=[alt.Tooltip("날짜:N", title="날짜"),
+                         alt.Tooltip("금액:Q", title="금액(원)", format=",")])
+            .properties(height=CHART_H),
+            use_container_width=True)
 
     # ── 평균 단가 ──
     #
