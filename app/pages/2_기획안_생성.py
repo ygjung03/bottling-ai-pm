@@ -85,6 +85,7 @@ SS_PHOTO_RUN = "photo_reading"    # 지금 메뉴판 사진을 읽는 중이다
 SS_MENU_VIEW = "menu_list_open"   # 메뉴 목록 창을 열어라
 SS_MENU_EDIT = "menu_list_edit"   # 그 창이 고치는 상태다
 SS_MENU_NOTE_ADDED = "menu_note_added"   # 협력사가 적어 준 메뉴를 몇 개 넣었나
+SS_DATE_FROM = "target_date_from"        # 실행일을 어느 1차에서 가져왔나 (plan_id)
 
 # 추천받기에서 「이 안으로 진행」을 누르고 왔을 때 그 화면이 남겨 둔 값.
 # 담기는 것은 app/pages/3_파트너_추천.py 의 SS_REC_PLAN 설명에 있다.
@@ -587,6 +588,18 @@ def sent_options(picks: list[dict]) -> list[dict]:
 def sent_pick(options: list[dict]) -> dict | None:
     """이 협력사의 「보낸 안」. 없으면 None."""
     return next((o for o in options if o["보냄"]), None)
+
+
+def sent_first_round(partner: dict) -> dict | None:
+    """
+    1차에서 협력사에게 보낸 안. 폼이 오기 전이거나 아직 안 골랐으면 None.
+
+    실행일 기본값을 여기서 가져온다. 아래에서 2차 버튼을 열고 닫을 때 쓰는
+    것과 같은 조회라(load_adopted) 캐시를 함께 쓴다 — 호출이 늘지 않는다.
+    """
+    if not has_form(partner):
+        return None
+    return sent_pick(sent_options(load_adopted(partner["id"])))
 
 
 def final_pick(options: list[dict]) -> dict | None:
@@ -3013,7 +3026,24 @@ with st.container(key="param_card"):
             # 추천 에이전트를 거쳐 왔으면 그 날짜, 아니면 1주 뒤다. 값이 이미
             # 있으면 건드리지 않는다 — 사람이 고친 날짜를 되돌리면 안 된다.
             plan = rec_plan_for(chosen)
-            if "target_date" not in st.session_state:
+            # 2차 달력에는 1차에 보낸 협업 실행 희망일을 디폴트로 넣는다. 협력사에게 「그날 하자」고
+            # 적어 보낸 날짜다. 폼은 며칠 뒤에 오고 그 사이 브라우저가 끊기므로,
+            # 넣지 않으면 아래 기본값인 「오늘+7」이 잡힌다. 그러면 협력사가
+            # 받아들인 날짜와 다른 날이 적힌 2차 제안서가 나가는 문제가 생길 수 있다.
+            #
+            # **한 번만 넣는다.** Streamlit 은 화면을 건드릴 때마다 이 파일을
+            # 처음부터 다시 실행한다. 달력에서 날짜를 고르는 것도 그렇다.
+            # 매번 넣으면 방금 고른 날짜를 그때마다 되돌려 놓아 달력이 아예
+            # 안 바뀐다. 그래서 넣을 때 그 1차 안의 번호를 함께 적어 두고,
+            # 같은 번호면 건너뛴다. 협력사를 바꾸면 번호가 달라져 새로 넣는다.
+            #
+            # 잠그지는 않는다. 회신이 늦어 그날이 지나면 옮겨야 한다.
+            sent1 = sent_first_round(chosen)
+            first_date = (sent1 or {}).get("target_date")
+            if first_date and st.session_state.get(SS_DATE_FROM) != sent1["plan_id"]:
+                st.session_state["target_date"] = date.fromisoformat(first_date)
+                st.session_state[SS_DATE_FROM] = sent1["plan_id"]
+            elif "target_date" not in st.session_state:
                 st.session_state["target_date"] = (
                     date.fromisoformat(plan["date"]) if plan.get("date")
                     else datetime.now(KST).date() + timedelta(days=7))
@@ -3025,7 +3055,10 @@ with st.container(key="param_card"):
                 # key 가 없으면 그려지는 자리로 키가 정해져, 위아래가 바뀔 때
                 # 고른 날짜가 기본값으로 돌아갈 수 있다.
                 target = st.date_input("협업 시작 희망일", key="target_date")
-            if plan:
+            if first_date:
+                st.caption("1차 제안서에 적어 보낸 실행일입니다. 협력사와 다시 "
+                           "정했으면 바꿔 주세요.")
+            elif plan:
                 hint = f" · 메뉴 방향 「{plan['menu']}」" if plan.get("menu") else ""
                 st.caption(f"추천 에이전트가 제안한 날짜입니다{hint}. 날짜는 "
                            "바꿀 수 있고, 메뉴 방향은 참고로만 들어갑니다.")
