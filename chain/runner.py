@@ -413,7 +413,13 @@ def run(context: str, target_date: str, beer_list: str,
                             prev_output=_j(prev) if prev else NO_ISSUES,
                             issues=note)
 
-            # 가져온 안은 검사하지 않는다. 코드가 옮긴 값이라 틀릴 자리가 없다.
+            # 가져온 안도 검사한다.
+            #
+            # 「이어서 하기」면 이미 한 번 지난 검사다. 2차 확정 경로는 다르다 —
+            # 협력사가 폼에 적어 온 값(확정 매입가·1회 납품 수량·협력사 정가)을
+            # 코드가 가져온 안 속에 꽂아 넣는다 (2_기획안_생성.load_preset).
+            # 그 값은 검사를 지난 적이 없어서, 확정 매입가가 판매가보다 높아도
+            # 그대로 제안서까지 갔다.
             label2 = ("협업 메뉴 개발 중..." if attempt == 0
                       else "실행할 수 없는 안을 빼고 메뉴를 다시 만드는 중...")
             # 되감는 길에서 가져온 (2)를 그대로 쓸지는 **메뉴가 하나로
@@ -433,9 +439,15 @@ def run(context: str, target_date: str, beer_list: str,
             # 폼 1 만 와도 has_form 이 참이라 rnd 가 2 로 잡히고, 그러면
             # fixed_menu 가 켜져 안이 1개로 강제된다. **그 호출에는
             # fixed_menu=False 를 따로 넘겨야 한다.**
-            result["p2"] = (ready(2, label2,
-                                  fresh=attempt > 0 and not fixed_menu)
-                            or make(2, label2, call_p2, check_p2))
+            result["p2"] = ready(2, label2,
+                                 fresh=attempt > 0 and not fixed_menu)
+            if result["p2"] is not None:
+                # 되감지 않는다. 확정안을 다시 만들면 협력사가 동의한 값이
+                # 바뀐다 (10/2 에 세트 판매가가 9,000 에서 7,500 이 됐다).
+                # 경고만 올리고 보낼지는 사람이 정한다.
+                result["issues"] += look(check_p2, result["p2"]).all
+            else:
+                result["p2"] = make(2, label2, call_p2, check_p2)
             if stop_after <= 2:
                 # 메뉴 3안만 내미는 자리다 (B/C). 홍보와 제안서는 메뉴를
                 # 확정한 뒤에 만들므로 여기서 끝낸다. 되감기는 (2) 안에서
