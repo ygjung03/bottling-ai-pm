@@ -54,6 +54,20 @@ def open_partner_tab(tab: str) -> None:
     st.session_state[SS_PARTNER_TAB] = tab
     st.switch_page("pages/3_파트너_추천.py")
 
+
+# 홈의 「보관함 전체 보기」가 넣고, 기획안 생성 화면이 한 번 읽고 지운다.
+# 보관함이 열렸는지는 주소가 정하는데(ARCHIVE_PARAM) st.switch_page 로는 주소에
+# 값을 붙여 보낼 수 없다. 그래서 세션에 두고 받는 쪽에서 주소로 옮긴다.
+SS_OPEN_ARCHIVE = "archive_open"
+
+
+def open_archive(partner_id: int | None = None) -> None:
+    """기획안 생성 화면으로 가서 보관함을 연다. partner_id 를 주면 그 협력사로."""
+    if partner_id:
+        st.session_state[SS_PARTNER_ID] = partner_id
+    st.session_state[SS_OPEN_ARCHIVE] = True
+    st.switch_page("pages/2_기획안_생성.py")
+
 BASE_CSS = """
 <style>
 /* 헤드라인 등에 쓰는 폰트 — Pretendard (무료, 한글 지원 좋은 굵은 산세리프).

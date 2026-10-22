@@ -23,7 +23,8 @@ import _path  # noqa: F401  (프로젝트 루트를 sys.path 에 추가)
 import streamlit as st
 
 from app.auth import is_owner, login_form
-from app.theme import BASE_CSS, open_partner_tab, render_topnav
+from app.theme import (BASE_CSS, open_archive, open_partner_tab,
+                       render_topnav)
 
 st.set_page_config(page_title="바틀링 AI PM", page_icon="🍺",
                    layout="wide", initial_sidebar_state="collapsed")
@@ -103,15 +104,19 @@ HOME_CSS = """
 }
 .st-key-ongoing_foot > div, .st-key-events_foot > div,
 .st-key-ongoing_foot [data-testid="stMarkdown"], .st-key-events_foot [data-testid="stMarkdown"],
-.st-key-ongoing_foot [data-testid="stPageLink"] {
+.st-key-ongoing_foot .stButton {
     width: auto !important; flex: 0 0 auto !important; height: auto !important; margin: 0 !important;
 }
 .st-key-ongoing_foot > div:last-child { margin-left: auto !important; }
 .st-key-ongoing_foot [data-testid="stMarkdownContainer"], .st-key-events_foot [data-testid="stMarkdownContainer"] { margin: 0 !important; }
 .st-key-ongoing_foot p, .st-key-events_foot p { font-size: 0.82rem !important; color: #6B6B66; margin: 0 !important; line-height: 1.4 !important; }
-.st-key-ongoing_foot div[data-testid="stPageLink"] a { padding: 0 !important; min-height: 0 !important; background: transparent !important; }
-.st-key-ongoing_foot div[data-testid="stPageLink"] a p { color: var(--ink) !important; font-weight: 600 !important; }
-.st-key-ongoing_foot div[data-testid="stPageLink"] a:hover p { text-decoration: underline; }
+/* 「보관함 전체 보기」. 예전에는 page_link 였는데 보관함이 주소로 열려
+   그것으로는 보낼 수 없다. 버튼으로 두고 겉모양만 링크와 같게 맞춘다 (10/22). */
+.st-key-ongoing_foot .stButton button { padding: 0 !important; min-height: 0 !important;
+    height: auto !important; background: transparent !important; border: none !important;
+    box-shadow: none !important; }
+.st-key-ongoing_foot .stButton button p { color: var(--ink) !important; font-weight: 600 !important; }
+.st-key-ongoing_foot .stButton button:hover p { text-decoration: underline; }
 
 /* 협업 단계 막대 */
 .stage-bar { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 4px; margin-bottom: 0.5rem; }
@@ -433,11 +438,16 @@ with col_a:
                          f'<div class="item-meta">{meta}</div></div>'
                          f'<span class="status s{c["stage"]}">{STAGES[c["stage"]]}</span></div>')
         st.markdown(head + f'<div>{body}</div>', unsafe_allow_html=True)
-        # 바닥 줄 — 링크는 page_link 여야 로그인 세션이 이어진다 (<a href> 는 새로 고침).
-        # 보관함은 협력사별이라 기획안 생성 화면 오른쪽 위 「보관함」에서 연다.
+        # 바닥 줄 — 화면 이동은 page_link·switch_page 로 한다. <a href> 로 두면
+        # 새로 고침이라 로그인 세션이 끊긴다.
+        #
+        # 보관함은 주소의 ?archive=1 로 열리는데 그 둘로는 주소에 값을 붙여
+        # 보낼 수 없다. 그래서 버튼을 두고 open_archive() 가 세션으로 넘긴다.
+        # 어느 협력사의 보관함인지는 세션에 든 값, 없으면 목록 첫 협력사다.
         with st.container(key="ongoing_foot"):
             st.markdown(f"협업 중인 매장 {len(collabs or [])}곳")
-            st.page_link("pages/2_기획안_생성.py", label="보관함 전체 보기 →")
+            if st.button("보관함 전체 보기 →", key="home_archive_btn"):
+                open_archive()
 
 # 다가오는 근처 행사
 with col_b:
