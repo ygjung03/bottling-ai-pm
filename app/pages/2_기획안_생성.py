@@ -40,8 +40,8 @@ import streamlit as st
 from app.auth import require_owner
 from app.proposal import (build_proposal_docx, build_proposal_pdf, end_dot,
                           missing_fields, pdf_pages, proposal_no, ro)
-from app.theme import (ARCHIVE_PARAM, SS_ARCHIVE_COUNT, SS_PARTNER_ID,
-                       apply_chrome)
+from app.theme import (ARCHIVE_PARAM, SS_ARCHIVE_COUNT, SS_OPEN_ARCHIVE,
+                       SS_PARTNER_ID, apply_chrome)
 from app.ui import page_header
 from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           MENU_AUTO_BASIS, MENU_EDITED, MENU_FORM, MENU_MANUAL,
@@ -1373,6 +1373,14 @@ def render_result(result: dict, meta: dict) -> None:
 
 ARCHIVE_CSS = """
 <style>
+  /* 협력사 고르는 칸 — 표 위에 작게. 전체 폭으로 늘리면 표보다 눈에 띈다.
+     생성 화면의 같은 칸(param_fields)과 같은 모양으로 맞춘다 */
+  .st-key-arch_partner { max-width:360px; margin-top:6px; }
+  .st-key-arch_partner label p { font-weight:700; color:#161A1F;
+    font-size:0.95rem; margin-bottom:2px; }
+  .st-key-arch_partner [data-baseweb="select"] > div {
+    background:#FFFFFF; border:1px solid #E0E3E8; border-radius:10px; }
+
   /* 안내 띠 — 시안의 연한 파란 박스 */
   .arch-note { display:flex; align-items:center; justify-content:space-between;
     gap:16px; background:#EFF6FF; border:1px solid #DBEAFE; border-radius:12px;
@@ -2593,19 +2601,36 @@ def _result_form(partner: dict, row: dict) -> None:
         st.rerun()
 
 
-def render_archive(partner: dict, options: list[dict]) -> None:
+def render_archive(partner: dict, options: list[dict],
+                   labels: dict[int, str]) -> None:
     """
     보관함 — 담아 둔 안을 보고 그중 하나를 「보낸 안」으로 확정한다.
 
-    협력사를 고르는 칸을 두지 않는다. 기획안 생성 화면에서 고른 그 협력사의
-    것만 보여주고, 바꾸려면 상단 내비로 돌아간다. 화면이 하나 더 늘면 「지금
-    어느 협력사를 보고 있나」를 두 곳에서 관리하게 된다.
+    협력사를 고르는 칸을 여기에도 둔다 (10/22). 홈에서 바로 들어오는 길이
+    생겨서, 고를 자리가 없으면 세션이 들고 있던 협력사 하나만 보인다.
+    기획안 생성 화면의 「협업 제안 대상」과 같은 목록이다.
+
+    **고른 값은 SS_PARTNER_ID 한 곳에 둔다.** 생성 화면 셀렉트박스도 그 값을
+    기본값으로 읽으므로, 여기서 바꾸고 돌아가면 그 협력사가 잡혀 있다. 칸이
+    둘이어도 「지금 어느 협력사를 보고 있나」를 아는 곳은 하나다.
+
+    위젯 key 는 따로 둔다("archive_pick"). 생성 화면과 한 key 를 나눠 쓰면
+    안 그려진 쪽 실행에서 값이 지워진다 (app/theme.SS_PARTNER_ID 설명).
 
     담는 것은 여럿이고 보내는 것은 하나다 (쟁점 1-1-2). 그래서 체크는 하나만
     된다 — 두 번째를 고르면 되돌리고 창을 띄운다.
     """
     st.markdown(ARCHIVE_CSS, unsafe_allow_html=True)
     page_header("보관함", "담아 둔 기획안을 저장한 순서대로 보여줍니다.")
+
+    # 담은 안이 없을 때도 먼저 그린다. 아래에 두면 빈 보관함에 들어간 순간
+    # 협력사를 바꿀 수 없다.
+    ids = list(labels)
+    with st.container(key="arch_partner"):
+        st.session_state[SS_PARTNER_ID] = st.selectbox(
+            "협업 제안 대상", ids,
+            index=ids.index(partner["id"]) if partner["id"] in ids else 0,
+            format_func=labels.get, key="archive_pick")
 
     if not options:
         st.info("아직 담은 안이 없습니다.")
@@ -2830,6 +2855,7 @@ if _want and not any(p["id"] == _want for p in partners):
     if not any(p["id"] == _want for p in partners):
         st.session_state.pop(SS_PARTNER_ID, None)
         st.session_state.pop("partner_pick", None)
+        st.session_state.pop("archive_pick", None)
 
 # 상단 바를 여기서 그린다. 보관함 개수를 그 전에 세야 이번 실행에 반영된다 —
 # 상단 바가 본문보다 먼저 그려지므로, 본문에서 세면 한 박자 늦게 바뀐다.
@@ -2837,8 +2863,18 @@ if _want and not any(p["id"] == _want for p in partners):
 # 셀렉트박스 값("partner_pick")을 먼저 본다. 위젯 값은 다시 그리기가 시작될 때
 # 이미 새 값으로 바뀌어 있어, 협력사를 바꾸는 그 실행에서 맞는 개수가 나온다.
 # 보관함 화면에서는 그 위젯이 안 그려져 값이 지워지므로 SS_PARTNER_ID 로 받는다.
+
+# 홈의 「보관함 전체 보기」로 들어왔으면 주소에 표시를 옮긴다. 보관함 여닫이는
+# 주소가 정하므로 세션 신호만 들고 있으면 다음 실행에서 닫힌다.
+if st.session_state.pop(SS_OPEN_ARCHIVE, False):
+    st.query_params[ARCHIVE_PARAM] = "1"
+
 _in_archive = st.query_params.get(ARCHIVE_PARAM) == "1"
-_pid = (st.session_state.get("partner_pick")
+# 보관함에도 협력사 고르는 칸이 있다("archive_pick"). 보관함을 보는 동안은
+# 그 값이 먼저다 — 생성 화면 셀렉트박스와 같은 이유로, 바꾸는 그 실행에서
+# 상단 바 개수까지 맞는다.
+_pid = ((st.session_state.get("archive_pick") if _in_archive else None)
+        or st.session_state.get("partner_pick")
         or st.session_state.get(SS_PARTNER_ID)
         or (partners[0]["id"] if partners else None))
 st.session_state[SS_ARCHIVE_COUNT] = (
@@ -2858,9 +2894,9 @@ labels = {p["id"]: f"{p['name']} ({p['category']})" for p in partners}
 
 # 상단 「보관함」을 누르면 이 화면 대신 보관함이 뜬다.
 #
-# 협력사는 아래 셀렉트박스에서 고른 것을 그대로 쓴다(key="partner_pick").
-# 보관함에 협력사 고르는 칸을 또 두면 「지금 어느 협력사를 보고 있나」를
-# 두 곳에서 관리하게 된다.
+# 처음 열 때 잡히는 협력사는 아래 셀렉트박스에서 고른 것이다(key="partner_pick").
+# 보관함 안에서 바꿀 수도 있고(key="archive_pick"), 바꾼 값은 둘 다 SS_PARTNER_ID
+# 한 곳으로 모인다 — 아래 셀렉트박스가 그 값을 기본값으로 읽는다.
 if _in_archive:
     partner = next((p for p in partners if p["id"] == _pid), partners[0])
     options = sent_options(load_archive(partner["id"]))
@@ -2888,7 +2924,7 @@ if _in_archive:
         _confirm_swap(_old, _swap, partner["id"])
     elif _row:
         _result_form(partner, _row)
-    render_archive(partner, options)
+    render_archive(partner, options, labels)
     st.stop()
 
 # 입력부는 시안(docs/ref/피그마_예시2.pdf)의 흰 카드 모양이다. 문구는 시안
