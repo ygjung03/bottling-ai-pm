@@ -1,5 +1,14 @@
--- 바틀링 AI PM — DB 스키마 (테이블 7개)
+-- 바틀링 AI PM — 최초 DB 스키마 (테이블 8개)
 -- Supabase SQL Editor에서 전체 실행
+--
+-- **이 파일만 돌려서는 지금 상태가 되지 않는다.** 9/8 이후에 늘어난 칸은
+-- migrate_*.sql 에 들어 있고 그쪽이 정본이다. 여기 적힌 plans 의
+-- executed_at 은 10/9 에 executed_from·executed_to 로 갈렸고, 보관함이
+-- 쓰는 sent_option·final_option·form2_at 과 partners 의 agreed_approach 는
+-- 여기 없다.
+--
+-- 손으로 맞추지 않는다. 두 곳을 같이 고치면 한쪽만 고쳐져 또 어긋난다.
+-- 세우는 순서는 db/README.md 를 볼 것.
 
 -- ============================================================
 -- 〔협업 주체〕 사람이 입력·관리
