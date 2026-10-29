@@ -112,7 +112,7 @@ def check(text: str, item: dict, meta: dict, target: date) -> list[str]:
     if not field(text, "협업 메뉴"):
         issues.append("협업 메뉴 없음")
     deal = item.get("매입") or {}
-    if not deal.get("바틀링_제안_매입가"):
+    if not deal.get("바틀링_제안_개당매입가"):
         issues.append("제안 매입가 없음")
 
     return issues

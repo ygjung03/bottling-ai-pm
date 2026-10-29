@@ -228,7 +228,7 @@ def check_final(out: dict, p2: dict) -> Checked:
 
         # 매입가는 AI 가 정할 값이 아니다. 항상 협의 대상이다 (명세서 1-4 ④)
         deal = r.get("매입") or {}
-        for k in ("바틀링_제안_매입가", "근거"):
+        for k in ("바틀링_제안_개당매입가", "근거"):
             if not deal.get(k):
                 issues.append(f"{rid}: 매입에 '{k}' 없음")
         if deal and deal.get("협의_필요") is not True:
@@ -237,7 +237,7 @@ def check_final(out: dict, p2: dict) -> Checked:
 
         # 매입가는 100원 단위로 끊는다. 협의 자리에서 주고받는 값이라 1원 단위는
         # 뜻이 없고, 문서에 그대로 나간다 (9/26).
-        buy = _won(deal.get("바틀링_제안_매입가"))
+        buy = _won(deal.get("바틀링_제안_개당매입가"))
         if buy and buy % 100:
             issues.append(f"{rid}: 제안 매입가 {buy:,}원 — 100원 단위로 끊을 것 "
                           f"(예: {buy // 100 * 100:,}원)")

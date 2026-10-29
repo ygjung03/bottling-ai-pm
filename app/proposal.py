@@ -293,15 +293,24 @@ def _sections(item: dict, meta: dict) -> list[dict]:
         ]})
 
         terms: list = []
-        if deal.get("바틀링_제안_매입가"):
-            amount = won(deal["바틀링_제안_매입가"])
-            shown = f"{amount:,}원" if amount else str(deal["바틀링_제안_매입가"])
+        # 옛 이름도 받는다. 10/29 에 칸을 낱개 단가로 바꾸면서 이름이 바뀌었는데
+        # (「바틀링_제안_매입가」는 안별 합계였다), 그 전에 만들어 둔 기획안이
+        # 보관함에 남아 있다. 새 이름이 없을 때만 옛 이름을 본다.
+        buy = deal.get("바틀링_제안_개당매입가")
+        # 옛 안은 「개당」을 붙이면 안 된다. 그때 값은 안이 쓰는 수량까지
+        # 곱한 합계였다. 이름을 그대로 두는 것이 그 구분이다.
+        per_unit = buy is not None
+        buy = buy if per_unit else deal.get("바틀링_제안_매입가")
+        if buy:
+            amount = won(buy)
+            shown = f"{amount:,}원" if amount else str(buy)
+            head = "개당 매입가" if per_unit else "매입가"
             # 협의가 끝난 값은 제안이 아니다. 협력사가 폼에 적은 값을 그대로
             # 쓴 것이므로 이름도 「매입가」로 적는다 (9/30).
             if deal.get("협의_필요"):
-                terms.append(("제안 매입가", f"{shown}  ※ 협의 필요"))
+                terms.append((f"제안 {head}", f"{shown}  ※ 협의 필요"))
             else:
-                terms.append(("매입가", f"{shown}  (협의로 정한 값)"))
+                terms.append((head, f"{shown}  (협의로 정한 값)"))
         if deal.get("협력사_수익"):
             terms.append(("협력사 수익", deal["협력사_수익"]))
         terms += [("보관 조건", item.get("보관_조건") or "협의 필요"),

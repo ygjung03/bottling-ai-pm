@@ -160,7 +160,7 @@ def run(label: str, target: date, save: bool = False) -> None:
         deal = r.get("매입") or {}
         roles = r.get("역할분담") or {}
         gains = r.get("상호_이익") or {}
-        print(f"        매입   {deal.get('바틀링_제안_매입가')} "
+        print(f"        매입   {deal.get('바틀링_제안_개당매입가')} "
               f"(협의 필요 {deal.get('협의_필요')})")
         print(f"        역할   바틀링 {roles.get('바틀링')}")
         print(f"               협력사 {roles.get('협력사')}")
@@ -237,7 +237,7 @@ def rerun_p4(plan_id: int, times: int = 2) -> None:
         for r in out.get("안") or []:
             print(f"  {r.get('안_id')} [{r.get('접근')}] {r.get('메뉴명')} "
                   f"— {r.get('판매가_제안')}원")
-            print(f"     매입   {(r.get('매입') or {}).get('바틀링_제안_매입가')}")
+            print(f"     매입   {(r.get('매입') or {}).get('바틀링_제안_개당매입가')}")
             print(f"     값근거 {r.get('판매가_설명')}")
             print(f"     배경   {r.get('배경')}")
 
