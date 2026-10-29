@@ -554,6 +554,20 @@ def check_menu(out: dict, beers: dict, p1: dict | None = None,
                 issues.append(f"{mid}: 세트 메뉴명 '{name}' 에 페어링 맥주의 종류 "
                               f"'{style}' 이 없다 — [안주] [맥주 종류] 세트 형식")
 
+        # 구성에 적은 맥주도 페어링과 같아야 한다. 한 안 안에서 맥주가
+        # 엇갈린 적이 있다 — 메뉴명은 "고르곤졸라 켈러비어 세트", 페어링은
+        # 카이저돔 켈러비어인데 구성에는 "바틀링 라거 500ml" 이 적혔다
+        # (10/30). 메뉴명과 페어링만 보던 위 두 검사는 그걸 지나친다.
+        #
+        # 여기서는 구성에 나온 상품명을 본다. 종류 이름(라거·IPA)은 여러 맥주가
+        # 나눠 쓰는 말이라 어긋났다고 단정할 수 없다.
+        parts = str(m.get("구성") or "")
+        wrong = [b for b in beers
+                 if b != pair and b in parts and b != beers[b].get("style")]
+        if pair and wrong:
+            issues.append(f"{mid}: 구성에 '{wrong[0]}' 이 적혔는데 페어링 맥주는 "
+                          f"'{pair}' 다 — 한 안에 맥주는 하나다")
+
         # 협력사 제품명이 길면 정당하게 넘을 수 있어 알리기만 한다
         if len(name) > 20:
             warns.append(f"{mid}: 메뉴명 {len(name)}자 — 20자 넘음 '{name}'")
