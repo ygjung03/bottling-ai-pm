@@ -26,6 +26,7 @@ tests/fixtures/testset.json 에 있다 (협력사 4종 × 1차/2차 = 8건).
 import argparse
 import hashlib
 import json
+import re
 import sys
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -37,6 +38,7 @@ from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           build_events, build_partner_blockers,
                           build_partner_resources, build_partner_sns)
 from chain import gemini
+from chain.loader import load as load_prompt, render
 from chain.runner import run
 from context.builder import build as build_context
 
@@ -201,7 +203,13 @@ def run_cases(ids: list[str] | None) -> None:
             margin_ref=MARGIN_REF,
             weather_pref=WEATHER_PREF,
             trend_menu=NO_TREND_MENU,
-            constraints=snap["constraints"],
+            # 제약은 스냅샷에서 읽지 않고 그때그때 만든다. 스냅샷이 얼리는
+            # 것은 **데이터**(상권·행사·맥주)다 — 그것이 흔들리면 프롬프트를
+            # 고친 효과를 가릴 수 있어서다. 제약은 데이터가 아니라 프롬프트의
+            # 일부라, 얼려 두면 고쳐도 고정 테스트에 안 먹는다. 실제로
+            # constraints.yaml 의 말투 규칙을 고쳤는데 9/26 스냅샷에 박힌
+            # 옛 문장이 돌았다 (10/30).
+            constraints=build_constraints(),
             fewshot=NO_FEWSHOT,
             bottling_sns=BOTTLING_SNS,
             partner_sns=build_partner_sns(partner),
@@ -321,6 +329,166 @@ def report(path: Path | None) -> None:
 
 
 # ══════════════════════════════════════════
+# 채점 (T14)
+# ══════════════════════════════════════════
+#
+# 기준은 prompts/grader.yaml 이 정본이다. 9/21 에는 손으로 했는데 8건 ×
+# 5항목 = 40회라 30분이 걸렸고, 그 뒤로 한 번도 안 돌았다.
+#
+# **버전끼리 견주는 값이다.** 기획안을 만든 모델과 채점하는 모델이 같아서
+# 후하게 볼 수 있다는 한계가 존재한다. 따라서 절대 점수로는 쓰지 않고, 프롬프트를 고치기 전후의 품질을
+# 비교해 보는 용도로 쓴다. 
+#
+# 무료 키로 부른다. 넘기는 것이 우리가 만든 기획안과 공공 상권 데이터뿐이라
+# 유료 키를 쓸 자리가 아니다. gemini.call 은 사용량을 DB 에 적지 않는다 —
+# 그건 chain.runner.run 이 한다.
+
+ITEMS = ("실행_가능성", "자원_정합성", "상권_근거", "페어링_적절성", "홍보_실효성")
+
+
+def pick_plan(out: dict) -> dict | None:
+    """
+    채점할 안 하나. 세트를 먼저 고른다.
+
+    케이스마다 안이 셋이라 다 채점하면 27안이 된다. 기준 문서가 「케이스마다
+    하나를 고르되 버전 안에서는 같은 접근으로 맞춘다」고 정해 뒀다. 버전끼리
+    견주려면 같은 자리를 봐야 한다.
+    """
+    plans = (out.get("final") or {}).get("안") or []
+    return next((a for a in plans if a.get("접근") == "세트"),
+                plans[0] if plans else None)
+
+
+def grade_one(case: dict, plan: dict, snap: dict, tdate: str) -> dict:
+    """안 하나를 채점한다. 무료 키 한 번."""
+    partner = case["partner"]
+    day = snap["by_date"][tdate]
+    prompt = render(
+        load_prompt("grader")["prompt"],
+        회차=f"{case['round']}차",
+        상권_분석=day["contexts"][partner["category"]],
+        # 행사는 상권 분석이 아니라 따로 온다. 안 넘기면 행사를 쓴 기획안이
+        # 「없는 것을 지어냈다」로 깎인다 (10/30).
+        근처_행사=day["events"] or "(없음)",
+        맥주_목록=snap["beer_list"],
+        협력사_정보=build_partner_resources(partner),
+        안=json.dumps(plan, ensure_ascii=False, indent=2))
+    # 채점은 글을 짓는 일이 아니라 보는 일이다. 같은 안에 점수가 흔들리면
+    # 버전 비교가 뜻을 잃으므로 0 으로 고정한다.
+    out, _ms = gemini.call(prompt, temperature=0, paid=False)
+    got = (out or {}).get("채점") or out or {}
+    rows = {}
+    for k in ITEMS:
+        v = got.get(k)
+        v = v if isinstance(v, dict) else {"점수": v}
+        n = v.get("점수")
+        rows[k] = {"점수": int(n) if isinstance(n, (int, float)) else None,
+                   "메모": str(v.get("메모") or "")}
+    return rows
+
+
+# 추천_근거에 적지 않기로 한 것 (p4 지시 8). 관측 건수와 시간이다.
+#
+# **이건 코드가 본다.** 패턴이라 사람이 판단할 것이 없고, LLM 에 맡겼더니
+# 같은 출력에 1점과 5점이 번갈아 나왔다 (10/30). 흔들리면 버전끼리 견준다는
+# 이 도구의 쓸모가 사라진다. 저장소가 이미 그렇게 갈라 놨다 — 기계로 잡을
+# 것은 checks.py 가, 판단할 것은 프롬프트가 한다.
+COUNT_RE = re.compile(r"\d+\s*건")
+COUNT_KO_RE = re.compile(r"(한|두|세|네|다섯|여섯|일곱|여덟|아홉|열|열한|열두)\s*번")
+TIME_RE = re.compile(r"\d{1,2}\s*[-~–]\s*\d{1,2}\s*시|\d{1,2}:\d{2}|\d{1,2}\s*시(?!간)")
+
+
+def rule_breaks(plan: dict) -> list[str]:
+    """추천_근거의 상권_지표에 적지 말아야 할 것이 섞였나."""
+    text = (plan.get("추천_근거") or {}).get("상권_지표") or ""
+    out = []
+    m = COUNT_RE.search(text) or COUNT_KO_RE.search(text)
+    if m:
+        out.append(f"관측 건수 「{m.group(0)}」")
+    m = TIME_RE.search(text)
+    if m:
+        out.append(f"시간 「{m.group(0)}」")
+    return out
+
+
+def verdict(rows: dict) -> tuple[float | None, bool]:
+    """평균과 통과 여부. 평균 3.5 이상 **그리고** 1점 항목이 없을 것."""
+    got = [r["점수"] for r in rows.values() if r["점수"] is not None]
+    if len(got) != len(ITEMS):
+        return (None, False)
+    avg = sum(got) / len(got)
+    return (round(avg, 2), avg >= 3.5 and 1 not in got)
+
+
+def grade(path: Path | None) -> None:
+    path = path or latest_results()
+    if not path or not path.exists():
+        print("결과 파일이 없다. 먼저 --run 을 돌릴 것.")
+        raise SystemExit(1)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    snap, ts = load_snapshot(), load_testset()
+    cases = {c["id"]: c for c in ts["cases"]}
+
+    print(f"{path.name} · {len(data['runs'])}건 · 무료 키로 채점한다\n")
+    print(f"{'케이스':7}{'접근':5}" + "".join(f"{k[:2]:>5}" for k in ITEMS)
+          + f"{'평균':>7}  판정")
+
+    graded = []
+    for r in data["runs"]:
+        case, plan = cases.get(r["case_id"]), pick_plan(r["output"])
+        if not case or not plan:
+            print(f"{r['case_id']:7}채점할 안이 없다 — 건너뛴다")
+            continue
+        rows = grade_one(case, plan, snap, case_date(case, ts))
+        # 코드가 잡은 것으로 상권_근거를 1점 깎는다. 채점이 매긴 점수가
+        # 낮았으면 1점까지 내려갈 수 있다.
+        breaks = rule_breaks(plan)
+        n = rows["상권_근거"]["점수"]
+        if breaks and n is not None:
+            rows["상권_근거"]["점수"] = max(1, n - 1)
+            rows["상권_근거"]["메모"] = (
+                f"[코드] {' · '.join(breaks)} 가 들어가 1점 깎았다. "
+                + rows["상권_근거"]["메모"])
+        avg, ok = verdict(rows)
+        graded.append({"case_id": r["case_id"], "round": r["round"],
+                       "안_id": plan.get("안_id"), "접근": plan.get("접근"),
+                       "규칙어김": breaks, "점수": rows,
+                       "평균": avg, "통과": ok})
+        cells = "".join(f"{str(rows[k]['점수'] or '-'):>5}" for k in ITEMS)
+        print(f"{r['case_id']:7}{str(plan.get('접근') or '-'):5}{cells}"
+              f"{str(avg or '-'):>7}  {'통과' if ok else '불합격'}")
+
+    out = ROOT / "tests" / f"grades_{data['prompt_version']}.json"
+    out.write_text(json.dumps(
+        {"대상": path.name, "prompt_version": data["prompt_version"],
+         "채점일": datetime.now(KST).isoformat(timespec="seconds"),
+         "채점": graded}, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"\n저장 → {out.relative_to(ROOT)}")
+
+    done = [g for g in graded if g["평균"] is not None]
+    if done:
+        print(f"전체 평균 {sum(g['평균'] for g in done) / len(done):.2f} · "
+              f"통과 {sum(1 for g in done if g['통과'])}/{len(done)}")
+        for k in ITEMS:
+            got = [g["점수"][k]["점수"] for g in done
+                   if g["점수"][k]["점수"] is not None]
+            if got:
+                print(f"  {k:<14} {sum(got) / len(got):.2f}")
+
+    # 메모가 왜 그 점수인지 적힌 자리다. 점수만 보면 무엇을 고칠지 모른다.
+    print("\n깎인 자리 (3점 이하)")
+    hit = False
+    for g in graded:
+        for k in ITEMS:
+            n = g["점수"][k]["점수"]
+            if n is not None and n <= 3:
+                hit = True
+                print(f"  {g['case_id']:5}{k:<14}{n}  {g['점수'][k]['메모']}")
+    if not hit:
+        print("  없다")
+
+
+# ══════════════════════════════════════════
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -328,12 +496,15 @@ def main() -> None:
     g.add_argument("--snapshot", action="store_true")
     g.add_argument("--run", nargs="*", metavar="CASE")
     g.add_argument("--report", nargs="?", const="", metavar="FILE")
+    g.add_argument("--grade", nargs="?", const="", metavar="FILE")
     a = ap.parse_args()
 
     if a.snapshot:
         make_snapshot()
     elif a.run is not None:
         run_cases(a.run or None)
+    elif a.grade is not None:
+        grade(Path(a.grade) if a.grade else None)
     else:
         report(Path(a.report) if a.report else None)
 
