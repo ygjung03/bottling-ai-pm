@@ -285,16 +285,37 @@ def fetch_body(blog_id: str, log_no: str) -> str | None:
     return _strip_html(r.text)[:BODY_LIMIT]
 
 
-def extract_menus(body: str, shop: str, title: str = "") -> list[dict]:
+TRAIT_KINDS = ("분위기", "손님층", "포장", "위치", "붐비는때")
+
+
+def read_post(body: str, shop: str, title: str = "",
+              address: str | None = None) -> dict:
     """
-    글 하나에서 메뉴와 가격을 뽑는다. [{"메뉴": "...", "가격": 숫자 또는 None}]
+    글 하나에서 넷을 받는다. 한 번 부르고 네 가지를 함께 받는다.
+
+      메뉴        지금까지 하던 것. 메뉴와 가격
+      이_가게     이 글이 정말 그 가게 얘기인가
+      술_어울림   맥주와 어울린다고 적힌 말
+      가게_특성   그 가게만의 사실 (분위기·손님층·포장·위치·붐비는때)
+
+    **호출을 늘리지 않는다.** 글 하나에 한 번이다. 따로 부르면 글 수만큼
+    호출이 두 배가 되는데, 합쳐도 되는지는 10/9 에 재 봤다
+    (docs/private/기획안_문체_점검_1009.md 7장).
+
+    [이_가게 를 묻는 이유]
+    검색으로 고른 글이라도 다른 가게 얘기가 섞인다. 실제로 해당 문제가 발생한 적이 있다.
+    메뉴는 여러 글에 겹쳐 나온 것만 쓰므로 한 글이 섞여도 걸러지지만,
+    특성과 어울림은 한 글에서 바로 오기 때문에 그 장치가 없다. 그래서
+    false 면 그 글에서 받은 특성과 어울림을 버린다.
 
     가격은 **그 글에 적혀 있을 때만** 채운다. 없으면 None 이고, 뒤에서 거르는
     기준이 된다. 짐작해서 채우면 두 단계 거르기가 뜻을 잃는다.
     """
     out, _ms = call(
-        "너는 블로그 후기에서 가게의 메뉴와 가격을 뽑는 일을 한다.\n"
-        f"가게 이름: {shop}\n\n"
+        "너는 블로그 후기에서 가게에 대한 사실을 뽑는 일을 한다.\n"
+        f"가게 이름: {shop}\n"
+        + (f"가게 주소: {address}\n" if address else "")
+        + "\n"
         "규칙\n"
         "1. 이 가게에서 파는 메뉴만 뽑는다. 다른 가게 얘기나 글쓴이가 집에서\n"
         "   만든 것은 넣지 않는다.\n"
@@ -319,9 +340,40 @@ def extract_menus(body: str, shop: str, title: str = "") -> list[dict]:
         '     (O) "피자 2판 + 사이드 1개 + 음료 2잔"\n'
         '     (O) "바질 페스토와 마스카포네 치즈를 올린 피자"\n'
         '     (X) "겉은 바삭하고 속은 촉촉해서 인기가 많다"\n'
-        "6. 메뉴가 하나도 없으면 빈 배열을 낸다.\n\n"
+        "6. 메뉴가 하나도 없으면 빈 배열을 낸다.\n"
+        "7. 이 글이 정말 위에 적은 그 가게를 다녀온 글인지 판정한다.\n"
+        "   다른 가게 얘기가 주인 글이거나, 가게 이름만 스치듯 나오고\n"
+        "   실제로는 다른 곳을 다녀온 글이면 false 다.\n"
+        "   주소가 함께 주어졌으면 글에 나온 위치와 맞는지도 본다.\n"
+        "8. 맥주나 술과 함께 먹으면 좋다고 적힌 말이 있으면 뽑는다.\n"
+        "   **글에 적힌 말만** 쓴다. 어울릴 것 같다고 지어내지 마라.\n"
+        '     (O) "매콤해서 맥주랑 먹으니 계속 들어간다"\n'
+        '     (X) "튀김이라 맥주와 잘 어울릴 것이다"\n'
+        "   없으면 빈 배열을 낸다. 없는 것 역시 정상이다.\n"
+        "9. 그 가게만의 특성을 뽑는다. 아래 다섯 갈래 중 하나로 적는다.\n"
+        "     분위기    가게가 어떤 느낌인지\n"
+        "     손님층    주로 누가 오는지\n"
+        "     포장      포장이 되는지, 포장하면 어떤지\n"
+        "     위치      찾아가는 길, 주변에 무엇이 있는지\n"
+        "     붐비는때  언제 사람이 많고 언제 한산한지\n"
+        "   **같은 업종 다른 가게에 넣어도 말이 되는 문장은 빼라.**\n"
+        '     (O) "지하철역에서 나와 바로 보여서 퇴근길에 들르기 좋다"\n'
+        '     (X) "음식이 맛있고 친절하다"\n'
+        "   글에 적힌 것만 쓰고, 다섯 갈래에 안 맞으면 넣지 마라.\n"
+        "   **갈래마다 한 줄씩만 낸다.** 한 갈래로 쓸 말이 여럿이면 그중\n"
+        "   가장 그 가게다운 것 하나를 골라라.\n"
+        "   **사실만 한 문장으로 간추려라.** 후기 말투를 그대로 옮기지 말고,\n"
+        "   그 사실이 담긴 부분만 짧게 적는다. 글에 없는 말을 더하지는 마라.\n"
+        '     (글) "힙하고 젊은 감성으로 꾸며진 매장! 라쿤 인형부터 미니어쳐까지\n'
+        '           아기자기한 소품구경하는 재미가 있어요 거기에 올드팝 흘러나와"\n'
+        '     (O)  "라쿤 인형과 미니어쳐로 꾸몄고 올드팝이 흐르는 힙한 분위기다"\n'
+        "   없으면 빈 배열을 낸다.\n\n"
         '출력 — {"메뉴": [{"이름": "...", "가격": 숫자 또는 null,\n'
-        '                  "설명": "..." 또는 null}]}\n\n'
+        '                  "설명": "..." 또는 null}],\n'
+        '         "이_가게": true 또는 false,\n'
+        '         "술_어울림": [{"메뉴": "...", "문장": "..."}],\n'
+        '         "가게_특성": [{"갈래": "분위기|손님층|포장|위치|붐비는때",\n'
+        '                       "문장": "..."}]}\n\n'
         # 제목에만 메뉴 이름이 있는 글이 있다. 본문만 넘기면 그런 메뉴를
         # 놓친다 (10/6).
         f"[후기 제목]\n{title}\n\n[후기 본문]\n{body}",
@@ -367,7 +419,41 @@ def extract_menus(body: str, shop: str, title: str = "") -> list[dict]:
         rows.append({"메뉴": name,
                      "가격": int(price) if price else None,
                      "설명": note or None})
-    return rows
+
+    # 목록만 온 경우에는 메뉴 말고 받을 것이 없다.
+    got = out if isinstance(out, dict) else {}
+
+    # 판정이 안 왔으면 이 가게 글이 아닌 것으로 본다. 모르는 것을 「맞다」로
+    # 두면 안된다 — 특성 몇 개를
+    # 놓치는 것보다 다른 가게 얘기가 제안서 배경에 들어가는 쪽이 훨씬 나쁘다.
+    # 메뉴는 버리지 않는다. 그쪽은 여러 글에 겹쳐 나온 것만 쓰므로 잘못된 것이
+    # 섞여도 걸러진다.
+    mine = bool(got.get("이_가게"))
+
+    pairs, traits = [], []
+    for x in got.get("술_어울림") or []:
+        if not isinstance(x, dict):
+            continue
+        menu = str(x.get("메뉴") or "").strip()
+        line = str(x.get("문장") or "").strip()
+        # 어느 메뉴 얘기인지 없으면 버린다. 이 값은 (2)가 「이 메뉴에 이
+        # 맥주가 어울린다」는 근거로 쓸 것이라, 메뉴를 모르면 쓸 자리가 없다.
+        if menu and line:
+            pairs.append({"메뉴": menu, "문장": line, "출처": title})
+    for x in got.get("가게_특성") or []:
+        if not isinstance(x, dict):
+            continue
+        kind = str(x.get("갈래") or "").strip()
+        line = str(x.get("문장") or "").strip()
+        # 다섯 갈래에 없는 말로 오면 버린다. 갈래가 흩어지면 몇 건에서
+        # 나왔는지를 셀 수 없고, 그 건수가 (4)에게 얼마나 믿을지 알려 주는
+        # 값이다.
+        if kind in TRAIT_KINDS and line:
+            traits.append({"갈래": kind, "문장": line, "출처": title})
+
+    return {"메뉴": rows, "이_가게": mine,
+            "술_어울림": pairs if mine else [],
+            "가게_특성": traits if mine else []}
 
 
 # 크기·용량 표시. 「(R)」·「(L)」·「(대)」·「500ml」 같은 것.
@@ -458,6 +544,137 @@ def _tidy(found: list[tuple[dict, list[dict]]]) -> list[dict]:
     return sorted(out, key=lambda r: r["메뉴"])
 
 
+TRAIT_QUESTION = {
+    "분위기": "가게가 어떤 느낌인가",
+    "손님층": "주로 누가 오는가",
+    "포장": "포장·배달이 되는가, 포장해서 어디로 가져가는가",
+    "위치": "어디에 있고 어떻게 가는가",
+    "붐비는때": "언제 사람이 많은가",
+}
+
+
+def merge_traits(shop: str, rows: list[dict]) -> list[dict]:
+    """
+    글마다 따로 뽑은 특성을 한자리에 놓고 같은 의미의 말을 묶는다.
+    **갈래마다 한 번씩 부른다.**
+
+    [왜 추가로 llm을 부르나]
+    글 하나마다 따로 부르기 때문에, 글 7 을 읽는 호출은 글 1~6 에 무엇이
+    있었는지 모른다. 그래서 「여러 글에 겹쳐 나오는가」를 그 자리에서는 알
+    수 없다. 다 읽은 뒤 한 번 더 불러야 볼 수 있다.
+
+    실제로 한 피자가게에서 「자양역 1번 출구 도보 5분」·「자양역 4번 출구로 금방」·
+    「자양역 인근이라 접근성이 좋다」가 따로 올라와 세 줄을 차지했다 (10/30).
+    같은 말이고, 묶으면 한 줄에 「후기 3건」이 된다.
+
+    [고르지 않고 묶기만 한다]
+    몇 줄까지 남길지, 몇 건부터 믿을지는 정하지 않는다 — 그 기준을 세울
+    근거가 없다 (작업 원칙 ②). 묶어서 건수를 보이고 판단은 (4)가 한다.
+
+    [건수는 코드가 센다]
+    글마다 번호를 매겨 주고 어느 번호끼리 묶였는지를 받는다. 몇 건인지를
+    세어 달라고 하면 그 숫자가 틀릴 수 있는데, 그 건수가 (4)에게 얼마나
+    믿을지 알려 주는 값이라 틀리면 안 된다.
+
+    [왜 갈래마다 따로 부르나]
+    다섯 갈래를 한 번에 주고 묶으라고 했더니 거의 안 묶였다 (10/30). 묶으라고
+    예시로 적어 준 바로 그 세 문장이 따로 나왔다. 한 번에 백 줄 가까이 보면서
+    묶기·대표 문장 고르기·번호 모으기를 함께 시킨 탓으로 보인다. 갈래마다
+    나눠 부르면 한 번에 보는 것이 스무 줄 남짓이고 「이 중에 같은 답은?」
+    하나만 묻게 된다. 갈래가 섞여 오는 것도 함께 막힌다.
+    """
+    merged = []
+    for kind in TRAIT_KINDS:          # 적는 순서를 고정한다
+        # 번호는 갈래 안에서 1부터 매긴다. 전체 번호를 쓰면 1, 7, 23 처럼
+        # 띄엄띄엄해져 고르는 쪽이 헷갈린다.
+        mine = [r for r in rows if r["갈래"] == kind]
+        if not mine:
+            continue
+        merged += _merge_one(shop, kind, mine)
+    return merged
+
+
+def _merge_one(shop: str, kind: str, rows: list[dict]) -> list[dict]:
+    """갈래 하나를 묶는다. 호출 한 번."""
+    listed = "\n".join(f"{i}. {r['문장']}" for i, r in enumerate(rows, 1))
+    out, _ms = call(
+        "너는 한 가게에 대한 블로그 후기에서 뽑아 둔 문장들을 정리한다.\n"
+        f"가게 이름: {shop}\n\n"
+        f"아래는 후기 여러 건에서 「{kind}」에 대해 한 줄씩 뽑은 것이다.\n"
+        f"다시 말해 전부 **{TRAIT_QUESTION[kind]}**에 대한 답이다.\n"
+        "글이 달라도 같은 답을 한 경우가 많다. 같은 답끼리 묶어라.\n\n"
+        "규칙\n"
+        "1. **같은 답이면 하나로 묶는다. 세부가 달라도 묶는다.**\n"
+        "   출구 번호나 분 단위가 다른 것은 다른 답이 아니다.\n"
+        '     묶는다) "자양역 1번 출구에서 도보 5분"\n'
+        '             "자양역 4번 출구로 나오면 금방"\n'
+        '             "자양역 인근이라 접근성이 좋다"   → 자양역에서 가깝다\n'
+        '     안 묶는다) "자양역에서 도보 5분" 과 "뚝섬한강공원에서 도보 5분"\n'
+        "             → 어디서 가까운지가 다르다\n"
+        "2. 묶은 줄의 문장은 그중 가장 또렷한 것을 골라 쓴다. **글에 없는\n"
+        "   말을 더하지 마라.** 여러 줄을 합쳐 새 문장을 짓지도 마라.\n"
+        "3. 묶인 줄의 번호를 모두 적는다. 혼자인 줄도 그 번호 하나를 적는다.\n"
+        "4. **어느 가게에나 해당하는 말은 빼라.** 그 가게만의 사실이 아니다.\n"
+        '     (O) "뚝섬유원지 갈 때 포장해 가기 좋다"\n'
+        '     (X) "항상 손님이 많다" · "분위기가 좋다"\n'
+        f"5. 「{kind}」와 상관없는 줄이 섞여 있으면 빼라.\n"
+        "6. 남길 개수를 맞추려 하지 마라. 묶고 나서 남는 만큼만 낸다.\n\n"
+        '출력 — {"묶음": [{"문장": "...", "번호": [1, 4, 7]}]}\n\n'
+        f"[뽑아 둔 문장]\n{listed}",
+        temperature=0, paid=False)
+
+    got = (out or {}).get("묶음") if isinstance(out, dict) else out
+    merged = []
+    for g in got or []:
+        if not isinstance(g, dict):
+            continue
+        line = str(g.get("문장") or "").strip()
+        # 번호가 어긋나 오면 그 줄만 버린다 (작업 원칙 ⑤).
+        nums = [n for n in (g.get("번호") or [])
+                if isinstance(n, int) and 1 <= n <= len(rows)]
+        if line and nums:
+            merged.append({"갈래": kind, "문장": line,
+                           "근거": f"후기 {len(nums)}건",
+                           "출처": [rows[n - 1]["출처"] for n in nums][:3]})
+    return merged
+
+
+def _traits(shop: str, reads: list[dict]) -> dict:
+    """
+    글마다 받은 특성을 한자리에 모아 묶는다 (merge_traits). 그 결과를
+    partners.review_traits 에 그대로 넣는다.
+
+    **몇 건에서 나왔는지를 함께 적는다.** 여러 글이 같은 말을 하면 그 가게
+    얘기일 가능성이 높다. 몇 건부터 믿을지는 정하지 않는다 — 그 기준을 세울
+    근거가 없다 (작업 원칙 ②). 건수를 보이고 판단은 (4)가 한다.
+
+    갈래마다 문장은 세 개까지만 둔다. 다 실으면 (4) 입력이 길어지는데,
+    같은 갈래의 네 번째 문장이 더 보태 주는 것이 적다.
+
+    술 어울림은 묶지 않는다. 메뉴마다 다른 말이라 갈래가 없다.
+    """
+    kinds: dict[str, list[dict]] = {}
+    for got in reads:
+        for t in got.get("가게_특성") or []:
+            kinds.setdefault(t["갈래"], []).append(t)
+
+    # 자르지 않고 전부 넘긴다. 여기서 갈래당 몇 개로 줄이면 같은 말만 남고
+    # 다른 말이 버려질 수 있다 — 묶기 전에는 어느 것이 같은 말인지 모른다.
+    rows = [t for kind in TRAIT_KINDS for t in kinds.get(kind) or []]
+    out = merge_traits(shop, rows) if rows else []
+
+    seen, pairs = set(), []
+    for got in reads:
+        for p in got.get("술_어울림") or []:
+            key = (p["메뉴"], p["문장"])
+            if key not in seen:
+                seen.add(key)
+                pairs.append(p)
+
+    return {"가게_특성": out, "술_어울림": pairs,
+            "수집일": datetime.now(KST).date().isoformat()}
+
+
 def collect(shop: str, address: str | None = None, on_step=None,
             partner_id: int | None = None) -> dict:
     """
@@ -507,25 +724,28 @@ def collect(shop: str, address: str | None = None, on_step=None,
     step(1, "완료")
 
     step(2, "진행 중")
-    found = []
+    found, reads = [], []
     for b in blogs:
         body = fetch_body(b["blog_id"], b["log_no"])
         if not body:
             continue          # 못 읽는 글은 건너뛴다 (작업 원칙 ⑤)
         try:
-            found.append((b, extract_menus(body, shop, b["제목"])))
+            got = read_post(body, shop, b["제목"], address)
         except Exception:
             continue
+        found.append((b, got["메뉴"]))
+        reads.append(got)
     step(2, "완료")
 
     step(3, "진행 중")
     menus = _tidy(found)
+    traits = _traits(shop, reads)
     step(3, "완료")
     # 무료 키와 유료 키가 섞여 있으면 키마다 한 줄씩 남는다 (db/api_usage.py).
     usage.record(usage.COLLECT, partner_id=partner_id, partner_name=shop,
                  note=f"후기 {len(hits)}건 중 {len(blogs)}건 골라 "
                       f"{len(found)}건 읽음")
-    return {"메뉴": menus, "찾음": len(hits), "글": len(blogs),
+    return {"메뉴": menus, "특성": traits, "찾음": len(hits), "글": len(blogs),
             "읽음": len(found), "검색어": query}
 
 

@@ -50,7 +50,8 @@ from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           PAST_CASES, WEATHER_PREF, build_beer_list,
                           build_constraints, build_events,
                           build_partner_blockers, build_partner_resources,
-                          build_partner_sns, build_rec_reason, menu_checked,
+                          build_partner_sns, build_rec_reason,
+                          build_store_traits, menu_checked,
                           menu_kept,
                           menu_protected,
                           menu_rows, menu_rows_sourced, menu_source,
@@ -924,6 +925,9 @@ def generate(partner: dict, target: date, rnd: int,
             events=build_events(target),
             past_cases=PAST_CASES,
             rec_reason=build_rec_reason(partner),
+            # 후기에서 뽑은 그 가게만의 사실. 안 모았으면 「데이터 없음」이고
+            # (4)는 예전처럼 거리·업종으로 쓴다 (㊂).
+            store_traits=build_store_traits(partner),
             partner=partner,
             # 3안 도출은 메뉴가 아직 안 정해진 자리라 끈다. B/C 는 폼 1 만 와도
             # has_form 이 참이라 rnd 가 2 로 잡히는데, 그대로 켜면 안이 1개로
@@ -1703,6 +1707,25 @@ def _form2_link(partner: dict) -> None:
         st.rerun()
 
 
+def save_traits(partner: dict, traits: dict) -> int:
+    """
+    후기에서 뽑은 가게 특성을 partners.review_traits 에 넣는다. 갈래 수를 돌려준다.
+
+    **합치지 않고 통째로 갈아 끼운다.** 메뉴처럼 합치면 지난 수집의 문장이
+    영영 남는다. 특성을 지우는 화면을 두지 않기로 하면서(10/29) 「잘못 들어온
+    것은 다시 수집하면 덮인다」를 원칙으로 삼았는데, 합치면 그것이 성립하지
+    않는다. 어느 수집의 것인지는 안에 적힌 `수집일` 로 안다.
+
+    사람 손이 닿은 줄을 남기는 장치도 두지 않는다. 메뉴와 달리 사람이 고치는
+    자리가 없어서다 — 고칠 자리가 생기면 그때 함께 정한다.
+    """
+    got = traits.get("가게_특성") or []
+    get_client().table("partners").update(
+        {"review_traits": traits}).eq("id", partner["id"]).execute()
+    load_partners.clear()
+    return len({t.get("갈래") for t in got})
+
+
 def save_auto_menus(partner: dict, rows: list[dict]) -> list[dict]:
     """후기에서 찾은 메뉴를 partners.menu_prices_review 에 넣는다.
 
@@ -1892,12 +1915,18 @@ def run_auto_collect(partner: dict) -> None:
         st.rerun()
         return
 
+    # 가게 특성은 메뉴가 없어도 나올 수 있다. 메뉴를 못 찾은 글에도 분위기나
+    # 위치 얘기는 들어 있어서, 메뉴 안쪽에 두면 그것까지 버리게 된다.
+    kinds = save_traits(partner, res["특성"])
+
     if res["메뉴"]:
         # 몇 개를 「찾았다」가 아니라 몇 개가 「새로 들어왔다」를 알린다. 이미
         # 등록된 메뉴를 세어 말하면, 목록에 그만큼 늘지 않아 어긋나 보인다.
         new = save_auto_menus(partner, res["메뉴"])
         msg = (f"후기에서 메뉴 {len(new)}개를 새로 찾았습니다." if new
                else "후기에서 새로 찾은 메뉴가 없습니다.")
+        if kinds:
+            msg = msg[:-1] + f" · 가게 특성 {kinds}가지도 함께 모았습니다."
     elif res["글"] and not res["읽음"]:
         # 메뉴 0개는 뜻이 여럿이다. 합쳐 말하면 틀린 안내가 된다 (collect 설명).
         # 읽을 글은 골랐는데 본문을 하나도 못 받아온 경우만 따로 알린다 —
