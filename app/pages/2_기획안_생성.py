@@ -590,6 +590,26 @@ def sent_pick(options: list[dict]) -> dict | None:
     return next((o for o in options if o["보냄"]), None)
 
 
+def dropped_menus(partner: dict, sent: dict | None) -> list[str] | None:
+    """
+    C 갈래에서 협력사가 빼 달라고 한 메뉴. 그 밖의 갈래는 None.
+
+    C 는 「제안받은 메뉴는 빼고 전체 메뉴 중에서 다시 추천받고 싶다」는
+    답이다. 그 말이 (2)에게 가지 않으면 같은 품목이 3안에 다시 나온다.
+
+    **보낸 안 하나뿐이다.** 협력사가 본 것은 1차 제안서에 담긴 그 안이고,
+    나머지 안은 보관함에 있을 뿐 협력사에게 간 적이 없다.
+
+    이름은 협력사 품목으로 넘긴다. 안 이름(「… 라거 세트」)으로 넘기면 같은
+    품목을 단품으로 바꿔 다시 낼 수 있다. 협력사가 물린 것은 품목이다.
+    """
+    if (partner.get("reply_choice") or "").strip().upper() != "C":
+        return None
+    item = (sent or {}).get("item") or {}
+    name = item.get("협력사_제공") or (sent or {}).get("메뉴명")
+    return [name] if name else None
+
+
 def sent_first_round(partner: dict) -> dict | None:
     """
     1차에서 협력사에게 보낸 안. 폼이 오기 전이거나 아직 안 골랐으면 None.
@@ -910,6 +930,8 @@ def generate(partner: dict, target: date, rnd: int,
             # 강제되고 되감기가 가져온 (2)를 그대로 써서 헛돈다.
             fixed_menu=rnd == 2 and stop_after == 4,
             agreed_menu=(sent or {}).get("메뉴명"),
+            # C 갈래가 빼 달라고 한 품목. 다른 갈래에서는 None 이다.
+            dropped=dropped_menus(partner, sent),
             # 3안 도출은 앞 단계를 가져다 쓰지 않는다. 메뉴를 새로 고르는 일이다.
             preset=(made_preset(resume) if resume
                     else (load_preset(partner, sent)

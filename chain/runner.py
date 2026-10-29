@@ -127,6 +127,23 @@ def _one(out, step: str = "") -> object:
     return out
 
 
+def dropped_note(names: list[str]) -> str:
+    """
+    협력사가 「이 메뉴는 빼 달라」고 한 것을 (2)에게 알리는 쪽지 (C 갈래).
+
+    아래 되감기 쪽지와 들어가는 자리는 같고 뜻이 다르다. 그쪽은 뒷단계가
+    실행 불가로 판정한 것이라 고쳐서 다시 낼 수 있지만, 이쪽은 **협력사가
+    물린 것이라 어떤 모양으로도 다시 내면 안 된다.**
+
+    이름은 협력사 품목으로 받는다. 안 이름으로 받으면 같은 품목을 단품이나
+    세트로 바꿔 다시 내는 길이 열린다.
+    """
+    return ("[협력사가 뺀 메뉴] — 협력사가 이 품목으로는 하지 않겠다고 했다.\n"
+            "수량이나 구성만 바꿔 같은 품목을 다시 내는 것도 안 된다.\n"
+            "협력사 메뉴 중 다른 품목으로 세 안을 새로 만든다.\n"
+            + "\n".join(f"- {n}" for n in names))
+
+
 def rejected_note(p2: dict, excluded: list[dict]) -> str:
     """
     (2)에게 되돌려 보낼 쪽지. 무엇을 그대로 두고 무엇을 바꿀지 적는다.
@@ -192,6 +209,7 @@ def run(context: str, target_date: str, beer_list: str,
         today: date | None = None,
         rec_menu_hint: str = NO_REC_MENU,
         agreed_menu: str | None = None,
+        dropped: list[str] | None = None,
         stop_after: int = 4) -> dict:
     """
     on_step: 진행 상황 콜백 (Streamlit st.status 연동용)
@@ -217,6 +235,13 @@ def run(context: str, target_date: str, beer_list: str,
       build_partner_resources(confirmed=...) 와 같은 값을 넘긴다. 둘 다
       「협의 결과를 반영하는 자리인가」를 뜻한다. 데이터로 판정하지 않는 이유는
       그쪽 주석에 적어 두었다.
+
+    dropped: 협력사가 빼 달라고 한 협력사 품목. C 갈래에서만 온다.
+
+      (2)에게 「이 품목은 다시 내지 마라」로 넘어간다. 협력사가 본 것은
+      1차 제안서로 나간 안 하나뿐이라 대개 한 개다. 안 이름이 아니라
+      품목으로 넘긴다 — 안 이름으로 넘기면 같은 품목을 단품이나 세트로
+      바꿔 다시 내는 길이 열린다.
 
     partner 는 (2) 검사에 쓴다. 메뉴명에 나온 것이 협력사가 파는 것인지
     보려면 필요하다. None 이면 그 검사만 건너뛴다.
@@ -334,7 +359,9 @@ def run(context: str, target_date: str, beer_list: str,
                         prev_output=_j(prev) if prev else NO_ISSUES,
                         issues=note)
 
-        rejected = NO_REJECTED
+        # C 갈래는 「제안받은 메뉴는 빼고 다시 추천해 달라」는 뜻이다. 빼라는
+        # 말이 (2)에게 가지 않으면 같은 품목이 다시 나온다.
+        rejected = dropped_note(dropped) if dropped else NO_REJECTED
         extra = {"early": 0, "final": 0}   # 4콜 위에 더 부른 횟수 — (2)(3) / (4)
         promoed = 0                     # 홍보를 다시 짠 횟수
 
@@ -523,7 +550,9 @@ def run(context: str, target_date: str, beer_list: str,
 
             note = rejected_note(result["p2"], blocked)
             result["restarts"].append(note)
-            rejected = note
+            # 되감아도 협력사가 뺀 품목은 그대로 빼야 한다. 쪽지를 갈아
+            # 끼우면 그 말이 사라져 (2)가 그 품목을 다시 낼 수 있다.
+            rejected = f"{dropped_note(dropped)}\n\n{note}" if dropped else note
 
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
@@ -617,23 +646,25 @@ def merge_final(result: dict, prices: dict[str, float]) -> None:
 
 def settle_deal(result: dict, partner: dict | None, fixed_menu: bool) -> None:
     """
-    협의가 끝난 매입가에서 「협의 필요」 표시를 뗀다 (9/30).
+    협의가 끝난 매입가를 폼에 적힌 값으로 못 박는다 (9/30 · 10/29).
 
     (4)는 매입가를 늘 「협의 필요」로 낸다 — 협력사 원가를 우리가 모르니 협의할
     값이라는 뜻이고, 1차에서는 맞다. 그런데 2차는 협력사가 폼에 값을 적은 뒤다.
     그대로 두면 확정 제안서에 「※ 협의 필요」와 「매입가 최종 확정」이 붙는다.
     협력사가 2,500원에 주겠다고 적었는데 그렇게 나가면 이상하다.
 
-    금액은 덮지 않는다. 폼의 값은 개당 단가이고, 안에 따라 쓰는 수량이 달라
-    (2)(4)가 환산한 값이 맞다 — 3개 쓰는 안은 7,500원이다.
+    **금액도 폼 값으로 바꾼다.** 칸이 낱개 단가가 되기 전에는 못 했다 — 그때는
+    안마다 쓰는 수량이 달라 (4)가 환산한 합계가 들어 있었고, 폼 값(낱개)으로
+    덮으면 뜻이 달라졌다. 이제 둘 다 낱개라 그대로 넣으면 된다. 협력사가
+    적어 보낸 값이 제안서에 그대로 간다.
 
     검사(check_final)가 「협의_필요는 항상 true」를 보므로 검사가 끝난 뒤에
-    고친다. 검사 쪽도 회차를 알게 만들 수 있지만, 매입 블록을 코드가 채우는
-    작업(남은_작업 ⑦-0)에서 함께 정리하는 편이 낫다.
+    고친다.
     """
     if not (fixed_menu and partner and partner.get("agreed_price")):
         return
     for item in ((result.get("final") or {}).get("안") or []):
         deal = item.get("매입")
-        if isinstance(deal, dict) and deal.get("바틀링_제안_매입가"):
+        if isinstance(deal, dict) and deal.get("바틀링_제안_개당매입가"):
+            deal["바틀링_제안_개당매입가"] = int(partner["agreed_price"])
             deal["협의_필요"] = False
