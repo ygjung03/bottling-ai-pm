@@ -187,6 +187,45 @@ BOTTLING_SNS = f"{NO_DATA} (8/31 방문에서 확인 예정)"
 NO_REC_REASON = f"{NO_DATA} (추천 후보에 없음 — 협력사를 직접 지정함)"
 
 
+NO_TRAITS = f"{NO_DATA} (후기에서 가게 특성을 모으지 않았음)"
+
+
+def build_store_traits(partner: dict | None) -> str:
+    """
+    (4) 컨설턴트 입력 — 후기에서 뽑은 그 가게만의 사실 (㊂).
+
+    제안서의 「이번 협업을 제안한 이유」가 그 가게에 특화되지 않은 문장으로
+    나온 적 있다. 프롬프트는 그러지 말라고 막고 있었는데 입력에 그
+    가게만의 정보가 거리와 업종뿐이라 지킬 수가 없었다. 그 재료가 이것이다.
+
+    **한 글에만 나온 말은 싣지 않는다.** 수집이 같은 답을 묶고 몇 건에서
+    나왔는지를 세어 둔다 (collectors.menu_reviews.merge_traits). 1건짜리는
+    겹쳐 나온 적이 없는 말이고, 그 가게 얘기인지 확인된 적이 없다는 뜻이다.
+    실제로 「골목 안쪽이라 전용 주차장은 없다」 같은 줄이 그렇게 올라왔다
+    (10/30). 임의로 고른 숫자가 아니라 「겹쳤는가」의 최소 정의다.
+
+    거르는 일을 수집이 아니라 여기서 하는 이유는 모으는 것과 쓰는 것을
+    가르기 위해서다 (작업 원칙 ①). review_traits 에는 1건짜리도 그대로
+    남아 있어, 기준이 바뀌면 다시 수집하지 않고 여기만 고치면 된다.
+
+    **남는 것이 없으면 「데이터 없음」이다.** 글이 적은 가게는 전부 1건일 수
+    있다. 그때 (4)는 예전처럼 거리·업종으로 쓴다.
+
+    술 어울림은 여기 싣지 않는다. (2) 페어링이 쓸 값이다.
+    """
+    rows = ((partner or {}).get("review_traits") or {}).get("가게_특성") or []
+    out = []
+    for t in rows:
+        kind, line = t.get("갈래"), t.get("문장")
+        if not kind or not line:
+            continue
+        n = re.search(r"(\d+)", str(t.get("근거") or ""))
+        if not n or int(n.group(1)) < 2:
+            continue
+        out.append(f"- [{kind}] (후기 {n.group(1)}건) {line}")
+    return "\n".join(out) if out else NO_TRAITS
+
+
 def build_rec_reason(partner: dict | None) -> str:
     """
     (4) 컨설턴트 입력 — 이 협력사를 왜 골랐는지. 제안서 3절 첫 문장의 근거다.

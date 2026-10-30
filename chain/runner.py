@@ -34,7 +34,8 @@ from chain.checks import (Checked, check_final, check_menu,
                           parse_beer_prices, parse_beers)
 from chain.gemini import call
 from db import api_usage as usage
-from chain.inputs import NO_REC_MENU, agreed_menu_name, has_partner_sns
+from chain.inputs import (NO_REC_MENU, NO_TRAITS, agreed_menu_name,
+                          has_partner_sns)
 from chain.loader import build
 
 
@@ -203,7 +204,8 @@ def run(context: str, target_date: str, beer_list: str,
         margin_ref: str, weather_pref: str, trend_menu: str,
         constraints: dict, fewshot: str,
         bottling_sns: str, partner_sns: str, events: str, past_cases: str,
-        rec_reason: str, partner: dict | None = None,
+        rec_reason: str, store_traits: str = NO_TRAITS,
+        partner: dict | None = None,
         fixed_menu: bool = False, preset: dict | None = None,
         on_step=None, usage_note: str | None = None,
         today: date | None = None,
@@ -354,6 +356,7 @@ def run(context: str, target_date: str, beer_list: str,
                         events=events,
                         beer_list=beer_list,
                         partner_resources=partner_res,
+                        store_traits=store_traits,
                         rec_reason=rec_reason,
                         constraints=constraints["p4"], fewshot=fewshot,
                         prev_output=_j(prev) if prev else NO_ISSUES,
