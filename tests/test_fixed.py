@@ -36,7 +36,8 @@ from chain.inputs import (BOTTLING_INGREDIENTS, BOTTLING_SNS, MARGIN_REF,
                           NO_REC_REASON, NO_TREND_MENU, PAST_CASES,
                           WEATHER_PREF, build_beer_list, build_constraints,
                           build_events, build_partner_blockers,
-                          build_partner_resources, build_partner_sns)
+                          build_partner_resources, build_partner_sns,
+                          build_store_traits)
 from chain import gemini
 from chain.loader import load as load_prompt, render
 from chain.runner import run
@@ -216,6 +217,10 @@ def run_cases(ids: list[str] | None) -> None:
             events=day["events"],
             past_cases=PAST_CASES,
             rec_reason=NO_REC_REASON,
+            # 협력사는 가상이지만 특성은 실제 블로그 후기에서 모은 것이다.
+            # 지어낸 문장을 넣으면 「그 가게만의 사실」이라는 성질이 사라져
+            # 잘 나오는 것이 당연해진다.
+            store_traits=build_store_traits(partner),
             partner=partner,
             today=date.fromisoformat(ts["today"]),
             on_step=lambda n, label: print(f"    ({n}) {label}"),
@@ -343,7 +348,8 @@ def report(path: Path | None) -> None:
 # 유료 키를 쓸 자리가 아니다. gemini.call 은 사용량을 DB 에 적지 않는다 —
 # 그건 chain.runner.run 이 한다.
 
-ITEMS = ("실행_가능성", "자원_정합성", "상권_근거", "페어링_적절성", "홍보_실효성")
+ITEMS = ("실행_가능성", "자원_정합성", "상권_근거", "페어링_적절성",
+         "홍보_실효성", "배경_설득력")
 
 
 def pick_plan(out: dict) -> dict | None:
@@ -372,6 +378,9 @@ def grade_one(case: dict, plan: dict, snap: dict, tdate: str) -> dict:
         근처_행사=day["events"] or "(없음)",
         맥주_목록=snap["beer_list"],
         협력사_정보=build_partner_resources(partner),
+        # 이것도 안 넘기면 특성을 제대로 쓴 기획안이 「지어냈다」로 깎인다.
+        # 행사 목록에서 같은 일이 났다 (10/30).
+        가게_특성=build_store_traits(partner),
         안=json.dumps(plan, ensure_ascii=False, indent=2))
     # 채점은 글을 짓는 일이 아니라 보는 일이다. 같은 안에 점수가 흔들리면
     # 버전 비교가 뜻을 잃으므로 0 으로 고정한다.
