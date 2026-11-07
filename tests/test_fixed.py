@@ -420,13 +420,20 @@ def rule_breaks(plan: dict) -> list[str]:
     return out
 
 
-def verdict(rows: dict) -> tuple[float | None, bool]:
-    """평균과 통과 여부. 평균 3.5 이상 **그리고** 1점 항목이 없을 것."""
+def mean_score(rows: dict) -> float | None:
+    """여섯 항목의 평균. 한 항목이라도 점수가 비면 None 을 돌려준다.
+
+    임의 합격선은 두지 않는다. 「평균 3.5 이상」도 「1점 항목이 없을 것」도 정할
+    근거가 없는 값이고, 이 채점이 하는 일은 버전끼리 견주는 것이다
+    (작업 원칙 ②). 
+
+    항목 수가 다른 평균을 같은 줄에 놓으면 비교가 어긋나므로, 덜 채점된
+    건은 평균을 내지 않고 집계에서 뺀다. 몇 건이 빠졌는지는 끝에 찍는다.
+    """
     got = [r["점수"] for r in rows.values() if r["점수"] is not None]
     if len(got) != len(ITEMS):
-        return (None, False)
-    avg = sum(got) / len(got)
-    return (round(avg, 2), avg >= 3.5 and 1 not in got)
+        return None
+    return round(sum(got) / len(got), 2)
 
 
 def grade(path: Path | None) -> None:
@@ -440,7 +447,7 @@ def grade(path: Path | None) -> None:
 
     print(f"{path.name} · {len(data['runs'])}건 · 무료 키로 채점한다\n")
     print(f"{'케이스':7}{'접근':5}" + "".join(f"{k[:2]:>5}" for k in ITEMS)
-          + f"{'평균':>7}  판정")
+          + f"{'평균':>7}")
 
     graded = []
     for r in data["runs"]:
@@ -458,14 +465,13 @@ def grade(path: Path | None) -> None:
             rows["상권_근거"]["메모"] = (
                 f"[코드] {' · '.join(breaks)} 가 들어가 1점 깎았다. "
                 + rows["상권_근거"]["메모"])
-        avg, ok = verdict(rows)
+        avg = mean_score(rows)
         graded.append({"case_id": r["case_id"], "round": r["round"],
                        "안_id": plan.get("안_id"), "접근": plan.get("접근"),
-                       "규칙어김": breaks, "점수": rows,
-                       "평균": avg, "통과": ok})
+                       "규칙어김": breaks, "점수": rows, "평균": avg})
         cells = "".join(f"{str(rows[k]['점수'] or '-'):>5}" for k in ITEMS)
         print(f"{r['case_id']:7}{str(plan.get('접근') or '-'):5}{cells}"
-              f"{str(avg or '-'):>7}  {'통과' if ok else '불합격'}")
+              f"{str(avg or '-'):>7}")
 
     out = ROOT / "tests" / f"grades_{data['prompt_version']}.json"
     out.write_text(json.dumps(
@@ -476,8 +482,9 @@ def grade(path: Path | None) -> None:
 
     done = [g for g in graded if g["평균"] is not None]
     if done:
+        short = len(graded) - len(done)
         print(f"전체 평균 {sum(g['평균'] for g in done) / len(done):.2f} · "
-              f"통과 {sum(1 for g in done if g['통과'])}/{len(done)}")
+              f"{len(done)}건" + (f" ({short}건 미채점)" if short else ""))
         for k in ITEMS:
             got = [g["점수"][k]["점수"] for g in done
                    if g["점수"][k]["점수"] is not None]
