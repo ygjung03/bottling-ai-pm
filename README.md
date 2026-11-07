@@ -10,9 +10,10 @@
 파트너 선정  →  기획안 3안 생성  →  협업 제안서 발송  →  협력사 회신 반영 → 최종안
 ```
 
-|---|---|
-| **생성 시간** | 기획안 3안 생성까지 약 25초 |
-| **모델** | Gemini `gemini-3.5-flash-lite` |
+<table>
+<tr><td><b>생성 시간</b></td><td>기획안 3안 생성까지 약 25초</td></tr>
+<tr><td><b>모델</b></td><td>Gemini <code>gemini-3.5-flash-lite</code></td></tr>
+</table>
 
 ---
 
