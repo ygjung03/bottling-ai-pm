@@ -40,7 +40,42 @@
 | 상권 대시보드 | 실시간 인구·혼잡도·결제 현황과 인근 행사를 보여 줍니다. |
 | 관리 | 맥주 라인업과 API 사용량을 관리합니다. |
 
-<!-- 화면 캡처 자리 -->
+<img src="docs/img/웹페이지_홈화면.png" width="900">
+
+<details>
+<summary><b>기획안 생성</b></summary>
+
+<img src="docs/img/웹페이지_기획안생성화면.png" width="900">
+
+</details>
+
+<details>
+<summary><b>보관함</b></summary>
+
+<img src="docs/img/웹페이지_보관함화면.png" width="900">
+
+</details>
+
+<details>
+<summary><b>파트너 추천</b></summary>
+
+<img src="docs/img/웹페이지_파트너추천화면.png" width="900">
+
+</details>
+
+<details>
+<summary><b>상권 대시보드</b></summary>
+
+<img src="docs/img/웹페이지_상권대시보드화면.png" width="900">
+
+</details>
+
+<details>
+<summary><b>관리</b></summary>
+
+<img src="docs/img/웹페이지_관리화면.png" width="900">
+
+</details>
 
 ---
 
