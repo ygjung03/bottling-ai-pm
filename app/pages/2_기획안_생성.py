@@ -429,8 +429,7 @@ def save_plan(result: dict, meta: dict) -> int | None:
             "p3_output": result["p3"],
             "final_output": result["final"],
             # 되감기 기록도 남긴다. 몇 건이 재호출까지 갔고 그중 몇 건이
-            # 통과로 바뀌었는지를 나중에 세려면 이 값이 있어야 한다
-            # (docs/검증루프_도입안.md 8장).
+            # 통과로 바뀌었는지를 나중에 세려면 이 값이 있어야 한다.
             "auto_check": {"issues": result["issues"],
                            "rewinds": result["rewinds"],
                            "restarts": result["restarts"]},

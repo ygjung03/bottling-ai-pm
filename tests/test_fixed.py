@@ -2,7 +2,8 @@
 고정 테스트셋 실행 — T14 (명세서 5-5)
 
 프롬프트를 고치기 전후를 같은 입력으로 비교한다. 케이스는
-tests/fixtures/testset.json 에 있다 (협력사 4종 × 1차/2차 = 8건).
+tests/fixtures/testset.json 에 있다 (협력사 4종 × 1차/2차 = 8건, 판매 기간
+밖의 행사를 보는 C9 를 더해 9건).
 
 [입력을 파일에 박아 둔다]
   컨텍스트 빌더는 지금부터 4주 전까지의 상권 데이터를 읽으므로 내일 돌리면
@@ -18,10 +19,11 @@ tests/fixtures/testset.json 에 있다 (협력사 4종 × 1차/2차 = 8건).
 
 실행
   python -m tests.test_fixed --snapshot          입력 스냅샷 생성 (처음 한 번, 또는 갱신할 때)
-  python -m tests.test_fixed --run               8건 전부
+  python -m tests.test_fixed --run               9건 전부
   python -m tests.test_fixed --run C1 C4         일부만
   python -m tests.test_fixed --report            최신 버전 결과 집계
   python -m tests.test_fixed --report tests/results_abc1234.json
+  python -m tests.test_fixed --grade             최신 버전 결과를 채점 (무료 키, 1~2분)
 """
 import argparse
 import hashlib
@@ -338,7 +340,8 @@ def report(path: Path | None) -> None:
 # ══════════════════════════════════════════
 #
 # 기준은 prompts/grader.yaml 이 정본이다. 9/21 에는 손으로 했는데 8건 ×
-# 5항목 = 40회라 30분이 걸렸고, 그 뒤로 한 번도 안 돌았다.
+# 5항목 = 40회라 30분이 걸려 한 번 돌고 멈췄다. 코드로 돌리게 하면서 9건 ×
+# 6항목 = 54회가 1~2분에 끝난다.
 #
 # **버전끼리 견주는 값이다.** 기획안을 만든 모델과 채점하는 모델이 같아서
 # 후하게 볼 수 있다는 한계가 존재한다. 따라서 절대 점수로는 쓰지 않고, 프롬프트를 고치기 전후의 품질을
